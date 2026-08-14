@@ -176,7 +176,9 @@ bool IsExecutable(const std::string &path)
 bool RecursiveDelete(const std::string &path)
 {
 	assert(IsPathAbsolute(path));
-	if (!PathExists(path))
+	// Native check: deleting is a write-side operation — a ContentVFS pack
+	// entry covering the path must read as "nothing to delete".
+	if (!PathExistsNative(path))
 		return true;
 
 	bool is_file = !IsDir(path);
@@ -424,7 +426,9 @@ bool IsExecutable(const std::string &path)
 bool RecursiveDelete(const std::string &path)
 {
 	assert(IsPathAbsolute(path));
-	if (!PathExists(path))
+	// Native check: deleting is a write-side operation — a ContentVFS pack
+	// entry covering the path must read as "nothing to delete".
+	if (!PathExistsNative(path))
 		return true;
 
 	// Execute the 'rm' command directly, by fork() and execve()
