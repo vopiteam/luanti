@@ -5,6 +5,9 @@
 #include "cpp_api/s_security.h"
 #include "lua_api/l_base.h"
 #include "filesys.h"
+#if IS_VOPI_ENGINE
+#include "content_vfs.h"
+#endif
 #include "server.h"
 #if CHECK_CLIENT_BUILD()
 #include "client/client.h"
@@ -652,6 +655,13 @@ void ScriptApiSecurity::getGlobalsBackup(lua_State *L)
 	FATAL_ERROR_IF(lua_isnil(L, -1), "Globals backup requested, but it is not available. Cannot proceed securely.");
 }
 
+#if IS_VOPI_ENGINE
+bool ScriptApiSecurity::isTrustedBuiltinModName(const std::string &mod_name)
+{
+	return mod_name == BUILTIN_MOD_NAME || mod_name == "*client_builtin*";
+}
+#endif
+
 bool ScriptApiSecurity::safeLoadString(lua_State *L, std::string_view code, const char *chunk_name)
 {
 	if (code.size() > 0 && code[0] == LUA_SIGNATURE[0]) {
@@ -688,6 +698,23 @@ bool ScriptApiSecurity::safeLoadFile(lua_State *L, const char *path, const char 
 		}
 		chunk_name_owned = std::string("@") + display_name;
 		chunk_name = chunk_name_owned.c_str();
+	}
+
+	// Precompiled chunks are accepted only from trusted bundled packs
+	// (VFS_DESIGN §5): served by the ContentVFS overlay from a "base" pack,
+	// LuaJIT version already verified at mount, and with no loose file
+	// shadowing the entry. The executed bytes are re-read from the pack
+	// itself rather than reusing the fs::ReadFile result — that closes the
+	// read-then-check window in which a loose file could be swapped around
+	// the read, so trusted bytecode is the pack's bytecode by construction.
+	// Everything else falls through to safeLoadString and its uniform
+	// bytecode rejection.
+	if (!code.empty() && code[0] == LUA_SIGNATURE[0] &&
+			path && ContentVFS::get().isTrustedCodePath(path)) {
+		std::string pack_code;
+		if (ContentVFS::get().readFile(path, pack_code))
+			return !luaL_loadbuffer(L, pack_code.data(), pack_code.size(),
+					chunk_name);
 	}
 
 	// Skip a shebang line, keeping its line-ending so chunk line numbers
@@ -1022,7 +1049,22 @@ int ScriptApiSecurity::sl_g_loadfile(lua_State *L)
 		}
 
 		std::string chunk_name = "@" + path;
-		if (!safeLoadString(L, *contents, chunk_name.c_str())) {
+		bool ok;
+#if IS_VOPI_ENGINE
+		// Builtin comes from the engine's own install (possibly a mounted
+		// pack) and may be precompiled; server-provided mods stay text-only.
+		const size_t colon = path.find(':');
+		if (!contents->empty() && (*contents)[0] == LUA_SIGNATURE[0] &&
+				colon != std::string::npos &&
+				isTrustedBuiltinModName(path.substr(0, colon))) {
+			ok = !luaL_loadbuffer(L, contents->data(), contents->size(),
+					chunk_name.c_str());
+		} else
+#endif
+		{
+			ok = safeLoadString(L, *contents, chunk_name.c_str());
+		}
+		if (!ok) {
 			lua_pushnil(L);
 			lua_insert(L, -2);
 			return 2;

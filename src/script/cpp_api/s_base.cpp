@@ -490,7 +490,20 @@ void ScriptApiBase::loadModFromMemory(const std::string &mod_name, std::string i
 
 	int error_handler = PUSH_ERROR_HANDLER(L);
 
-	bool ok = ScriptApiSecurity::safeLoadString(L, *contents, chunk_name.c_str());
+	bool ok;
+#if IS_VOPI_ENGINE
+	// Builtin scanned from the engine's own install may be precompiled
+	// (ContentVFS packs ship bytecode); anything else stays text-only.
+	if (ScriptApiSecurity::isTrustedBuiltinModName(mod_name) &&
+			!contents->empty() &&
+			(*contents)[0] == LUA_SIGNATURE[0]) {
+		ok = !luaL_loadbuffer(L, contents->data(), contents->size(),
+				chunk_name.c_str());
+	} else
+#endif
+	{
+		ok = ScriptApiSecurity::safeLoadString(L, *contents, chunk_name.c_str());
+	}
 	if (ok)
 		ok = !lua_pcall(L, 0, 0, error_handler);
 	if (!ok) {

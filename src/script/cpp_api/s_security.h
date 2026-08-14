@@ -44,6 +44,14 @@ public:
 
 	/// Loads a string as Lua code safely (doesn't allow bytecode).
 	static bool safeLoadString(lua_State *L, std::string_view code, const char *chunk_name);
+#if IS_VOPI_ENGINE
+	// Builtin mod names whose ModVFS content is scanned from the engine's
+	// own install (possibly a mounted content pack) and may therefore be
+	// precompiled: "*builtin*" (CSM) and "*client_builtin*" (SSCSM, loaded
+	// unconditionally at world join). "*server_builtin*" arrives over the
+	// network and is deliberately NOT trusted.
+	static bool isTrustedBuiltinModName(const std::string &mod_name);
+#endif
 	/// Loads a file as Lua code safely (doesn't allow bytecode).
 	/// @warning path is not validated in any way
 	static bool safeLoadFile(lua_State *L, const char *path, const char *display_name = nullptr);

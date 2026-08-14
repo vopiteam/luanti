@@ -65,6 +65,9 @@ public:
 	const std::string &mountSpec() const { return m_mount_spec; } // e.g. "share:/games/foo"
 	const std::string &filePath() const { return m_file_path; }
 	int version() const { return m_version; }
+	// LuaJIT that produced the pack's bytecode entries; empty when the pack
+	// carries no bytecode. Checked against the runtime at mount time.
+	const std::string &luajitVersion() const { return m_luajit_version; }
 
 	// Entries keyed by container-relative path ("mods/foo/init.lua"),
 	// forward slashes, sorted — map order backs directory iteration.
@@ -84,6 +87,7 @@ private:
 	std::string m_id;
 	std::string m_type;
 	std::string m_mount_spec;
+	std::string m_luajit_version;
 	int m_version = 0;
 
 	std::map<std::string, Entry> m_entries;
@@ -133,6 +137,16 @@ public:
 	bool covers(const std::string &path) const { return statPath(path) != Stat::NotFound; }
 
 	const ContentPack *getPack(const std::string &id) const;
+
+	// Version string of the LuaJIT the engine runs ("2.1.1785577137");
+	// empty when built without LuaJIT.
+	static std::string runtimeLuaJITVersion();
+
+	// True only when `path` resolves to an entry served from a bundled
+	// ("base") pack AND no real file shadows it — the sole condition under
+	// which precompiled bytecode may be loaded (VFS_DESIGN §5). Version
+	// compatibility is enforced earlier, at mount time.
+	bool isTrustedCodePath(const std::string &path) const;
 
 	// Drops every mount (the overlay goes inactive). Startup mounts again
 	// as needed; used by unit tests and future dynamic remounting.

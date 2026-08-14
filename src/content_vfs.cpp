@@ -18,6 +18,10 @@
 #include "log.h"
 #include "porting.h"
 
+#if USE_LUAJIT
+	#include <luajit.h>
+#endif
+
 #ifndef _WIN32
 	#include <unistd.h>
 #endif
@@ -235,6 +239,8 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 	pack->m_type = meta["type"].asString();
 	pack->m_mount_spec = meta["mount"].asString();
 	pack->m_version = meta["version"].asInt();
+	if (meta["luajitVersion"].isString())
+		pack->m_luajit_version = meta["luajitVersion"].asString();
 
 	// Index
 	std::string index_stored(index_size, '\0');
@@ -264,6 +270,7 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 		return nullptr;
 	}
 
+	bool has_bytecode = false;
 	for (const Json::Value &f : files) {
 		if (!f["p"].isString() || !f["o"].isUInt64() || !f["s"].isUInt64() ||
 				!f["r"].isUInt64() || !f["f"].isUInt() || !f["h"].isString()) {
@@ -291,6 +298,7 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 			err = "implausible raw size for entry: " + p;
 			return nullptr;
 		}
+		has_bytecode = has_bytecode || (e.flags & EFLAG_LUA_BYTECODE);
 		if (!pack->m_entries.emplace(p, std::move(e)).second) {
 			err = "duplicate entry path: " + p;
 			return nullptr;
@@ -299,6 +307,15 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 
 	if (pack->m_entries.empty()) {
 		err = "pack contains no entries";
+		return nullptr;
+	}
+
+	// Bytecode entries without a recorded LuaJIT version cannot be
+	// version-gated at mount time — refuse instead of failing later with
+	// an opaque chunk error (only the packer omitting the field, i.e. a
+	// crafted or corrupt container, produces this).
+	if (has_bytecode && pack->m_luajit_version.empty()) {
+		err = "pack has bytecode entries but no luajitVersion in meta";
 		return nullptr;
 	}
 
@@ -421,6 +438,17 @@ bool ContentVFS::mountPackFile(const std::string &pack_path, std::string &err)
 		return false;
 	}
 
+	// Bytecode is LuaJIT-version-locked (FORMAT.md §9): refusing the whole
+	// mount here beats confusing chunk-load errors deep inside mod loading.
+	if (!pack->luajitVersion().empty() &&
+			pack->luajitVersion() != runtimeLuaJITVersion()) {
+		const std::string runtime = runtimeLuaJITVersion();
+		err = "pack bytecode was compiled by LuaJIT " + pack->luajitVersion() +
+				" but the engine runs " +
+				(runtime.empty() ? "without LuaJIT" : ("LuaJIT " + runtime));
+		return false;
+	}
+
 	std::string prefix = resolveMountSpec(pack->mountSpec());
 	if (prefix.empty()) {
 		err = "unsupported mount spec '" + pack->mountSpec() + "'";
@@ -455,6 +483,41 @@ void ContentVFS::mountPacksFromDir(const std::string &dir)
 			errorstream << "ContentVFS: failed to mount " << path
 					<< ": " << err << std::endl;
 	}
+}
+
+std::string ContentVFS::runtimeLuaJITVersion()
+{
+#if USE_LUAJIT
+	std::string v(LUAJIT_VERSION); // "LuaJIT 2.1.1785577137"
+	const std::string prefix = "LuaJIT ";
+	if (v.compare(0, prefix.size(), prefix) == 0)
+		return v.substr(prefix.size());
+	return v;
+#else
+	return "";
+#endif
+}
+
+bool ContentVFS::isTrustedCodePath(const std::string &path) const
+{
+	if (!m_active)
+		return false;
+
+	// A loose file shadows the pack entry and is what fs::ReadFile actually
+	// served — it must never inherit pack-level trust (someone could plant
+	// bytecode at a path that also exists inside a pack).
+	if (fs::PathExistsNative(path))
+		return false;
+
+	const std::string norm = normalizePath(path);
+	std::string rel;
+	for (const Mount &m : m_mounts) {
+		if (!relativeToPrefix(norm, m.prefix, &rel) || rel.empty())
+			continue;
+		if (m.pack->findEntry(rel))
+			return m.pack->type() == "base";
+	}
+	return false;
 }
 
 void ContentVFS::unmountAll()

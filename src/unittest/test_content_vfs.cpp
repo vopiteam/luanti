@@ -29,9 +29,14 @@ public:
 	void testReadThroughFs();
 	void testDirListingUnion();
 	void testRealFileWins();
+	void testBytecodeTrust();
 
 private:
-	std::string makePack(const std::string &mount_spec);
+	std::string makePack(const std::string &mount_spec,
+			const std::string &pack_id = "vfstest",
+			const std::string &pack_type = "base",
+			const std::string &luajit_version = "",
+			int first_entry_flags = 0);
 	std::string m_pack_path;
 	std::string m_mount_prefix; // resolved absolute prefix
 };
@@ -51,13 +56,17 @@ static void putLEU64(std::string &s, u64 v)
 }
 
 // Three entries, stored raw, uncompressed index (INDEX_ZSTD off), unencrypted.
-std::string TestContentVFS::makePack(const std::string &mount_spec)
+std::string TestContentVFS::makePack(const std::string &mount_spec,
+		const std::string &pack_id, const std::string &pack_type,
+		const std::string &luajit_version, int first_entry_flags)
 {
 	const std::string a_content = "hello from pack";
 	const std::string b_content = std::string("\x01\x02\x03", 3);
 
-	const std::string meta = "{\"id\":\"vfstest\",\"mount\":\"" + mount_spec +
-			"\",\"type\":\"base\",\"version\":1}";
+	const std::string luajit_field = luajit_version.empty() ? ""
+			: ",\"luajitVersion\":\"" + luajit_version + "\"";
+	const std::string meta = "{\"id\":\"" + pack_id + "\",\"mount\":\"" + mount_spec +
+			"\",\"type\":\"" + pack_type + "\",\"version\":1" + luajit_field + "}";
 
 	const u64 meta_offset = 80;
 	const u64 blob_start = meta_offset + meta.size();
@@ -68,7 +77,7 @@ std::string TestContentVFS::makePack(const std::string &mount_spec)
 		<< "{\"p\":\"a.txt\",\"o\":" << blob_start
 		<< ",\"s\":" << a_content.size() << ",\"r\":" << a_content.size()
 		<< ",\"h\":\"0000000000000000000000000000000000000000\",\"n\":\""
-		<< std::string(32, '0') << "\",\"f\":0},"
+		<< std::string(32, '0') << "\",\"f\":" << first_entry_flags << "},"
 		<< "{\"p\":\"e.txt\",\"o\":" << (blob_start + a_content.size())
 		<< ",\"s\":0,\"r\":0"
 		<< ",\"h\":\"0000000000000000000000000000000000000000\",\"n\":\""
@@ -98,7 +107,7 @@ std::string TestContentVFS::makePack(const std::string &mount_spec)
 	blob += b_content;
 	blob += index;
 
-	const std::string path = getTestTempDirectory() + DIR_DELIM + "vfstest.kpk";
+	const std::string path = getTestTempDirectory() + DIR_DELIM + pack_id + ".kpk";
 	std::ofstream os(path, std::ios::binary);
 	os << blob;
 	os.close();
@@ -117,6 +126,7 @@ void TestContentVFS::runTests(IGameDef *gamedef)
 	TEST(testReadThroughFs);
 	TEST(testDirListingUnion);
 	TEST(testRealFileWins);
+	TEST(testBytecodeTrust);
 
 	ContentVFS::get().unmountAll();
 	fs::RecursiveDelete(m_mount_prefix);
@@ -245,4 +255,48 @@ void TestContentVFS::testRealFileWins()
 	fs::DeleteSingleFileOrEmptyDirectory(real_file);
 	UASSERT(fs::ReadFile(real_file, content, false));
 	UASSERTEQ(std::string, content, "hello from pack");
+}
+
+void TestContentVFS::testBytecodeTrust()
+{
+	std::string err;
+
+	// A pack whose bytecode was produced by a different LuaJIT must be
+	// refused at mount time.
+	const std::string stale = makePack("user:/__vfs_stale__", "vfsstale",
+			"base", "0.0.bogus");
+	UASSERT(!ContentVFS::get().mountPackFile(stale, err));
+	UASSERT(err.find("LuaJIT") != std::string::npos);
+
+	// Bytecode entries without a recorded luajitVersion cannot be
+	// version-gated — the mount must be refused too.
+	const std::string unversioned = makePack("user:/__vfs_nolj__", "vfsnolj",
+			"base", "", ContentPack::EFLAG_LUA_BYTECODE);
+	UASSERT(!ContentVFS::get().mountPackFile(unversioned, err));
+	UASSERT(err.find("luajitVersion") != std::string::npos);
+
+	// Entries of the mounted "base" pack are trusted code paths...
+	const std::string trusted_file = m_mount_prefix + DIR_DELIM + "a.txt";
+	UASSERT(ContentVFS::get().isTrustedCodePath(trusted_file));
+	// ...but not directories, absent entries or uncovered paths
+	UASSERT(!ContentVFS::get().isTrustedCodePath(m_mount_prefix + DIR_DELIM + "sub"));
+	UASSERT(!ContentVFS::get().isTrustedCodePath(m_mount_prefix + DIR_DELIM + "nope"));
+	UASSERT(!ContentVFS::get().isTrustedCodePath(porting::path_user));
+
+	// A downloadable ("content") pack never grants code trust
+	const std::string data_pack = makePack("user:/__vfs_data__", "vfsdata",
+			"content", "");
+	UASSERT(ContentVFS::get().mountPackFile(data_pack, err));
+	UASSERT(!ContentVFS::get().isTrustedCodePath(
+			porting::path_user + DIR_DELIM + "__vfs_data__" + DIR_DELIM + "a.txt"));
+
+	// A loose file shadowing the pack entry strips the trust: the shadowing
+	// file is what fs::ReadFile actually serves.
+	UASSERT(fs::CreateAllDirs(m_mount_prefix));
+	std::ofstream os(trusted_file, std::ios::binary);
+	os << "planted";
+	os.close();
+	UASSERT(!ContentVFS::get().isTrustedCodePath(trusted_file));
+	fs::DeleteSingleFileOrEmptyDirectory(trusted_file);
+	UASSERT(ContentVFS::get().isTrustedCodePath(trusted_file));
 }
