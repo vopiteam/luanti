@@ -5,6 +5,7 @@
 #include "content_vfs.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -14,6 +15,7 @@
 #include <json/json.h>
 #include <zstd.h>
 
+#include "aes_ctr.h"
 #include "config.h"
 #include "log.h"
 #include "porting.h"
@@ -23,6 +25,8 @@
 #endif
 
 #ifndef _WIN32
+	#include <fcntl.h>
+	#include <sys/stat.h>
 	#include <unistd.h>
 #endif
 
@@ -94,6 +98,26 @@ bool zstdDecompress(const char *src, size_t src_size, std::string &out,
 	return !ZSTD_isError(r) && r == raw_size;
 }
 
+// 32 lowercase/uppercase hex chars -> 16 bytes; false on any other input.
+bool parseHex16(const std::string &hex, unsigned char out[16])
+{
+	if (hex.size() != 32)
+		return false;
+	for (size_t i = 0; i < 16; i++) {
+		unsigned int v = 0;
+		for (int k = 0; k < 2; k++) {
+			char c = hex[i * 2 + k];
+			v <<= 4;
+			if (c >= '0' && c <= '9') v |= c - '0';
+			else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+			else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+			else return false;
+		}
+		out[i] = (unsigned char)v;
+	}
+	return true;
+}
+
 // A container-relative entry path must stay inside the mount.
 bool isSafeEntryPath(const std::string &p)
 {
@@ -114,9 +138,24 @@ bool isSafeEntryPath(const std::string &p)
 
 } // namespace
 
+// Weak default: no key provider. Overridden by the platform layer's strong
+// definition when it is linked in (MSVC has no weak symbols; there the
+// platform layer must call ContentVFS::setKeyProvider() itself before mount).
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void vopi_install_content_key_provider()
+{
+}
+#endif
+
 /*
 	ContentPack
 */
+
+struct ContentPack::KeySchedule {
+	aes256_key ctx;
+};
+
+ContentPack::ContentPack() = default;
 
 ContentPack::~ContentPack()
 {
@@ -142,16 +181,21 @@ bool ContentPack::readRaw(u64 offset, u64 size, char *dest) const
 #else
 	u64 done = 0;
 	while (done < size) {
-		ssize_t r = ::pread(m_fd, dest + done, size - done, offset + done);
+		// Chunked so the size_t argument never narrows on 32-bit targets
+		const size_t want = (size_t)std::min<u64>(size - done, (u64)1 << 30);
+		ssize_t r = ::pread(m_fd, dest + done, want, (off_t)(offset + done));
+		if (r < 0 && errno == EINTR)
+			continue;
 		if (r <= 0)
 			return false;
-		done += r;
+		done += (u64)r;
 	}
 	return true;
 #endif
 }
 
-std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::string &err)
+std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
+		ContentKeyProvider key_provider, std::string &err)
 {
 	std::unique_ptr<ContentPack> pack(new ContentPack());
 	pack->m_file_path = path;
@@ -164,22 +208,31 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 		return nullptr;
 	}
 	pack->m_file_handle = fp;
-	_fseeki64(fp, 0, SEEK_END);
-	file_size = _ftelli64(fp);
+	if (_fseeki64(fp, 0, SEEK_END) != 0) {
+		err = "cannot determine file size";
+		return nullptr;
+	}
+	const __int64 end = _ftelli64(fp);
+	if (end < 0) {
+		err = "cannot determine file size";
+		return nullptr;
+	}
+	file_size = (u64)end;
 #else
-	FILE *fp = std::fopen(path.c_str(), "rb");
-	if (!fp) {
+	// fstat rather than fseek/ftell: ftell returns long (32-bit on
+	// armeabi-v7a) and -1 on error, which as u64 would defeat every bounds
+	// check below. Also rejects directories and other non-regular files.
+	pack->m_fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+	if (pack->m_fd < 0) {
 		err = "cannot open file";
 		return nullptr;
 	}
-	pack->m_fd = ::dup(fileno(fp));
-	std::fseek(fp, 0, SEEK_END);
-	file_size = std::ftell(fp);
-	std::fclose(fp);
-	if (pack->m_fd < 0) {
-		err = "cannot duplicate file descriptor";
+	struct stat st{};
+	if (::fstat(pack->m_fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+		err = "not a regular file";
 		return nullptr;
 	}
+	file_size = (u64)st.st_size;
 #endif
 
 	char header[KPK_HEADER_SIZE];
@@ -200,15 +253,28 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 	// preview block (header + 32..47) is storefront data — irrelevant here
 	const u64 index_offset = readLEU64(header + 48);
 	const u64 index_size = readLEU64(header + 56);
+	const unsigned char *index_nonce =
+			reinterpret_cast<const unsigned char *>(header + 64);
 
 	if (format_version != KPK_FORMAT_VERSION) {
 		err = "unsupported KPK format version " + std::to_string(format_version);
 		return nullptr;
 	}
 	if (flags & FLAG_ENCRYPTED) {
-		err = "encrypted packs are not supported by this engine build "
-				"(key_version " + std::to_string(key_version) + ")";
-		return nullptr;
+		if (!key_provider) {
+			err = "pack is encrypted but no content key provider is installed";
+			return nullptr;
+		}
+		unsigned char key[32];
+		if (!key_provider(key_version, key)) {
+			err = "no key for key_version " + std::to_string(key_version);
+			return nullptr;
+		}
+		pack->m_encrypted = true;
+		pack->m_key_version = key_version;
+		pack->m_key.reset(new KeySchedule());
+		aes256_set_key(&pack->m_key->ctx, key);
+		std::memset(key, 0, sizeof(key));
 	}
 	// Overflow-safe bounds checks: `off + size > file_size` would wrap for
 	// crafted u64 values and pass, and the sizes below feed allocations.
@@ -248,11 +314,20 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 		err = "cannot read index block";
 		return nullptr;
 	}
+	if (pack->m_encrypted) {
+		// FORMAT.md §5: compress, then encrypt — so decrypt first
+		aes256_ctr_xor(&pack->m_key->ctx, index_nonce,
+				reinterpret_cast<const uint8_t *>(index_stored.data()),
+				reinterpret_cast<uint8_t *>(&index_stored[0]),
+				index_stored.size());
+	}
 	std::string index_plain;
 	if (flags & FLAG_INDEX_ZSTD) {
 		if (!zstdDecompress(index_stored.data(), index_stored.size(),
 				index_plain, 0)) {
-			err = "index decompression failed";
+			err = pack->m_encrypted
+					? "index decompression failed (wrong key?)"
+					: "index decompression failed";
 			return nullptr;
 		}
 	} else {
@@ -288,6 +363,13 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path, std::str
 		e.raw_size = f["r"].asUInt64();
 		e.flags = f["f"].asUInt();
 		e.sha1_hex = f["h"].asString();
+		std::memset(e.nonce, 0, sizeof(e.nonce));
+		if (pack->m_encrypted) {
+			if (!f["n"].isString() || !parseHex16(f["n"].asString(), e.nonce)) {
+				err = "malformed entry nonce: " + p;
+				return nullptr;
+			}
+		}
 		if (e.offset > file_size || e.stored_size > file_size - e.offset) {
 			err = "entry out of file bounds: " + p;
 			return nullptr;
@@ -338,6 +420,12 @@ bool ContentPack::readEntry(const Entry &entry, std::string &out) const
 	std::string stored(entry.stored_size, '\0');
 	if (!readRaw(entry.offset, entry.stored_size, &stored[0]))
 		return false;
+
+	if (m_encrypted) {
+		aes256_ctr_xor(&m_key->ctx, entry.nonce,
+				reinterpret_cast<const uint8_t *>(stored.data()),
+				reinterpret_cast<uint8_t *>(&stored[0]), stored.size());
+	}
 
 	if (entry.flags & EFLAG_ZSTD)
 		return zstdDecompress(stored.data(), stored.size(), out, entry.raw_size);
@@ -429,7 +517,7 @@ std::string ContentVFS::resolveMountSpec(const std::string &spec)
 
 bool ContentVFS::mountPackFile(const std::string &pack_path, std::string &err)
 {
-	auto pack = ContentPack::open(pack_path, err);
+	auto pack = ContentPack::open(pack_path, m_key_provider, err);
 	if (!pack)
 		return false;
 
@@ -457,7 +545,8 @@ bool ContentVFS::mountPackFile(const std::string &pack_path, std::string &err)
 
 	actionstream << "ContentVFS: mounted " << pack->id()
 			<< " v" << pack->version()
-			<< " (" << pack->entries().size() << " files) at "
+			<< " (" << pack->entries().size() << " files"
+			<< (pack->isEncrypted() ? ", encrypted" : "") << ") at "
 			<< prefix << std::endl;
 
 	m_mounts.push_back({std::move(prefix), std::move(pack)});

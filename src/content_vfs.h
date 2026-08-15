@@ -29,14 +29,35 @@
 	trivially safe. Pack entries only fill the gaps the real tree misses.
 
 	Container format: tools/kpk/FORMAT.md (normative). This reader
-	supports format v1, unencrypted packs; the ENCRYPTED flag is refused
-	until key support lands (a later migration stage).
+	supports format v1, plain and AES-256-CTR encrypted packs.
+
+	Keys never live in this (public) engine code: an encrypted pack names
+	a key_version, and the reader asks the application-installed
+	ContentKeyProvider for that key. Without a provider, or when the
+	provider does not know the version, the mount is refused. The
+	provider is supplied by the proprietary platform layer.
 
 	Thread safety: mounting happens once during early startup, before
 	worker threads exist. After that the mount table is immutable and all
 	read paths are stateless (pread), so concurrent access needs no locks
 	on POSIX. (A mutex guards reads on WIN32 where pread is unavailable.)
 */
+
+/*
+	Resolves a pack key_version to a 32-byte AES-256 key. Returns false when
+	the version is unknown. Installed once at startup by the platform layer
+	(see ContentVFS::setKeyProvider); the engine never embeds key material.
+*/
+typedef bool (*ContentKeyProvider)(u32 key_version, unsigned char key_out[32]);
+
+/*
+	Startup hook the engine calls right before mounting packs. The default
+	(weak) definition in content_vfs.cpp installs nothing, so this public
+	code carries no keys; the proprietary platform layer provides a strong
+	definition that installs its ContentKeyProvider. Same mechanism on every
+	platform — no per-OS wiring in main().
+*/
+extern "C" void vopi_install_content_key_provider();
 
 class ContentPack
 {
@@ -51,14 +72,19 @@ public:
 		u64 raw_size;
 		u32 flags;
 		std::string sha1_hex; // of raw content; matches engine media hashing
+		unsigned char nonce[16]; // AES-CTR initial counter block (encrypted packs)
 	};
 
 	~ContentPack();
 
 	// Opens and fully parses a .kpk file. Returns nullptr and fills `err`
 	// on any validation failure (bad magic, unsupported version,
-	// encrypted without key support, malformed index, ...).
-	static std::unique_ptr<ContentPack> open(const std::string &path, std::string &err);
+	// encrypted with no key for its key_version, malformed index, ...).
+	static std::unique_ptr<ContentPack> open(const std::string &path,
+			ContentKeyProvider key_provider, std::string &err);
+
+	bool isEncrypted() const { return m_encrypted; }
+	u32 keyVersion() const { return m_key_version; }
 
 	const std::string &id() const { return m_id; }
 	const std::string &type() const { return m_type; }
@@ -79,7 +105,7 @@ public:
 	bool readEntry(const Entry &entry, std::string &out) const;
 
 private:
-	ContentPack() = default;
+	ContentPack();
 
 	bool readRaw(u64 offset, u64 size, char *dest) const;
 
@@ -89,6 +115,13 @@ private:
 	std::string m_mount_spec;
 	std::string m_luajit_version;
 	int m_version = 0;
+
+	bool m_encrypted = false;
+	u32 m_key_version = 0;
+	// Expanded AES key schedule (opaque here; aes_ctr.h stays out of the
+	// public header). Only meaningful when m_encrypted.
+	struct KeySchedule;
+	std::unique_ptr<KeySchedule> m_key;
 
 	std::map<std::string, Entry> m_entries;
 
@@ -105,6 +138,10 @@ public:
 	enum class Stat { NotFound, File, Dir };
 
 	static ContentVFS &get();
+
+	// Installs the key provider used for encrypted packs. Must be called
+	// before mounting; nullptr means encrypted packs are refused.
+	void setKeyProvider(ContentKeyProvider provider) { m_key_provider = provider; }
 
 	// Scans `dir` for *.kpk and mounts each (errors are logged, not fatal).
 	// Called from early startup for path_share/packs and path_user/packs.
@@ -173,4 +210,5 @@ private:
 
 	std::vector<Mount> m_mounts;
 	bool m_active = false;
+	ContentKeyProvider m_key_provider = nullptr;
 };

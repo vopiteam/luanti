@@ -518,6 +518,26 @@ endif()
 
 if(IS_VOPI_ENGINE)
 	list(APPEND common_SRCS content_vfs.cpp)
+	set(VOPI_AES_LIBRARY aes)
+	# Proprietary platform layer sources (content pack key provider, ...).
+	# VOPI_PLATFORM_SRC_DIR points at the Kawaii Craft src/ directory that
+	# sits next to this engine checkout; empty/unset builds a keyless engine
+	# that mounts only unencrypted packs (upstream-like or CI checkouts).
+	set(VOPI_PLATFORM_SRC_DIR "" CACHE PATH
+		"Directory with the proprietary VOPI platform sources (Kawaii Craft src/)")
+	if(VOPI_PLATFORM_SRC_DIR AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
+		include_directories(BEFORE "${VOPI_PLATFORM_SRC_DIR}")
+		list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
+		# The platform layer's strong hook definition is compiled into the same
+		# object set as the engine, so it always wins over the weak default —
+		# no static-archive symbol-pull ordering to worry about.
+		add_definitions(-DVOPI_HAVE_PLATFORM_LAYER=1)
+		message(STATUS "VOPI platform layer: ${VOPI_PLATFORM_SRC_DIR}")
+	else()
+		message(STATUS "VOPI platform layer: none (encrypted packs will not mount)")
+	endif()
+else()
+	set(VOPI_AES_LIBRARY "")
 endif()
 
 # This gives us the icon and file version information
@@ -575,6 +595,11 @@ if (CMAKE_VERSION VERSION_GREATER 3.8.1)
 		list(FILTER client_SRCS_filtered EXCLUDE REGEX "^${CMAKE_SOURCE_DIR}/\\.\\./")
 		list(FILTER server_SRCS_filtered EXCLUDE REGEX "^${CMAKE_SOURCE_DIR}/\\.\\./")
 	endif()
+	if(IS_VOPI_ENGINE AND VOPI_PLATFORM_SRC_DIR)
+		# Platform-layer sources live outside this tree as well
+		list(FILTER client_SRCS_filtered EXCLUDE REGEX "^${VOPI_PLATFORM_SRC_DIR}/")
+		list(FILTER server_SRCS_filtered EXCLUDE REGEX "^${VOPI_PLATFORM_SRC_DIR}/")
+	endif()
 	source_group(TREE ${PROJECT_SOURCE_DIR} PREFIX "Source Files" FILES ${client_SRCS_filtered})
 	source_group(TREE ${PROJECT_SOURCE_DIR} PREFIX "Source Files" FILES ${server_SRCS_filtered})
 endif()
@@ -630,6 +655,9 @@ add_dependencies(EngineCommon GenerateVersion)
 target_link_libraries(EngineCommon
 	sha256
 )
+if(IS_VOPI_ENGINE)
+	target_link_libraries(EngineCommon aes)
+endif()
 if(USE_OPENSSL)
 	target_link_libraries(EngineCommon OpenSSL::Crypto)
 endif()
@@ -716,6 +744,7 @@ if(BUILD_CLIENT)
 		${LUA_BIT_LIBRARY}
 		lstrpack
 		sha256
+		${VOPI_AES_LIBRARY}
 		${FREETYPE_LIBRARY}
 		${PLATFORM_LIBS}
 		# on Android, Luanti depends on SDL2 directly
@@ -807,6 +836,7 @@ if(BUILD_SERVER)
 		${LUA_BIT_LIBRARY}
 		lstrpack
 		sha256
+		${VOPI_AES_LIBRARY}
 		${GMP_LIBRARY}
 		${PLATFORM_LIBS}
 	)

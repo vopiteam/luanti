@@ -217,6 +217,8 @@ int main(int argc, char *argv[])
 #if IS_VOPI_ENGINE
 	// Mount content packs before anything reads game content: the fs::
 	// overlay must be in place for builtin, game discovery and media.
+	// The platform layer installs the pack key provider through this hook.
+	vopi_install_content_key_provider();
 	ContentVFS::get().mountPacksFromDir(porting::path_share + DIR_DELIM + "packs");
 	if (porting::path_user != porting::path_share)
 		ContentVFS::get().mountPacksFromDir(porting::path_user + DIR_DELIM + "packs");
