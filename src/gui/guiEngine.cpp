@@ -351,6 +351,9 @@ void GUIEngine::run()
 #if defined(__ANDROID__) || defined(__IOS__)
 	bool was_window_active = true;
 #endif
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+	bool first_frame_reported = false;
+#endif
 
 	fps_control.reset();
 
@@ -412,6 +415,17 @@ void GUIEngine::run()
 			}
 
 			driver->endScene();
+
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+			// First presented frame of this menu session (run() is entered
+			// again after leaving a world): the platform can drop its startup
+			// splash now that there is something underneath it. The platform
+			// side is idempotent, so later sessions are harmless.
+			if (!first_frame_reported) {
+				first_frame_reported = true;
+				porting::onMainMenuShown();
+			}
+#endif
 		}
 
 		m_script->step();
