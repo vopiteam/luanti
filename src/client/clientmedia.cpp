@@ -35,9 +35,18 @@ bool clientMediaUpdateCacheCopy(const std::string &raw_hash, const std::string &
 {
 	FileCache media_cache(getMediaCacheDir());
 	std::string sha1_hex = hex_encode(raw_hash);
-	if (!media_cache.exists(sha1_hex))
-		return media_cache.updateCopyFile(sha1_hex, path);
-	return false;
+	if (media_cache.exists(sha1_hex))
+		return false;
+#if IS_VOPI_ENGINE
+	// Media served from a mounted content pack (ContentVFS) is not copied
+	// into the on-disk cache: the copy would need the file to exist loosely
+	// (it does not), and caching would write the pack's plaintext to disk —
+	// exactly what the packs exist to avoid. The local server hands the
+	// bytes over the loopback instead, which costs nothing.
+	if (!fs::PathExistsNative(path))
+		return false;
+#endif
+	return media_cache.updateCopyFile(sha1_hex, path);
 }
 
 /*
@@ -183,6 +192,16 @@ void ClientMediaDownloader::initialStep(Client *client)
 	// Tradeoff between responsiveness during media loading and media loading speed
 	const u64 chunk_time_ms = 33;
 	u64 last_time = porting::getTimeMs();
+
+#if IS_VOPI_ENGINE
+	// A server on this device (singleplayer, or a room we host) serves its
+	// media from the mounted content packs over the loopback — every join
+	// re-sends it for free, so the on-disk media cache buys nothing and would
+	// only write the packs' plaintext into path_cache/media. Keep the cache
+	// for remote servers, where it saves real downloads.
+	if (client->getServerAddress().isLocalhost())
+		m_write_to_cache = false;
+#endif
 
 	// Check media cache
 	m_uncached_count = m_files.size();

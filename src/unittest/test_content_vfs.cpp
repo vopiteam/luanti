@@ -9,10 +9,16 @@
 #include <sstream>
 
 #include "aes_ctr.h"
+#include "config.h"
 #include "content_vfs.h"
 #include "filesys.h"
 #include "log.h"
 #include "porting.h"
+#if CHECK_CLIENT_BUILD()
+#include "client/clientmedia.h"
+#include "util/hashing.h"
+#include "util/hex.h"
+#endif
 
 // Builds minimal KPK v1 containers in-process (tools/kpk/FORMAT.md) and
 // exercises the ContentVFS overlay through the public fs:: API — the same
@@ -32,6 +38,7 @@ public:
 	void testRealFileWins();
 	void testBytecodeTrust();
 	void testEncryptedPack();
+	void testMediaCacheSkipsPackFiles();
 
 private:
 	std::string makePack(const std::string &mount_spec,
@@ -169,6 +176,7 @@ void TestContentVFS::runTests(IGameDef *gamedef)
 	TEST(testRealFileWins);
 	TEST(testBytecodeTrust);
 	TEST(testEncryptedPack);
+	TEST(testMediaCacheSkipsPackFiles);
 
 	ContentVFS::get().unmountAll();
 	ContentVFS::get().setKeyProvider(nullptr);
@@ -389,4 +397,37 @@ void TestContentVFS::testEncryptedPack()
 	UASSERTEQ(std::string, content, std::string("\x01\x02\x03", 3));
 	UASSERT(fs::ReadFile(enc_prefix + DIR_DELIM + "e.txt", content, false));
 	UASSERT(content.empty());
+}
+
+void TestContentVFS::testMediaCacheSkipsPackFiles()
+{
+#if CHECK_CLIENT_BUILD()
+	// The local-server media path copies files into path_cache/media with a
+	// raw fopen. Pack entries have no loose file: the copy must be declined
+	// (not attempted, not logged as an error, no empty cache file left) —
+	// the loopback transfer serves them. Loose files still get copied.
+	const std::string cache_dir = porting::path_cache + DIR_DELIM + "media";
+
+	// pack-served entry (mounted in testMountAndStat)
+	const std::string pack_file = m_mount_prefix + DIR_DELIM + "a.txt";
+	std::string pack_data;
+	UASSERT(fs::ReadFile(pack_file, pack_data, false));
+	const std::string pack_hash = hashing::sha1(pack_data);
+	fs::DeleteSingleFileOrEmptyDirectory(cache_dir + DIR_DELIM + hex_encode(pack_hash));
+
+	UASSERT(!clientMediaUpdateCacheCopy(pack_hash, pack_file));
+	UASSERT(!fs::PathExistsNative(cache_dir + DIR_DELIM + hex_encode(pack_hash)));
+
+	// loose file: copied as before
+	const std::string loose_file = getTestTempDirectory() + DIR_DELIM + "loose_media.bin";
+	std::ofstream os(loose_file, std::ios::binary);
+	os << "loose media bytes";
+	os.close();
+	const std::string loose_hash = hashing::sha1("loose media bytes");
+	fs::DeleteSingleFileOrEmptyDirectory(cache_dir + DIR_DELIM + hex_encode(loose_hash));
+
+	UASSERT(clientMediaUpdateCacheCopy(loose_hash, loose_file));
+	UASSERT(fs::PathExistsNative(cache_dir + DIR_DELIM + hex_encode(loose_hash)));
+	fs::DeleteSingleFileOrEmptyDirectory(cache_dir + DIR_DELIM + hex_encode(loose_hash));
+#endif
 }
