@@ -60,6 +60,36 @@ public:
 		const v3f &position, const v3f &rotation, const v3f &scale);
 
 	void clearAttachments();
+
+	// VOPI extension — how calcOptimalDistance() decides the camera
+	// pull-back. See setFitMode().
+	enum class FitMode
+	{
+		//! Fit the raw axis-aligned bounding box: the horizontal extent is
+		//! max(X, Z) regardless of where the camera actually is. This is
+		//! the default, so every formspec that doesn't ask for something
+		//! else keeps its existing framing.
+		AABB,
+		//! Fit the silhouette the camera actually sees. The bounding box
+		//! corners are projected onto the view plane at the element's
+		//! rotation and the projected extents are what gets fitted, so
+		//! meshes with very different proportions come out at a consistent
+		//! apparent size instead of long ones shrinking away. The box is
+		//! also swept over the animation loop, so a pose that only occurs
+		//! mid-loop cannot grow outside the framed area. Framed for the
+		//! initial rotation only: continuous or mouse-driven rotation
+		//! changes the silhouette afterwards.
+		SILHOUETTE,
+	};
+
+	//! @param fill fraction of the element the fitted silhouette spans
+	//!        (1.0 = edge to edge, below 1 leaves a margin, above 1
+	//!        deliberately crops). Ignored by FitMode::AABB.
+	void setFitMode(FitMode mode, f32 fill = 1.0f) noexcept
+	{
+		m_fit_mode = mode;
+		m_fit_fill = fill;
+	}
 #endif
 
 	virtual void draw();
@@ -67,6 +97,24 @@ public:
 
 private:
 	void calcOptimalDistance();
+#if IS_VOPI_ENGINE
+	//! World-space aabb of the primary mesh unioned with every attachment,
+	//! at whatever pose they currently hold.
+	core::aabbox3df getSceneBox() const;
+	//! getSceneBox() unioned over the whole animation loop, so the framing
+	//! covers every pose the idle loop reaches instead of only the one
+	//! instant calcOptimalDistance() happens to sample. Leaves the mesh on
+	//! the frame it was called with.
+	core::aabbox3df getAnimatedSceneBox();
+	//! Orthonormal camera basis for the current camera position, matching
+	//! the look-at matrix Irrlicht builds from it.
+	void getCameraBasis(v3f &right, v3f &up, v3f &fwd) const;
+	//! calcOptimalDistance() body for FitMode::SILHOUETTE.
+	//! @return the camera distance, or 0 when the camera set-up is
+	//!         degenerate and the caller should keep the distance it
+	//!         already has.
+	f32 calcSilhouetteDistance(f32 h_slope, f32 v_slope);
+#endif
 	void updateTargetPos();
 	void updateCamera(scene::ISceneNode *target);
 	void setCameraRotation(v3f rot);
@@ -93,6 +141,11 @@ private:
 	// called (which runs from setMesh swap and from ~GUIScene via the
 	// IGUIElement base destructor path).
 	std::vector<scene::AnimatedMeshSceneNode *> m_attachments;
+
+	// Framing strategy; AABB keeps the pre-existing behaviour and is what
+	// every element gets unless the formspec opts into something else.
+	FitMode m_fit_mode = FitMode::AABB;
+	f32 m_fit_fill = 1.0f;
 #endif
 
 	f32 m_cam_distance = 50.f;

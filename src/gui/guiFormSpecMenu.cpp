@@ -3367,17 +3367,65 @@ void GUIFormSpecMenu::parseMap(parserData *data, const std::string &element)
 	m_fields.push_back(spec);
 }
 
+#if IS_VOPI_ENGINE
+namespace {
+// VOPI extension — the `fit` field of model[], selecting how GUIScene frames
+// the mesh. Syntax: `<mode>` or `<mode>:<fill>`.
+//
+// An empty (or absent) field leaves the GUIScene default alone, which is the
+// pre-existing axis-aligned framing — that is what keeps every formspec that
+// predates this parameter, notably the player skin preview, pixel-identical.
+void apply_model_fit(GUIScene *e, const std::string &fit)
+{
+	if (fit.empty())
+		return;
+
+	std::string mode = fit;
+	f32 fill = 1.0f;
+
+	const size_t sep = fit.find(':');
+	if (sep != std::string::npos) {
+		mode = fit.substr(0, sep);
+		// stof() yields 0 for anything unparseable and never returns a
+		// non-finite value, so a single positivity test covers both.
+		fill = stof(fit.substr(sep + 1));
+		if (fill <= 0.f) {
+			warningstream << "Invalid model element: fit fill '"
+				<< fit.substr(sep + 1) << "' is not a positive number, "
+				<< "using 1.0" << std::endl;
+			fill = 1.0f;
+		}
+	}
+
+	if (mode == "aabb")
+		e->setFitMode(GUIScene::FitMode::AABB, fill);
+	else if (mode == "silhouette")
+		e->setFitMode(GUIScene::FitMode::SILHOUETTE, fill);
+	else
+		warningstream << "Invalid model element: unknown fit mode '"
+			<< mode << "'" << std::endl;
+}
+} // namespace
+#endif
+
 void GUIFormSpecMenu::parseModel(parserData *data, const std::string &element)
 {
 	MY_CHECKCLIENT("model");
 
+	// VOPI Engine adds one optional field (`fit`) past upstream's 10.
+#if IS_VOPI_ENGINE
+	const size_t args_max = 11;
+#else
+	const size_t args_max = 10;
+#endif
+
 	std::vector<std::string> parts;
-	if (!precheckElement("model", element, 5, 10, parts))
+	if (!precheckElement("model", element, 5, args_max, parts))
 		return;
 
 	// Avoid length checks by resizing
-	if (parts.size() < 10)
-		parts.resize(10);
+	if (parts.size() < args_max)
+		parts.resize(args_max);
 
 	std::vector<std::string> v_pos = split(parts[0], ',');
 	std::vector<std::string> v_geom = split(parts[1], ',');
@@ -3462,6 +3510,10 @@ void GUIFormSpecMenu::parseModel(parserData *data, const std::string &element)
 
 	e->setFrameLoop(frame_loop_begin, frame_loop_end);
 	e->setAnimationSpeed(stof(speed));
+
+#if IS_VOPI_ENGINE
+	apply_model_fit(e, unescape_string(parts[10]));
+#endif
 
 	auto style = getStyleForElement("model", spec.fname);
 	e->setStyles(style);

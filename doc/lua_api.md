@@ -3300,7 +3300,7 @@ Elements
     * Example (player icon, icon size, then a coloured + an icon marker):
       `map[0,0;5,5;worldmap;256;;sky.png;0.5;10,8,-4,#ff0000;120,8,60,#00ff00,home.png]`
 
-### `model[<X>,<Y>;<W>,<H>;<name>;<mesh>;<textures>;<rotation>;<continuous>;<mouse control>;<frame loop range>;<animation speed>]`
+### `model[<X>,<Y>;<W>,<H>;<name>;<mesh>;<textures>;<rotation>;<continuous>;<mouse control>;<frame loop range>;<animation speed>;<fit>]`
 
 * Show a mesh model.
 * `name`: Element name that can be used for styling
@@ -3315,6 +3315,33 @@ Elements
     * Defaults to the full range of all available frames.
     * Syntax: `<begin>,<end>` (two numbers separated by a comma)
 * `animation speed` (Optional): Sets the animation speed in FPS, as a number. Default: 0.0
+* `fit` (Optional): **VOPI Engine extension.** How the camera distance is
+  chosen so the mesh fills the element. Syntax: `<mode>` or `<mode>:<fill>`.
+    * Omitted or empty behaves exactly like `aabb`, so formspecs written
+      before this parameter existed are unaffected.
+    * `aabb` (default): fit the mesh's axis-aligned bounding box, using
+      `max(x extent, z extent)` as the horizontal size regardless of the
+      camera angle. Apparent size therefore depends on the mesh's
+      proportions — a long mesh is framed by its length and looks small
+      next to a compact one of the same height.
+    * `silhouette`: fit the outline the camera actually sees. The bounding
+      box corners are projected onto the view plane at the element's
+      `rotation`, and the projected width/height are what gets fitted.
+      Meshes with very different proportions then appear at a consistent
+      size. The box is also swept across the `frame loop range`, so a pose
+      that only occurs part-way through the loop cannot grow outside the
+      framed area.
+    * The silhouette is fitted for the initial `rotation` only. If the mesh
+      turns afterwards — `continuous` is `true`, or `mouse control` is on
+      (which it is by default when that field is left empty) — the outline
+      changes with the angle and can extend past the element. Meant for
+      fixed-angle previews; disable both, or use `aabb`, for spinning ones.
+    * `fill` (Optional): fraction of the element the fitted outline spans,
+      as a positive number. Default `1.0`: the bounding box outline touches
+      the element edge on its larger projected axis (the mesh itself sits
+      inside its box, so it may not quite touch); below 1 leaves a margin,
+      above 1 deliberately crops. Has no effect in `aabb` mode.
+    * Example: `...;24;silhouette:0.9]`
 
 ### `model_overlay[<parent_name>;<mesh>;<textures>;<bone>;<position>;<rotation>;<scale>]`
 

@@ -9,6 +9,9 @@
 #include <BoneSceneNode.h>
 #include <IVideoDriver.h>
 #include <ISceneManager.h>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include "log.h"
 #include "porting.h"
 #include "client/mesh.h"
@@ -290,20 +293,9 @@ void GUIScene::setAnimationSpeed(f32 speed)
 /* Camera control functions */
 
 #if IS_VOPI_ENGINE
-void GUIScene::calcOptimalDistance()
-{
-	// Update absolute transforms across the whole subtree before reading
-	// transformed bboxes. OnAnimate(0) is the recursive variant —
-	// updateAbsolutePosition() is NOT recursive (see ISceneNode.h docs),
-	// so calling it only on m_mesh or only on the attachments would leave
-	// the intermediate bone joints stale and make attachment world
-	// positions wrong on first frame. This matters because
-	// calcOptimalDistance runs once (gated by m_initial_rotation) before
-	// the first drawAll(), so without this the camera distance would be
-	// computed against incorrect aabb and stuck wrong for the formspec's
-	// lifetime.
-	m_mesh->OnAnimate(0);
 
+core::aabbox3df GUIScene::getSceneBox() const
+{
 	// Start from the primary mesh aabb. Use transformed (world-space) box
 	// so attachments — which always live in world coords relative to the
 	// primary's joints — can be unioned in directly. For the primary, the
@@ -319,21 +311,149 @@ void GUIScene::calcOptimalDistance()
 		box.addInternalBox(att->getTransformedBoundingBox());
 	}
 
-	f32 width  = box.MaxEdge.X - box.MinEdge.X;
-	f32 height = box.MaxEdge.Y - box.MinEdge.Y;
-	f32 depth  = box.MaxEdge.Z - box.MinEdge.Z;
-	f32 max_width = width > depth ? width : depth;
+	return box;
+}
+
+core::aabbox3df GUIScene::getAnimatedSceneBox()
+{
+	core::aabbox3df box = getSceneBox();
+
+	const f32 start = m_mesh->getStartFrame();
+	const f32 end = m_mesh->getEndFrame();
+	if (!(end > start))
+		return box; // static mesh or single-frame loop, nothing to sweep
+
+	// The framing is computed once, but the element then plays its loop for
+	// as long as the formspec is open. Sampling a single instant would let
+	// any pose that only occurs mid-loop (a head lifting, a tail swinging)
+	// grow outside the area we framed. Sweep the loop and frame the union
+	// instead — the cost is bounded and paid once: SkinnedMesh's per-frame
+	// box is built from joint boxes, not from vertices, so a sample is a
+	// walk over the skeleton rather than over the mesh (tens of
+	// microseconds for a ~20 joint skeleton).
+	//
+	// Sample every frame, since a frame is the unit animations are keyed
+	// in, but cap the count so a very long loop stays a bounded one-time
+	// cost; the cap still puts a sample within a couple of frames of every
+	// pose for the loop lengths idle animations actually use.
+	static const f32 MAX_SAMPLES = 64.f;
+	// Clamp while still in float: an absurdly long loop must not overflow
+	// the integer conversion.
+	const u32 samples = (u32)core::clamp(std::ceil(end - start), 1.f, MAX_SAMPLES);
+	const f32 restore = m_mesh->getFrameNr();
+
+	for (u32 i = 0; i <= samples; ++i) {
+		m_mesh->setCurrentFrame(start + (end - start) * ((f32)i / samples));
+		// OnAnimate() derives its delta as timeMs - LastTimeMs, and
+		// LastTimeMs stays 0 until the first drawAll(); calcOptimalDistance
+		// runs before that (see draw()), so passing 0 gives a zero delta and
+		// buildFrameNr() leaves the frame we just set alone. OnAnimate then
+		// only re-poses the joints and recomputes the node aabb, which is
+		// exactly what we want. Passing anything else here would advance the
+		// animation instead of sampling it.
+		m_mesh->OnAnimate(0);
+		box.addInternalBox(getSceneBox());
+	}
+
+	// Put the mesh back where we found it: draw() proceeds straight to
+	// drawAll() after this, and the first visible frame should be the one
+	// the frame loop asked for, not wherever the sweep happened to stop.
+	m_mesh->setCurrentFrame(restore);
+	m_mesh->OnAnimate(0);
+
+	return box;
+}
+
+void GUIScene::getCameraBasis(v3f &right, v3f &up, v3f &fwd) const
+{
+	// Take the view direction from the camera offset itself rather than
+	// rebuilding it from Euler angles: cameraLoop() only rescales
+	// (m_cam_pos - m_target_pos) to the new distance, so this direction is
+	// exactly the one the mesh will be seen from.
+	fwd = m_target_pos - m_cam_pos;
+	fwd.normalize();
+
+	// Match buildCameraLookAtMatrixLH(), which cameraLoop() drives through
+	// setTarget(): x = normalize(up_world x forward), y = forward x x.
+	// correctBounds() keeps the pitch within +-60 degrees, so forward is
+	// never parallel to the world up and neither cross product degenerates.
+	right = v3f(0.f, 1.f, 0.f).crossProduct(fwd);
+	right.normalize();
+	up = fwd.crossProduct(right);
+	up.normalize();
+}
+
+f32 GUIScene::calcSilhouetteDistance(f32 h_slope, f32 v_slope)
+{
+	// Degenerate camera offset: nothing sane to project along.
+	if (m_cam_pos.getDistanceFromSQ(m_target_pos) <= 0.f)
+		return 0.f;
+
+	const core::aabbox3df box = getAnimatedSceneBox();
+
+	v3f right, up, fwd;
+	getCameraBasis(right, up, fwd);
+
+	const f32 fill = core::clamp(m_fit_fill, 0.01f, 4.0f);
+
+	// A corner at lateral offset x and depth offset z from the target (both
+	// in camera axes) projects to |x| / ((D + z) * h_slope/2) of the half
+	// width at camera distance D, so keeping it inside the `fill` fraction
+	// of the frame needs D >= 2|x| / (h_slope * fill) - z; likewise for the
+	// vertical axis. The distance is the largest of those over all 8
+	// corners and both axes, which puts the most demanding corner exactly
+	// on the edge and every other one inside. Fitting per corner rather
+	// than the maximum lateral extent at the minimum depth matters: at an
+	// oblique yaw the widest corner sits mid-depth, and using the near
+	// depth for it would leave a margin that grows with box depth, i.e.
+	// exactly the proportion dependence this mode is meant to remove.
+	//
+	// Offsets are measured from the camera target, not the box centre: the
+	// camera always aims at m_target_pos, so an off-centre box (a tall
+	// attachment on one side) has to fit around the target or half of it
+	// falls outside the rect.
+	v3f corners[8];
+	box.getEdges(corners);
+
+	f32 dist = 0.f;
+	f32 near_depth = std::numeric_limits<f32>::max();
+	for (const v3f &corner : corners) {
+		const v3f p = corner - m_target_pos;
+		const f32 z = p.dotProduct(fwd);
+		dist = std::max(dist, 2.f * std::fabs(p.dotProduct(right)) / (h_slope * fill) - z);
+		dist = std::max(dist, 2.f * std::fabs(p.dotProduct(up)) / (v_slope * fill) - z);
+		near_depth = std::min(near_depth, z);
+	}
+
+	// Keep the nearest corner in front of the near clip plane. Only meshes
+	// well under a node in size (or an aggressive fill) get this close, but
+	// a preview shown a little smaller than asked beats one with its front
+	// sliced off; the axis-aligned path has no such guard and can clip.
+	dist = std::max(dist, m_cam->getNearValue() * 1.05f - near_depth);
+
+	return std::isfinite(dist) && dist > 0.f ? dist : 0.f;
+}
+
+void GUIScene::calcOptimalDistance()
+{
+	// Update absolute transforms across the whole subtree before reading
+	// transformed bboxes. OnAnimate(0) is the recursive variant —
+	// updateAbsolutePosition() is NOT recursive (see ISceneNode.h docs),
+	// so calling it only on m_mesh or only on the attachments would leave
+	// the intermediate bone joints stale and make attachment world
+	// positions wrong on first frame. This matters because
+	// calcOptimalDistance runs once (gated by m_initial_rotation) before
+	// the first drawAll(), so without this the camera distance would be
+	// computed against incorrect aabb and stuck wrong for the formspec's
+	// lifetime.
+	m_mesh->OnAnimate(0);
 
 	core::recti rect = getAbsolutePosition();
 
-	// Guard degenerate inputs: a flat/empty mesh aabb (max_width or height
-	// <= 0) or a zero-sized element rect would make the divisions below
-	// produce inf/NaN and push the camera to infinity, blanking the
-	// preview for good. Keep the existing m_cam_distance in that case.
-	// (parseModelOverlay already rejects non-finite attachment transforms;
-	// this also covers genuinely empty primary geometry.)
-	if (max_width <= 0.f || height <= 0.f ||
-			rect.getWidth() <= 0 || rect.getHeight() <= 0) {
+	// Guard a zero-sized element rect: every path below divides by the rect
+	// dimensions, and inf/NaN there would push the camera to infinity and
+	// blank the preview for good. Keep the existing m_cam_distance instead.
+	if (rect.getWidth() <= 0 || rect.getHeight() <= 0) {
 		m_update_cam = true;
 		return;
 	}
@@ -344,6 +464,32 @@ void GUIScene::calcOptimalDistance()
 	f32 v_slope = 2.0f * tanf(fov * 0.5f);
 	f32 aspect = (f32)rect.getWidth() / (f32)rect.getHeight();
 	f32 h_slope = v_slope * aspect;
+
+	if (m_fit_mode == FitMode::SILHOUETTE) {
+		// A zero result means the geometry was degenerate; keep whatever
+		// distance we already have rather than teleporting the camera.
+		f32 dist = calcSilhouetteDistance(h_slope, v_slope);
+		if (dist > 0.f)
+			m_cam_distance = dist;
+		m_update_cam = true;
+		return;
+	}
+
+	core::aabbox3df box = getSceneBox();
+
+	f32 width  = box.MaxEdge.X - box.MinEdge.X;
+	f32 height = box.MaxEdge.Y - box.MinEdge.Y;
+	f32 depth  = box.MaxEdge.Z - box.MinEdge.Z;
+	f32 max_width = width > depth ? width : depth;
+
+	// Guard a flat/empty mesh aabb (max_width or height <= 0), which would
+	// make the divisions below produce inf/NaN the same way a zero-sized
+	// rect would. (parseModelOverlay already rejects non-finite attachment
+	// transforms; this also covers genuinely empty primary geometry.)
+	if (max_width <= 0.f || height <= 0.f) {
+		m_update_cam = true;
+		return;
+	}
 
 	f32 zoomX = rect.getWidth() / max_width;
 	f32 zoomY = rect.getHeight() / height;
