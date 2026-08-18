@@ -11,6 +11,9 @@
 #include "lua_api/l_menu_common.h"
 #include "lua_api/l_util.h"
 #include "lua_api/l_settings.h"
+#if IS_VOPI_ENGINE
+#include "lua_api/l_content_packs.h"
+#endif
 #include "log.h"
 #include "filesys.h"
 #include "porting.h"
@@ -58,12 +61,18 @@ void MainMenuScripting::initializeModApi(lua_State *L, int top)
 	ModApiUtil::Initialize(L, top);
 	ModApiMainMenuSound::Initialize(L, top);
 	ModApiHttp::Initialize(L, top);
+#if IS_VOPI_ENGINE
+	ModApiContentPacks::Initialize(L, top);
+#endif
 
 	asyncEngine.registerStateInitializer(registerLuaClasses);
 	asyncEngine.registerStateInitializer(ModApiMenuCommon::InitializeAsync);
 	asyncEngine.registerStateInitializer(ModApiMainMenu::InitializeAsync);
 	asyncEngine.registerStateInitializer(ModApiUtil::InitializeAsync);
 	asyncEngine.registerStateInitializer(ModApiHttp::InitializeAsync);
+#if IS_VOPI_ENGINE
+	asyncEngine.registerStateInitializer(ModApiContentPacks::Initialize);
+#endif
 
 	// Initialize async environment
 	asyncEngine.initialize(MAINMENU_NUM_ASYNC_THREADS);

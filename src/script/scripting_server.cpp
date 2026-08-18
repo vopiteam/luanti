@@ -33,6 +33,9 @@
 #include "lua_api/l_http.h"
 #include "lua_api/l_storage.h"
 #include "lua_api/l_ipc.h"
+#if IS_VOPI_ENGINE
+#include "lua_api/l_content_packs.h"
+#endif
 
 extern "C" {
 #include <lualib.h>
@@ -112,6 +115,9 @@ void ServerScripting::initAsync()
 	asyncEngine.registerStateInitializer(ModApiItem::InitializeAsync);
 	asyncEngine.registerStateInitializer(ModApiServer::InitializeAsync);
 	asyncEngine.registerStateInitializer(ModApiIPC::Initialize);
+#if IS_VOPI_ENGINE
+	asyncEngine.registerStateInitializer(ModApiContentPacks::Initialize);
+#endif
 	// not added: ModApiMapgen is a minefield for thread safety
 	// not added: ModApiHttp async api can't really work together with our jobs
 	// not added: ModApiStorage is probably not thread safe(?)
@@ -157,6 +163,9 @@ void ServerScripting::InitializeModApi(lua_State *L, int top)
 	ModApiStorage::Initialize(L, top);
 	ModApiChannels::Initialize(L, top);
 	ModApiIPC::Initialize(L, top);
+#if IS_VOPI_ENGINE
+	ModApiContentPacks::Initialize(L, top);
+#endif
 }
 
 void ServerScripting::InitializeAsync(lua_State *L, int top)

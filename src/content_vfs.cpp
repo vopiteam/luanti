@@ -24,9 +24,9 @@
 	#include <luajit.h>
 #endif
 
+#include <sys/stat.h>
 #ifndef _WIN32
 	#include <fcntl.h>
-	#include <sys/stat.h>
 	#include <unistd.h>
 #endif
 
@@ -118,6 +118,10 @@ bool parseHex16(const std::string &hex, unsigned char out[16])
 	return true;
 }
 
+// admitPack() refusal for world packs; the directory scanners recognize it
+// to skip such files quietly instead of logging an error.
+const char *const WORLD_PACK_NOT_MOUNTABLE = "world packs are copied into a world, not mounted";
+
 // A container-relative entry path must stay inside the mount.
 bool isSafeEntryPath(const std::string &p)
 {
@@ -136,13 +140,40 @@ bool isSafeEntryPath(const std::string &p)
 	return p.find('\\') == std::string::npos;
 }
 
+#ifndef _WIN32
+// File identity from a stat buffer, with nanosecond mtime where the
+// platform provides it: an installed pack replaced twice within a second
+// by files of equal size that reuse the inode number must still register
+// as changed.
+ContentPack::FileIdentity identityFromStat(const struct stat &st)
+{
+	ContentPack::FileIdentity id;
+	id.device = (u64)st.st_dev;
+	id.inode = (u64)st.st_ino;
+	id.size = (u64)st.st_size;
+#if defined(__APPLE__)
+	id.mtime = (s64)st.st_mtimespec.tv_sec * 1000000000LL + st.st_mtimespec.tv_nsec;
+#elif defined(__linux__) || defined(__ANDROID__)
+	id.mtime = (s64)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec;
+#else
+	id.mtime = (s64)st.st_mtime * 1000000000LL;
+#endif
+	return id;
+}
+#endif
+
 } // namespace
 
-// Weak default: no key provider. Overridden by the platform layer's strong
-// definition when it is linked in (MSVC has no weak symbols; there the
-// platform layer must call ContentVFS::setKeyProvider() itself before mount).
+// Weak defaults: no key provider, no platform configuration. Overridden by
+// the platform layer's strong definitions when it is linked in (MSVC has no
+// weak symbols; there the platform layer must call the ContentVFS setters
+// itself before mount).
 #if defined(__GNUC__) || defined(__clang__)
 extern "C" __attribute__((weak)) void vopi_install_content_key_provider()
+{
+}
+
+extern "C" __attribute__((weak)) void vopi_configure_content_vfs()
 {
 }
 #endif
@@ -218,6 +249,7 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
 		return nullptr;
 	}
 	file_size = (u64)end;
+	statIdentity(path, pack->m_file_identity);
 #else
 	// fstat rather than fseek/ftell: ftell returns long (32-bit on
 	// armeabi-v7a) and -1 on error, which as u64 would defeat every bounds
@@ -233,6 +265,9 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
 		return nullptr;
 	}
 	file_size = (u64)st.st_size;
+	// Identity of the opened inode itself (not a second stat by path):
+	// this is what syncInstalledPacks compares against later.
+	pack->m_file_identity = identityFromStat(st);
 #endif
 
 	char header[KPK_HEADER_SIZE];
@@ -307,6 +342,8 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
 	pack->m_version = meta["version"].asInt();
 	if (meta["luajitVersion"].isString())
 		pack->m_luajit_version = meta["luajitVersion"].asString();
+	if (meta["minAppVersion"].isString())
+		pack->m_min_app_version = meta["minAppVersion"].asString();
 
 	// Index
 	std::string index_stored(index_size, '\0');
@@ -434,6 +471,26 @@ bool ContentPack::readEntry(const Entry &entry, std::string &out) const
 	return out.size() == entry.raw_size;
 }
 
+bool ContentPack::statIdentity(const std::string &path, FileIdentity &out)
+{
+#ifdef _WIN32
+	struct _stat64 st{};
+	if (_stat64(path.c_str(), &st) != 0 || !(st.st_mode & _S_IFREG))
+		return false;
+	out.device = (u64)st.st_dev;
+	out.inode = (u64)st.st_ino;
+	out.size = (u64)st.st_size;
+	out.mtime = (s64)st.st_mtime * 1000000000LL;
+	return true;
+#else
+	struct stat st{};
+	if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode))
+		return false;
+	out = identityFromStat(st);
+	return true;
+#endif
+}
+
 /*
 	ContentVFS
 */
@@ -442,6 +499,61 @@ ContentVFS &ContentVFS::get()
 {
 	static ContentVFS instance;
 	return instance;
+}
+
+const char *ContentVFS::sourceName(Source s)
+{
+	return s == Source::Installed ? "installed" : "bundled";
+}
+
+void ContentVFS::setInstalledPacksDir(const std::string &dir)
+{
+	m_installed_dir = dir.empty() ? "" : normalizePath(dir);
+}
+
+std::string ContentVFS::installedPacksDir() const
+{
+	if (!m_installed_dir.empty())
+		return m_installed_dir;
+	return normalizePath(porting::path_user + "/packs");
+}
+
+void ContentVFS::setAppVersion(const std::string &version)
+{
+	m_app_version = version;
+}
+
+int ContentVFS::compareVersions(const std::string &a, const std::string &b)
+{
+	// Component by component; a missing component counts as 0 so
+	// "1.4" == "1.4.0". Digits are read until the first non-digit of the
+	// component, so a stray suffix ("1.4.2-rc") neither breaks the
+	// comparison nor participates in it.
+	auto next_component = [](const std::string &s, size_t &pos) -> u64 {
+		u64 v = 0;
+		bool in_digits = true;
+		while (pos < s.size() && s[pos] != '.') {
+			const char c = s[pos++];
+			if (in_digits && c >= '0' && c <= '9') {
+				if (v < ((u64)1 << 40))
+					v = v * 10 + (u64)(c - '0');
+			} else {
+				in_digits = false; // suffix: skipped, not compared
+			}
+		}
+		if (pos < s.size())
+			pos++; // the '.'
+		return v;
+	};
+
+	size_t ia = 0, ib = 0;
+	while (ia < a.size() || ib < b.size()) {
+		const u64 va = next_component(a, ia);
+		const u64 vb = next_component(b, ib);
+		if (va != vb)
+			return va < vb ? -1 : 1;
+	}
+	return 0;
 }
 
 std::string ContentVFS::normalizePath(const std::string &path)
@@ -515,62 +627,318 @@ std::string ContentVFS::resolveMountSpec(const std::string &spec)
 	return normalizePath(full);
 }
 
-bool ContentVFS::mountPackFile(const std::string &pack_path, std::string &err)
+std::shared_ptr<const ContentVFS::MountTable> ContentVFS::table() const
 {
-	auto pack = ContentPack::open(pack_path, m_key_provider, err);
-	if (!pack)
-		return false;
+	std::lock_guard<std::mutex> lock(m_table_mutex);
+	return m_table;
+}
 
-	if (getPack(pack->id())) {
-		err = "pack id '" + pack->id() + "' is already mounted";
+bool ContentVFS::admitPack(const ContentPack &pack, Source source,
+		std::string &prefix, std::string &err) const
+{
+	// World packs are templates to copy into a world, never mounts.
+	if (pack.type() == "world") {
+		err = WORLD_PACK_NOT_MOUNTABLE;
+		return false;
+	}
+	// Code ships only with the application: nothing that could carry
+	// bytecode is accepted from the installed (downloaded) directory.
+	if (source == Source::Installed && pack.type() != "content") {
+		err = "only 'content' packs may be mounted from the installed packs "
+				"directory (pack type is '" + pack.type() + "')";
 		return false;
 	}
 
 	// Bytecode is LuaJIT-version-locked (FORMAT.md §9): refusing the whole
 	// mount here beats confusing chunk-load errors deep inside mod loading.
-	if (!pack->luajitVersion().empty() &&
-			pack->luajitVersion() != runtimeLuaJITVersion()) {
+	if (!pack.luajitVersion().empty() &&
+			pack.luajitVersion() != runtimeLuaJITVersion()) {
 		const std::string runtime = runtimeLuaJITVersion();
-		err = "pack bytecode was compiled by LuaJIT " + pack->luajitVersion() +
+		err = "pack bytecode was compiled by LuaJIT " + pack.luajitVersion() +
 				" but the engine runs " +
 				(runtime.empty() ? "without LuaJIT" : ("LuaJIT " + runtime));
 		return false;
 	}
 
-	std::string prefix = resolveMountSpec(pack->mountSpec());
-	if (prefix.empty()) {
-		err = "unsupported mount spec '" + pack->mountSpec() + "'";
+	// A pack may demand a newer application than the one running: its
+	// registration code is not there yet, so it must not be mounted
+	// (CONTENT_DELIVERY_DESIGN §5.1). No app version = no gate.
+	if (!m_app_version.empty() && !pack.minAppVersion().empty() &&
+			compareVersions(pack.minAppVersion(), m_app_version) > 0) {
+		err = "pack requires app version " + pack.minAppVersion() +
+				" but " + m_app_version + " is running";
 		return false;
 	}
 
-	actionstream << "ContentVFS: mounted " << pack->id()
-			<< " v" << pack->version()
-			<< " (" << pack->entries().size() << " files"
-			<< (pack->isEncrypted() ? ", encrypted" : "") << ") at "
-			<< prefix << std::endl;
-
-	m_mounts.push_back({std::move(prefix), std::move(pack)});
-	if (!m_active) {
-		m_active = true;
-#if CHECK_CLIENT_BUILD()
-		io::setExternalFileFetcher(contentVFSIrrFetcher);
-#endif
+	prefix = resolveMountSpec(pack.mountSpec());
+	if (prefix.empty()) {
+		err = "unsupported mount spec '" + pack.mountSpec() + "'";
+		return false;
 	}
 	return true;
 }
 
-void ContentVFS::mountPacksFromDir(const std::string &dir)
+bool ContentVFS::mountPackFile(const std::string &pack_path, Source source,
+		std::string &err)
 {
-	// Native listing on purpose: pack files are always real files.
+	std::string err_open;
+	std::unique_ptr<ContentPack> opened =
+			ContentPack::open(pack_path, m_key_provider, err_open);
+	if (!opened) {
+		err = err_open;
+		return false;
+	}
+	std::shared_ptr<ContentPack> pack(std::move(opened));
+
+	std::string prefix;
+	if (!admitPack(*pack, source, prefix, err))
+		return false;
+
+	{
+		std::lock_guard<std::mutex> lock(m_write_mutex);
+		for (const Candidate &c : m_candidates) {
+			if (c.pack->fileIdentity() == pack->fileIdentity() &&
+					c.pack->filePath() == pack->filePath()) {
+				err = "pack file is already mounted";
+				return false;
+			}
+		}
+		actionstream << "ContentVFS: mounted " << sourceName(source) << " pack "
+				<< pack->id() << " v" << pack->version()
+				<< " (" << pack->entries().size() << " files"
+				<< (pack->isEncrypted() ? ", encrypted" : "") << ") at "
+				<< prefix << std::endl;
+		addCandidate(source, std::move(prefix), std::move(pack));
+	}
+	return true;
+}
+
+void ContentVFS::addCandidate(Source source, std::string prefix,
+		std::shared_ptr<ContentPack> pack)
+{
+	// Same file path = the delivery layer replaced the file in place
+	// (atomic rename): the old candidate goes, whatever its id.
+	for (auto it = m_candidates.begin(); it != m_candidates.end(); ++it) {
+		if (it->pack->filePath() == pack->filePath()) {
+			m_candidates.erase(it);
+			break;
+		}
+	}
+	m_candidates.push_back({source, std::move(prefix), std::move(pack)});
+	republish();
+}
+
+void ContentVFS::republish()
+{
+	// Winner per id: the highest version; on equal versions the installed
+	// copy; id as a deterministic tie-break.
+	std::vector<const Candidate *> ordered;
+	ordered.reserve(m_candidates.size());
+	for (const Candidate &c : m_candidates)
+		ordered.push_back(&c);
+	std::stable_sort(ordered.begin(), ordered.end(),
+			[](const Candidate *a, const Candidate *b) {
+		if (a->pack->version() != b->pack->version())
+			return a->pack->version() > b->pack->version();
+		if (a->source != b->source)
+			return a->source == Source::Installed;
+		return a->pack->id() < b->pack->id();
+	});
+
+	// One visible pack per id: the highest version; on equal versions the
+	// installed copy (a shadowed bundled twin is the swap-window case).
+	auto fresh = std::make_shared<MountTable>();
+	std::set<std::string> ids;
+	for (const Candidate *c : ordered) {
+		if (!ids.insert(c->pack->id()).second) {
+			// Expected during a delivery swap and for a bundled twin of an
+			// installed pack; repeated on every republish, so keep it quiet.
+			infostream << "ContentVFS: " << sourceName(c->source) << " pack "
+					<< c->pack->id() << " v" << c->pack->version()
+					<< " is shadowed by a newer copy" << std::endl;
+			continue;
+		}
+		fresh->push_back({c->source, c->prefix, c->pack});
+	}
+	// Lookup order among the winners: installed first, then higher version,
+	// then id.
+	std::stable_sort(fresh->begin(), fresh->end(),
+			[](const MountInfo &a, const MountInfo &b) {
+		if (a.source != b.source)
+			return a.source == Source::Installed;
+		if (a.pack->version() != b.pack->version())
+			return a.pack->version() > b.pack->version();
+		return a.pack->id() < b.pack->id();
+	});
+
+	// A path provided by two different packs is a packaging bug the
+	// catalog builder is supposed to catch; here it only gets a warning
+	// so a stray one is visible instead of silently resolved.
+	for (size_t i = 0; i < fresh->size(); i++) {
+		for (size_t j = i + 1; j < fresh->size(); j++) {
+			const MountInfo &hi = (*fresh)[i];
+			const MountInfo &lo = (*fresh)[j];
+			if (hi.prefix != lo.prefix)
+				continue;
+			size_t collisions = 0;
+			std::string example;
+			const auto &small = hi.pack->entries().size() <= lo.pack->entries().size()
+					? hi.pack->entries() : lo.pack->entries();
+			const ContentPack &other = hi.pack->entries().size() <= lo.pack->entries().size()
+					? *lo.pack : *hi.pack;
+			for (const auto &e : small) {
+				if (other.findEntry(e.first)) {
+					if (collisions++ == 0)
+						example = e.first;
+				}
+			}
+			if (collisions) {
+				warningstream << "ContentVFS: packs " << hi.pack->id() << " and "
+						<< lo.pack->id() << " both provide " << collisions
+						<< " path(s) under " << hi.prefix << " (e.g. " << example
+						<< "); " << hi.pack->id() << " wins" << std::endl;
+			}
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(m_table_mutex);
+		m_table = fresh;
+	}
+	m_active.store(!fresh->empty(), std::memory_order_release);
+
+#if CHECK_CLIENT_BUILD()
+	if (!fresh->empty() && !m_fetcher_installed) {
+		m_fetcher_installed = true;
+		io::setExternalFileFetcher(contentVFSIrrFetcher);
+	}
+#endif
+}
+
+void ContentVFS::mountPacksFromDir(const std::string &dir, Source source)
+{
+	// Pack files are always real files; no mount covers a packs directory,
+	// so the overlay adds nothing to this listing.
 	for (const fs::DirListNode &node : fs::GetDirListing(dir)) {
 		if (node.dir || node.name.size() < 5 ||
 				node.name.compare(node.name.size() - 4, 4, ".kpk") != 0)
 			continue;
 		const std::string path = dir + DIR_DELIM + node.name;
 		std::string err;
-		if (!mountPackFile(path, err))
+		if (mountPackFile(path, source, err))
+			continue;
+		if (err == WORLD_PACK_NOT_MOUNTABLE)
+			verbosestream << "ContentVFS: skipping world pack " << path << std::endl;
+		else
 			errorstream << "ContentVFS: failed to mount " << path
 					<< ": " << err << std::endl;
+	}
+}
+
+void ContentVFS::mountStartupPacks()
+{
+	mountPacksFromDir(porting::path_share + DIR_DELIM + "packs", Source::Bundled);
+	syncInstalledPacks();
+}
+
+void ContentVFS::logMountSummary() const
+{
+	const std::vector<MountInfo> mounts = getMounts();
+	actionstream << "ContentVFS: " << mounts.size() << " pack(s) mounted; installed packs directory: "
+			<< installedPacksDir() << std::endl;
+	for (const MountInfo &m : mounts) {
+		actionstream << "ContentVFS:   " << sourceName(m.source) << " " << m.pack->id()
+				<< " v" << m.pack->version()
+				<< " (" << m.pack->entries().size() << " files"
+				<< (m.pack->isEncrypted() ? ", encrypted" : "") << ") at "
+				<< m.prefix << std::endl;
+	}
+}
+
+void ContentVFS::syncInstalledPacks()
+{
+	const std::string dir = installedPacksDir();
+
+	// Run-in-place builds have path_user == path_share: the "installed"
+	// directory is then the bundled one, already mounted as such — do not
+	// reconcile the same files a second time under installed rules.
+	if (dir == normalizePath(porting::path_share + "/packs"))
+		return;
+
+	// What is on disk now: regular *.kpk files with their identity.
+	std::map<std::string, ContentPack::FileIdentity> on_disk;
+	for (const fs::DirListNode &node : fs::GetDirListing(dir)) {
+		if (node.dir || node.name.size() < 5 ||
+				node.name.compare(node.name.size() - 4, 4, ".kpk") != 0)
+			continue;
+		const std::string path = normalizePath(dir + "/" + node.name);
+		ContentPack::FileIdentity id;
+		if (ContentPack::statIdentity(path, id))
+			on_disk[path] = id;
+	}
+
+	std::vector<std::string> to_open;
+	{
+		std::lock_guard<std::mutex> lock(m_write_mutex);
+
+		// Drop installed candidates whose file vanished or changed identity;
+		// changed ones are reopened below (their new inode may be a
+		// different pack version — or garbage, which then just fails).
+		std::set<std::string> still_current;
+		bool changed = false;
+		const std::string dir_prefix = dir + "/";
+		for (auto it = m_candidates.begin(); it != m_candidates.end();) {
+			// Only packs that live in the installed directory are reconciled
+			// against it (a test or tool may mount an installed-class pack
+			// from elsewhere; that one is left alone).
+			if (it->source != Source::Installed ||
+					it->pack->filePath().compare(0, dir_prefix.size(), dir_prefix) != 0) {
+				++it;
+				continue;
+			}
+			const auto now = on_disk.find(it->pack->filePath());
+			if (now != on_disk.end() && now->second == it->pack->fileIdentity()) {
+				still_current.insert(it->pack->filePath());
+				++it;
+				continue;
+			}
+			actionstream << "ContentVFS: installed pack " << it->pack->id()
+					<< " v" << it->pack->version()
+					<< (now != on_disk.end() ? " changed on disk" : " was removed")
+					<< std::endl;
+			it = m_candidates.erase(it);
+			changed = true;
+		}
+		if (changed)
+			republish();
+
+		// Files refused earlier are not retried (or re-logged) until they
+		// change; entries for vanished files are forgotten.
+		for (auto it = m_ignored_installed.begin(); it != m_ignored_installed.end();) {
+			const auto now = on_disk.find(it->first);
+			if (now == on_disk.end() || now->second != it->second)
+				it = m_ignored_installed.erase(it);
+			else
+				++it;
+		}
+
+		for (const auto &kv : on_disk) {
+			if (!still_current.count(kv.first) && !m_ignored_installed.count(kv.first))
+				to_open.push_back(kv.first);
+		}
+	}
+
+	for (const std::string &path : to_open) {
+		std::string err;
+		if (mountPackFile(path, Source::Installed, err))
+			continue;
+		if (err == WORLD_PACK_NOT_MOUNTABLE)
+			verbosestream << "ContentVFS: not mounting world pack " << path << std::endl;
+		else
+			errorstream << "ContentVFS: failed to mount installed pack " << path
+					<< ": " << err << std::endl;
+		std::lock_guard<std::mutex> lock(m_write_mutex);
+		m_ignored_installed[path] = on_disk[path];
 	}
 }
 
@@ -589,7 +957,7 @@ std::string ContentVFS::runtimeLuaJITVersion()
 
 bool ContentVFS::isTrustedCodePath(const std::string &path) const
 {
-	if (!m_active)
+	if (!isActive())
 		return false;
 
 	// A loose file shadows the pack entry and is what fs::ReadFile actually
@@ -600,38 +968,48 @@ bool ContentVFS::isTrustedCodePath(const std::string &path) const
 
 	const std::string norm = normalizePath(path);
 	std::string rel;
-	for (const Mount &m : m_mounts) {
+	const auto t = table();
+	for (const MountInfo &m : *t) {
 		if (!relativeToPrefix(norm, m.prefix, &rel) || rel.empty())
 			continue;
 		if (m.pack->findEntry(rel))
-			return m.pack->type() == "base";
+			return m.pack->type() == "base" && m.source == Source::Bundled;
 	}
 	return false;
 }
 
 void ContentVFS::unmountAll()
 {
-	m_mounts.clear();
-	m_active = false;
+	std::lock_guard<std::mutex> lock(m_write_mutex);
+	m_candidates.clear();
+	m_ignored_installed.clear();
+	republish();
 }
 
-const ContentPack *ContentVFS::getPack(const std::string &id) const
+std::shared_ptr<const ContentPack> ContentVFS::getPack(const std::string &id) const
 {
-	for (const Mount &m : m_mounts) {
+	const auto t = table();
+	for (const MountInfo &m : *t) {
 		if (m.pack->id() == id)
-			return m.pack.get();
+			return m.pack;
 	}
 	return nullptr;
 }
 
+std::vector<ContentVFS::MountInfo> ContentVFS::getMounts() const
+{
+	return *table();
+}
+
 ContentVFS::Stat ContentVFS::statPath(const std::string &path) const
 {
-	if (!m_active)
+	if (!isActive())
 		return Stat::NotFound;
 
 	const std::string norm = normalizePath(path);
 	std::string rel;
-	for (const Mount &m : m_mounts) {
+	const auto t = table();
+	for (const MountInfo &m : *t) {
 		if (relativeToPrefix(norm, m.prefix, &rel)) {
 			if (rel.empty())
 				return Stat::Dir; // the mount point itself
@@ -654,12 +1032,13 @@ ContentVFS::Stat ContentVFS::statPath(const std::string &path) const
 
 bool ContentVFS::readFile(const std::string &path, std::string &out) const
 {
-	if (!m_active)
+	if (!isActive())
 		return false;
 
 	const std::string norm = normalizePath(path);
 	std::string rel;
-	for (const Mount &m : m_mounts) {
+	const auto t = table();
+	for (const MountInfo &m : *t) {
 		if (!relativeToPrefix(norm, m.prefix, &rel) || rel.empty())
 			continue;
 		const ContentPack::Entry *e = m.pack->findEntry(rel);
@@ -672,7 +1051,7 @@ bool ContentVFS::readFile(const std::string &path, std::string &out) const
 void ContentVFS::addDirEntries(const std::string &path,
 		std::vector<fs::DirListNode> &listing) const
 {
-	if (!m_active)
+	if (!isActive())
 		return;
 
 	const std::string norm = normalizePath(path);
@@ -682,7 +1061,8 @@ void ContentVFS::addDirEntries(const std::string &path,
 		seen.insert(n.name);
 
 	std::string rel;
-	for (const Mount &m : m_mounts) {
+	const auto t = table();
+	for (const MountInfo &m : *t) {
 		if (relativeToPrefix(norm, m.prefix, &rel)) {
 			// children of `rel` inside the pack
 			const std::string want = rel.empty() ? "" : rel + "/";
@@ -721,7 +1101,7 @@ void ContentVFS::addDirEntries(const std::string &path,
 
 std::string ContentVFS::normalizedIfCovered(const std::string &path) const
 {
-	if (!m_active)
+	if (!isActive())
 		return "";
 	const std::string norm = normalizePath(path);
 	return statPath(norm) != Stat::NotFound ? norm : "";

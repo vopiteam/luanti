@@ -21,6 +21,9 @@
 #include "lua_api/l_vmanip.h"
 #include "lua_api/l_settings.h"
 #include "lua_api/l_ipc.h"
+#if IS_VOPI_ENGINE
+#include "lua_api/l_content_packs.h"
+#endif
 
 extern "C" {
 #include <lualib.h>
@@ -76,5 +79,8 @@ void EmergeScripting::InitializeModApi(lua_State *L, int top)
 	ModApiServer::InitializeAsync(L, top);
 	ModApiUtil::InitializeAsync(L, top);
 	ModApiIPC::Initialize(L, top);
+#if IS_VOPI_ENGINE
+	ModApiContentPacks::Initialize(L, top);
+#endif
 	// TODO ^ these should also be renamed to InitializeRO or such
 }

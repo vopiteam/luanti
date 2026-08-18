@@ -12,6 +12,9 @@
 #include "config.h"
 #include "content/content.h"
 #include "content/mods.h"
+#if IS_VOPI_ENGINE
+#include "content_vfs.h"
+#endif
 #include "filesys.h"
 #include "gettext.h"
 #include "guiMainMenu.h"
@@ -351,7 +354,7 @@ void GUIEngine::run()
 #if defined(__ANDROID__) || defined(__IOS__)
 	bool was_window_active = true;
 #endif
-#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+#if IS_VOPI_ENGINE
 	bool first_frame_reported = false;
 #endif
 
@@ -416,17 +419,32 @@ void GUIEngine::run()
 
 			driver->endScene();
 
-#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+#if IS_VOPI_ENGINE
 			// First presented frame of this menu session (run() is entered
-			// again after leaving a world): the platform can drop its startup
-			// splash now that there is something underneath it. The platform
-			// side is idempotent, so later sessions are harmless.
+			// again after leaving a world). Content packs installed while a
+			// world was running are mounted now — the menu is the only place
+			// the mount table may change (CONTENT_DELIVERY_DESIGN §5.3) — and
+			// then the platform is told the menu is up: it can drop its
+			// startup splash and start checking for new content. The
+			// platform side is idempotent, so later sessions are harmless.
 			if (!first_frame_reported) {
 				first_frame_reported = true;
+				ContentVFS::get().consumeResyncRequest();
+				ContentVFS::get().syncInstalledPacks();
+#if defined(__ANDROID__) || defined(__IOS__)
 				porting::onMainMenuShown();
+#endif
 			}
 #endif
 		}
+
+#if IS_VOPI_ENGINE
+		// The delivery layer finished installing a pack while we sit in the
+		// menu: pick it up on this frame, on the main thread, with no world
+		// alive to race against.
+		if (ContentVFS::get().consumeResyncRequest())
+			ContentVFS::get().syncInstalledPacks();
+#endif
 
 		m_script->step();
 

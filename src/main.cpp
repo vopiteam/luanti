@@ -217,11 +217,11 @@ int main(int argc, char *argv[])
 #if IS_VOPI_ENGINE
 	// Mount content packs before anything reads game content: the fs::
 	// overlay must be in place for builtin, game discovery and media.
-	// The platform layer installs the pack key provider through this hook.
+	// The platform layer installs the pack key provider and configures the
+	// installed-packs directory / app version through these hooks.
 	vopi_install_content_key_provider();
-	ContentVFS::get().mountPacksFromDir(porting::path_share + DIR_DELIM + "packs");
-	if (porting::path_user != porting::path_share)
-		ContentVFS::get().mountPacksFromDir(porting::path_user + DIR_DELIM + "packs");
+	vopi_configure_content_vfs();
+	ContentVFS::get().mountStartupPacks();
 #endif
 
 	if (!create_userdata_path()) {
@@ -253,6 +253,12 @@ int main(int argc, char *argv[])
 
 	if (!init_common(cmd_args, argc, argv))
 		return 1;
+
+#if IS_VOPI_ENGINE
+	// The startup mount above ran before the log file existed; record the
+	// result now that it does.
+	ContentVFS::get().logMountSummary();
+#endif
 
 	if (g_settings->getBool("enable_console"))
 		porting::attachOrCreateConsole();
