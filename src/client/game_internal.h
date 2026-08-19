@@ -159,6 +159,9 @@ protected:
 	void processUserInput(f32 dtime);
 	void processKeyInput();
 	void processItemSelection(u16 *new_playeritem);
+#if IS_VOPI_ENGINE
+	void processHudButtonKeys();
+#endif
 	bool shouldShowTouchControls();
 
 	void dropSelectedItem(bool single_item = false);
@@ -339,6 +342,12 @@ private:
 
 	// Map server hud ids to client hud ids
 	std::unordered_map<u32, u32> m_hud_server_to_client;
+
+#if IS_VOPI_ENGINE
+	// The button processHudButtonKeys currently draws as pressed (CLIENT hud index),
+	// so it can release only ITS own press and never a touch one.
+	std::optional<u32> m_hud_key_pressed_id;
+#endif
 
 	GameRunData runData;
 	Flags m_flags;

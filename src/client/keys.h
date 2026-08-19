@@ -100,6 +100,20 @@ public:
 		SLOT_31,
 		SLOT_32,
 
+#if IS_VOPI_ENGINE
+		// VOPI: keyboard access to the Lua-defined tappable HUD buttons
+		// (hud_api.buttons). Those buttons are hit-tested by TouchControls, which
+		// a desktop client never creates, so without these keys they draw but are
+		// dead on Mac/PC -- and nothing built on them (context action rows, the
+		// pose exit button, the onboarding buttons) can be exercised there.
+		// Kept AFTER the SLOT_* block: those are indexed arithmetically
+		// (KeyType::SLOT_1 + i) and must stay contiguous.
+		HUD_BUTTON_1,
+		HUD_BUTTON_2,
+		HUD_BUTTON_3,
+		HUD_BUTTON_4,
+#endif
+
 		// Fake keycode for array size and internal checks
 		INTERNAL_ENUM_COUNT
 
@@ -107,3 +121,9 @@ public:
 };
 
 typedef KeyType::T GameKeyType;
+
+#if IS_VOPI_ENGINE
+// VOPI: how many KeyType::HUD_BUTTON_* bindings exist. They are indexed
+// arithmetically (KeyType::HUD_BUTTON_1 + i), so this must match the enum block.
+constexpr int HUD_BUTTON_KEY_COUNT = 4;
+#endif

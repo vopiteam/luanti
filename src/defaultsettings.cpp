@@ -224,6 +224,18 @@ void set_default_settings()
 	settings->setDefault("keymap_slot31", "");
 	settings->setDefault("keymap_slot32", "");
 
+#if IS_VOPI_ENGINE
+	// VOPI: keyboard access to the Lua-defined tappable HUD buttons. Key N fires
+	// the Nth button counted left to right on screen. The buttons themselves are
+	// hit-tested by TouchControls, which a desktop client never creates, so these
+	// are what makes them testable on Mac/PC at all.
+	// Y/U/O/P: free in the default map (I is the inventory, hence the gap).
+	settings->setDefault("keymap_hud_button_1", "SYSTEM_SCANCODE_28"); // KEY_KEY_Y
+	settings->setDefault("keymap_hud_button_2", "SYSTEM_SCANCODE_24"); // KEY_KEY_U
+	settings->setDefault("keymap_hud_button_3", "SYSTEM_SCANCODE_18"); // KEY_KEY_O
+	settings->setDefault("keymap_hud_button_4", "SYSTEM_SCANCODE_19"); // KEY_KEY_P
+#endif
+
 #ifndef NDEBUG
 	// Default keybinds for quicktune in debug builds
 	settings->setDefault("keymap_quicktune_prev", "SYSTEM_SCANCODE_74"); // KEY_HOME

@@ -124,6 +124,10 @@ public:
 	// button (or nullopt). Resolved to a live element during draw, so no
 	// server-removable pointer is held across the client-event pump.
 	void setPressedTouchableId(std::optional<u32> id) { m_pressed_touchable_id = id; }
+	// Who currently owns the pressed visual. The keyboard path (desktop) needs it
+	// to release only ITS own press: the touch path rewrites this every frame, so
+	// an unconditional clear would blank a live finger press for a frame.
+	std::optional<u32> getPressedTouchableId() const { return m_pressed_touchable_id; }
 #endif
 
 private:

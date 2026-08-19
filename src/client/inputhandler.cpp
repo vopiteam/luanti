@@ -78,6 +78,16 @@ void MyEventReceiver::reloadKeybindings()
 		keybindings[KeyType::SLOT_1 + i] = getKeySetting(slot_key_name.c_str());
 	}
 
+#if IS_VOPI_ENGINE
+	// VOPI: keyboard fallback for the Lua-defined tappable HUD buttons. Key N
+	// activates the Nth button counted LEFT TO RIGHT on screen -- see
+	// Game::processHudButtonKeys.
+	for (int i = 0; i < HUD_BUTTON_KEY_COUNT; i++) {
+		std::string key_name = "keymap_hud_button_" + std::to_string(i + 1);
+		keybindings[KeyType::HUD_BUTTON_1 + i] = getKeySetting(key_name.c_str());
+	}
+#endif
+
 	// First clear all keys, then re-add the ones we listen for
 	keysListenedFor.clear();
 	for (int i = 0; i < KeyType::INTERNAL_ENUM_COUNT; i++) {

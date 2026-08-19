@@ -4,6 +4,7 @@
 
 #include "game_internal.h"
 
+#include <algorithm>
 #include <cmath>
 #include <csignal>
 #include "client/gameui.h"
@@ -1515,6 +1516,12 @@ void Game::processUserInput(f32 dtime)
 	processItemSelection(&runData.new_playeritem);
 
 #if IS_VOPI_ENGINE
+	// VOPI: keyboard stand-in for tapping a Lua-defined HUD button (desktop has
+	// no TouchControls, so they are otherwise unreachable there).
+	processHudButtonKeys();
+#endif
+
+#if IS_VOPI_ENGINE
 	// VOPI: report client-measured wrapped-text sizes (HUD_ELEM_TEXT with
 	// max_width > 0) back to server-side Lua, so it can size 9-slice backgrounds
 	// and stack notification/info panels in real pixels instead of guessing from
@@ -1675,6 +1682,104 @@ void Game::processKeyInput()
 		m_game_ui->showStatusText(utf8_to_wide(quicktune->getMessage()));
 	}
 }
+
+#if IS_VOPI_ENGINE
+// VOPI: keyboard access to the Lua-defined tappable HUD buttons (hud_api.buttons).
+//
+// Those buttons are hit-tested by TouchControls, which a desktop client never
+// creates (shouldShowTouchControls), and a mouse produces no touch events at all
+// -- so on Mac/PC they draw but are dead, and the features built on them (context
+// action rows, the pose exit button, the onboarding buttons) cannot be exercised
+// there. These keys drive the SAME delivery a tap does, so nothing on the Lua
+// side needs to know the difference.
+//
+// Buttons are numbered LEFT TO RIGHT by their drawn rect, not by HUD element
+// index: indices are creation order and get reused as elements are removed, so
+// key 1 would not reliably mean the leftmost button. Screen order is the only
+// ordering a tester can predict.
+void Game::processHudButtonKeys()
+{
+	// wasKeyPressed, NOT wasKeyDown: the latter is re-set by the OS key-repeat
+	// stream, so holding the key would re-run the action dozens of times a second.
+	// wasKeyPressed only fires on a real down edge (see setKeyDown), which is what
+	// a tap is. Lowest-numbered key wins if several are used in the same frame.
+	int held = -1, clicked = -1;
+	for (int i = 0; i < HUD_BUTTON_KEY_COUNT; i++) {
+		auto key = (GameKeyType) (KeyType::HUD_BUTTON_1 + i);
+		if (clicked < 0 && wasKeyPressed(key))
+			clicked = i;
+		if (held < 0 && isKeyDown(key))
+			held = i;
+	}
+
+	// Release our pressed visual -- and ONLY ours. The touch path rewrites
+	// setPressedTouchableId every frame from earlier in processUserInput, so an
+	// unconditional clear would blank a live finger press for a frame on a device
+	// driven by both keyboard and touch.
+	auto release_pressed = [&] {
+		if (!m_hud_key_pressed_id)
+			return;
+		if (hud && hud->getPressedTouchableId() == m_hud_key_pressed_id)
+			hud->setPressedTouchableId(std::nullopt);
+		m_hud_key_pressed_id = std::nullopt;
+	};
+
+	// Gated on show_hud like the touch path: a hidden HUD draws nothing, so
+	// nothing may be activated either.
+	if (!hud || !m_game_ui->m_flags.show_hud) {
+		release_pressed();
+		return;
+	}
+	if (held < 0 && clicked < 0) {
+		release_pressed();
+		return;
+	}
+
+	auto rects = hud->getTouchableHudRects();
+
+	// Drop buttons that cannot be pressed by a finger either. getTouchableHudRects
+	// keeps an element whose texture would not resolve, which collapses to a
+	// zero-area rect (it warns once per name). Leaving those in would let a key
+	// activate a button no tap can reach, and -- worse -- silently shift every
+	// later button's number.
+	rects.erase(std::remove_if(rects.begin(), rects.end(),
+			[](const auto &r) { return r.second.getArea() == 0; }),
+		rects.end());
+
+	// stable_sort, not sort: two buttons drawn at the exact same spot would
+	// otherwise get an unspecified relative order, and since HUD element indices
+	// shift as elements are added and removed, the key -> button mapping could
+	// differ from frame to frame. Stable pins the tie to element index.
+	std::stable_sort(rects.begin(), rects.end(), [](const auto &a, const auto &b) {
+		const v2s32 &pa = a.second.UpperLeftCorner;
+		const v2s32 &pb = b.second.UpperLeftCorner;
+		return pa.X != pb.X ? pa.X < pb.X : pa.Y < pb.Y;
+	});
+
+	// Pressed texture while the key is held, so it is visible WHICH button the
+	// key resolved to -- the same feedback a finger gets.
+	if (held >= 0 && (size_t) held < rects.size()) {
+		hud->setPressedTouchableId(rects[held].first);
+		m_hud_key_pressed_id = rects[held].first;
+	} else {
+		release_pressed();
+	}
+
+	if (clicked < 0 || (size_t) clicked >= rects.size())
+		return;
+
+	// Same delivery as a tap: translate the CLIENT hud index to the SERVER id the
+	// mod knows (the value hud_add returned) and ride the formspec-fields channel.
+	for (const auto &[server_id, client_id] : m_hud_server_to_client) {
+		if (client_id == rects[clicked].first) {
+			StringMap fields;
+			fields["__vopi_hud_click"] = std::to_string(server_id);
+			client->sendInventoryFields("", fields);
+			break;
+		}
+	}
+}
+#endif
 
 void Game::processItemSelection(u16 *new_playeritem)
 {
