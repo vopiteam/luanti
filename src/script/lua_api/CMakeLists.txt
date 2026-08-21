@@ -1,10 +1,13 @@
 file(GLOB common_SCRIPT_LUA_API_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 
-# VOPI Engine: content pack API (needs content_vfs.cpp, which only exists
-# in IS_VOPI_ENGINE builds)
+# VOPI Engine: content pack API and platform state channel (need
+# content_vfs.cpp / platform_state.cpp, which only exist in
+# IS_VOPI_ENGINE builds)
 set(vopi_SCRIPT_LUA_API_SRCS "")
 if(IS_VOPI_ENGINE)
-	set(vopi_SCRIPT_LUA_API_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/l_content_packs.cpp)
+	set(vopi_SCRIPT_LUA_API_SRCS
+		${CMAKE_CURRENT_SOURCE_DIR}/l_content_packs.cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/l_platform_state.cpp)
 endif()
 
 set(common_SCRIPT_LUA_API_SRCS

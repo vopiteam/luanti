@@ -2,7 +2,9 @@ file(GLOB unittest_HDRS "${CMAKE_CURRENT_SOURCE_DIR}/*.h")
 
 set(vopi_unittest_SRCS "")
 if(IS_VOPI_ENGINE)
-	set(vopi_unittest_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/test_content_vfs.cpp)
+	set(vopi_unittest_SRCS
+		${CMAKE_CURRENT_SOURCE_DIR}/test_content_vfs.cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/test_platform_state.cpp)
 endif()
 
 set(unittest_SRCS

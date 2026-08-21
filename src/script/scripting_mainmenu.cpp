@@ -13,6 +13,7 @@
 #include "lua_api/l_settings.h"
 #if IS_VOPI_ENGINE
 #include "lua_api/l_content_packs.h"
+#include "lua_api/l_platform_state.h"
 #endif
 #include "log.h"
 #include "filesys.h"
@@ -63,6 +64,7 @@ void MainMenuScripting::initializeModApi(lua_State *L, int top)
 	ModApiHttp::Initialize(L, top);
 #if IS_VOPI_ENGINE
 	ModApiContentPacks::Initialize(L, top);
+	ModApiPlatformState::Initialize(L, top);
 #endif
 
 	asyncEngine.registerStateInitializer(registerLuaClasses);

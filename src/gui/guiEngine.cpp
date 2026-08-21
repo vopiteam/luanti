@@ -14,6 +14,7 @@
 #include "content/mods.h"
 #if IS_VOPI_ENGINE
 #include "content_vfs.h"
+#include "platform_state.h"
 #endif
 #include "filesys.h"
 #include "gettext.h"
@@ -428,6 +429,7 @@ void GUIEngine::run()
 				first_frame_reported = true;
 				ContentVFS::get().consumeResyncRequest();
 				ContentVFS::get().syncInstalledPacks();
+				m_script->handleMainMenuEvent("ContentPacksChange");
 #if defined(__ANDROID__) || defined(__IOS__)
 				porting::onMainMenuShown();
 #endif
@@ -438,9 +440,17 @@ void GUIEngine::run()
 #if IS_VOPI_ENGINE
 		// The delivery layer finished installing a pack while we sit in the
 		// menu: pick it up on this frame, on the main thread, with no world
-		// alive to race against.
-		if (ContentVFS::get().consumeResyncRequest())
+		// alive to race against, and tell the menu the mount table moved.
+		if (ContentVFS::get().consumeResyncRequest()) {
 			ContentVFS::get().syncInstalledPacks();
+			m_script->handleMainMenuEvent("ContentPacksChange");
+		}
+
+		// Platform state topics changed since the previous frame (or during
+		// the world we just left): one menu event each, so Lua re-reads the
+		// topic instead of polling (platform_state.h).
+		for (const std::string &topic : platform_state::takeChanged())
+			m_script->handleMainMenuEvent("PlatformStateChange:" + topic);
 #endif
 
 		m_script->step();
