@@ -31,7 +31,14 @@ int ModApiPlatformState::l_get_platform_state(lua_State *L)
 		builder.settings_["collectComments"] = false;
 		std::unique_ptr<Json::CharReader> reader(builder.newCharReader());
 		std::string errs;
-		if (!reader->parse(json.data(), json.data() + json.size(), &root, &errs)) {
+		bool ok = false;
+		try {
+			ok = reader->parse(json.data(), json.data() + json.size(), &root, &errs);
+		} catch (const Json::Exception &e) {
+			// The bundled jsoncpp throws (not returns false) past stackLimit
+			errs = e.what();
+		}
+		if (!ok) {
 			errorstream << "get_platform_state(" << topic
 				<< "): platform returned invalid JSON: " << errs << std::endl;
 			lua_pushnil(L);

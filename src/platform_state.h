@@ -19,6 +19,12 @@
 	actions are a contract between the platform code and the menu scripts —
 	the engine carries them without interpreting anything.
 
+	The platform installs a Provider once at startup (setProvider); until
+	then, and in builds without a platform layer (desktop, tests), the
+	engine reports no state and declines every action. A registered provider
+	rather than weak symbols: it links the same way on every toolchain
+	(MSVC has no weak definitions) and tests can install a fake one.
+
 	Change notification: the platform calls porting_platform_state_changed()
 	from any thread; the main-menu loop drains the changed set once per frame
 	and raises one "PlatformStateChange:<topic>" menu event per topic (the
@@ -29,29 +35,32 @@
 	Intended for state snapshots and occasional commands: documents of a few
 	kilobytes, an event only when something actually changed. Not a
 	streaming channel.
-
-	The two platform hooks are weak symbols with no-op defaults, so a build
-	without a platform layer (desktop, tests) reports no state and declines
-	every action; a platform provides strong definitions.
 */
 
 extern "C" {
-	// JSON document describing the current state of `topic`, allocated with
-	// malloc (strdup) — the engine frees it. nullptr: unknown topic or no
-	// platform layer.
-	char *vopi_platform_state_json(const char *topic);
-
-	// Forward a command to the platform. `arg` may be nullptr. Returns
-	// whether the platform accepted it.
-	bool vopi_platform_action(const char *topic, const char *action,
-			const char *arg);
-
-	// The platform changed the state of `topic`. Any thread.
+	// The platform changed the state of `topic`. Any thread, any time after
+	// the process started.
 	void porting_platform_state_changed(const char *topic);
 }
 
 namespace platform_state
 {
+	struct Provider {
+		// JSON document describing the current state of `topic`, allocated
+		// with malloc (strdup) — the engine frees it. nullptr: unknown topic
+		// or no document yet. Called on the main thread; must not block on
+		// the platform's work queues.
+		char *(*state_json)(const char *topic) = nullptr;
+
+		// Command for a topic; `arg` may be nullptr. Returns whether the
+		// platform accepted it. Main thread.
+		bool (*action)(const char *topic, const char *action,
+				const char *arg) = nullptr;
+	};
+
+	// Install the platform's provider (platform init, before the main menu).
+	void setProvider(const Provider &provider);
+
 	// Current JSON document of a topic, empty when there is none.
 	std::string get(const std::string &topic);
 
