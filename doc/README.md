@@ -45,6 +45,13 @@ Here is a list with descriptions of relevant files:
     C++, e.g. `MapBlock::deSerialize()`.
 - [protocol.txt](protocol.txt): *Rough* outline of Luanti's network protocol.
 
+## This fork
+
+- [vopi/](vopi/): What the VOPI Engine fork adds on top of upstream Luanti —
+    mobile platform support, the content VFS, UI and touch work — and where
+    each piece is documented. Everything it describes is gated behind the
+    `IS_VOPI_ENGINE` CMake option, which is off by default.
+
 ## Misc.
 
 - [compiling/](compiling/): Compilation instructions, and options.
