@@ -297,7 +297,7 @@ public:
 	core::rect<s32> getAbsoluteRect();
 
 #if defined(__ANDROID__) || defined(__IOS__)
-	void getAndroidUIInput();
+	void getAndroidUIInput() override;
 #endif
 
 	// Returns the fixed formspec coordinate size for the given parameters.
