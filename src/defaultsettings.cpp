@@ -19,6 +19,9 @@
 #if defined(__ANDROID__) && VOPI_ANDROID_PROJECT
 #include "default_android_settings.h"
 #endif
+#if IS_VOPI_ENGINE && !defined(__ANDROID__) && !defined(__IOS__)
+#include "default_desktop_settings.h"
+#endif
 
 /*
  * inspired by https://github.com/systemd/systemd/blob/7aed43437175623e0f3ae8b071bbc500c13ce893/src/hostname/hostnamed.c#L406
@@ -584,8 +587,8 @@ void set_default_settings()
 	settings->setDefault("clickable_chat_weblinks", "true");
 
 #if IS_VOPI_ENGINE
-	// Game defaults
-	settings->setDefault("default_game", "kawaii_craft");
+	// Game defaults. The game name itself is set by the platform layer
+	// (vopi::set_*_settings), which is where product identity lives.
 	settings->setDefault("default_stack_max", "64");
 	settings->setDefault("default_player_name", "");
 #ifndef NDEBUG
@@ -713,7 +716,8 @@ void set_default_settings()
 
 	// VOPI Engine: Desktop defaults (macOS, Windows, Linux)
 #if IS_VOPI_ENGINE && !defined(__ANDROID__) && !defined(__IOS__)
-	settings->setDefault("default_game", "kawaii_craft");
+	// Game name and product fonts come from the platform layer.
+	vopi::set_desktop_settings(settings);
 
 	// Game version (passed via CMake -DGAME_VERSION=...)
 #ifdef GAME_VERSION
@@ -721,14 +725,6 @@ void set_default_settings()
 #else
 	settings->setDefault("game_version", "dev");
 #endif
-
-	// Custom fonts
-	std::string vopi_font = porting::getDataPath("fonts" DIR_DELIM "Blogger_Sans_Medium.otf");
-	std::string vopi_font_bold = porting::getDataPath("fonts" DIR_DELIM "Blogger_Sans_Bold.otf");
-	settings->setDefault("font_path", vopi_font);
-	settings->setDefault("font_path_italic", vopi_font);
-	settings->setDefault("font_path_bold", vopi_font_bold);
-	settings->setDefault("font_path_bold_italic", vopi_font_bold);
 
 	// Font size — slightly larger for desktop readability
 	settings->setDefault("font_size", "18");

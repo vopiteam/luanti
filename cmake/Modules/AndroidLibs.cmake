@@ -1,5 +1,5 @@
 # Set path to native dependencies.
-# VOPI_ANDROID_PROJECT: deps are in parent directory (kawaii_craft/android/native/deps/)
+# VOPI_ANDROID_PROJECT: deps are in the embedding project (../android/native/deps/)
 # Standard Luanti: deps are in luanti/android/native/deps/
 if(VOPI_ANDROID_PROJECT)
     set(DEPS "${CMAKE_SOURCE_DIR}/../android/native/deps/${ANDROID_ABI}")

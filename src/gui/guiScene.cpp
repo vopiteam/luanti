@@ -73,7 +73,7 @@ scene::AnimatedMeshSceneNode *GUIScene::setMesh(scene::IAnimatedMesh *mesh)
 namespace {
 // Configures one material slot the way GUIScene wants for all of its meshes:
 // alpha-blended with a 0.5 clip threshold, nearest-neighbour filtering (so
-// pixel textures stay sharp), backface-culling off (kawaii models often
+// pixel textures stay sharp), backface-culling off (stylised models often
 // rely on visible inside faces). Used by both setTexture() and
 // addAttachment() so primary mesh and attachments always render with
 // identical settings — divergence would have been a bug magnet.

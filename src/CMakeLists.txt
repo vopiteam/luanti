@@ -520,11 +520,11 @@ if(IS_VOPI_ENGINE)
 	list(APPEND common_SRCS content_vfs.cpp platform_state.cpp)
 	set(VOPI_AES_LIBRARY aes)
 	# Proprietary platform layer sources (content pack key provider, ...).
-	# VOPI_PLATFORM_SRC_DIR points at the Kawaii Craft src/ directory that
+	# VOPI_PLATFORM_SRC_DIR points at the embedding project's src/ directory that
 	# sits next to this engine checkout; empty/unset builds a keyless engine
 	# that mounts only unencrypted packs (upstream-like or CI checkouts).
 	set(VOPI_PLATFORM_SRC_DIR "" CACHE PATH
-		"Directory with the proprietary VOPI platform sources (Kawaii Craft src/)")
+		"Directory with the proprietary VOPI platform sources")
 	if(VOPI_PLATFORM_SRC_DIR AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
 		include_directories(BEFORE "${VOPI_PLATFORM_SRC_DIR}")
 		list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")

@@ -1,4 +1,4 @@
-// Kawaii Craft - VOPI Engine
+// VOPI Engine
 // SPDX-License-Identifier: Proprietary
 // Copyright (C) 2026 VOPI Team
 

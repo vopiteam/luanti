@@ -1,7 +1,7 @@
 # Contributing
 
-> **This is a fork.** VOPI Engine is maintained by the VOPI Team for the game
-> *Kawaii Craft*; it is not a place to contribute to Luanti. Improvements to the
+> **This is a fork.** VOPI Engine is maintained by the VOPI Team for its own
+> titles; it is not a place to contribute to Luanti. Improvements to the
 > engine itself belong upstream, at
 > [luanti-org/luanti](https://github.com/luanti-org/luanti) — they reach far more
 > people there, and this fork picks them up on the next rebase.

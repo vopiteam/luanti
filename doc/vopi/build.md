@@ -48,27 +48,3 @@ reports it; nothing branches on it.
 |---|---|
 | `VOPI_PLATFORM_SRC_DIR` | Directory of platform C++ compiled into the engine (the iOS/Android porting layer lives outside this repository) |
 | `GETTEXT_PO_PATH` | Honoured for VOPI builds so the embedding project can supply its own translations instead of the ones in `po/` |
-
-## Patches
-
-Some upstream call sites are modified by patch instead of by a fork commit:
-`l_mainmenu`, `l_util`, `s_player`, `server`, `game` and `clientlauncher`. The
-patches live in the embedding product's tree, not here, and are applied before
-a build and reverted before committing.
-
-The reason is separation, not convenience. Those files are where product
-concerns would otherwise leak into the engine — analytics vendors, ad
-mediation, consent flows, store entitlements. Keeping them as patches means
-the fork's history stays about the engine, and the diff against upstream stays
-readable.
-
-Two consequences worth knowing:
-
-- **A patched working tree is not the fork.** Functions registered by a patch
-  exist in a build but not in a checkout. If you are looking for a Lua function
-  you saw in a running client and it is nowhere in this repository, it is
-  almost certainly patch-added.
-- **A `pre-commit` hook blocks committing while patches are applied.** It is
-  installed by pointing `core.hooksPath` at `.githooks`, and it checks the
-  index rather than the worktree, so a partially staged patch cannot slip
-  through. Revert the patches before committing.

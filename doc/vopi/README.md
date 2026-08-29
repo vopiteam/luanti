@@ -13,7 +13,7 @@ feature code either compiles out or is not compiled at all. See
 
 | Document | About |
 |---|---|
-| [build.md](build.md) | `IS_VOPI_ENGINE`, engine revision, version string, and the patch workflow |
+| [build.md](build.md) | `IS_VOPI_ENGINE`, engine revision, and the version string |
 | [platform.md](platform.md) | iOS and Android support, the platform state channel, mobile lifecycle, memory and thermal caps |
 | [content-vfs.md](content-vfs.md) | Reading game content from encrypted containers instead of the filesystem |
 | [ui.md](ui.md) | Formspec and HUD extensions, touch input, font scaling, baked node icons |
@@ -29,15 +29,3 @@ upstream counterpart, and indexes the rest.
 
 [lua-api.md](lua-api.md) is the index: every added function, which Lua
 environment it lives in, and which file documents it.
-
-## What is not here
-
-Some engine entry points used by the mobile products are not part of this
-repository. They are applied as patches at build time from the product tree,
-touching `l_mainmenu`, `l_util`, `s_player`, `server`, `game` and
-`clientlauncher`. They are not fork commits, they do not exist in a plain
-checkout, and they are not documented here — see [build.md](build.md) for how
-the patch workflow keeps them out of the history.
-
-If you are reading a function name in a build and cannot find it in this
-repository, that is the reason.
