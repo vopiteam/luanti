@@ -19,8 +19,10 @@
 #if defined(__ANDROID__) && VOPI_ANDROID_PROJECT
 #include "default_android_settings.h"
 #endif
-#if IS_VOPI_ENGINE && !defined(__ANDROID__) && !defined(__IOS__)
+#if IS_VOPI_ENGINE && VOPI_HAVE_PLATFORM_LAYER \
+		&& !defined(__ANDROID__) && !defined(__IOS__)
 #include "default_desktop_settings.h"
+#define VOPI_DESKTOP_PLATFORM_SETTINGS 1
 #endif
 
 /*
@@ -716,8 +718,11 @@ void set_default_settings()
 
 	// VOPI Engine: Desktop defaults (macOS, Windows, Linux)
 #if IS_VOPI_ENGINE && !defined(__ANDROID__) && !defined(__IOS__)
-	// Game name and product fonts come from the platform layer.
+	// Game name and product fonts come from the platform layer. A build
+	// without one is a plain engine: no default game, stock fonts.
+#ifdef VOPI_DESKTOP_PLATFORM_SETTINGS
 	vopi::set_desktop_settings(settings);
+#endif
 
 	// Game version (passed via CMake -DGAME_VERSION=...)
 #ifdef GAME_VERSION

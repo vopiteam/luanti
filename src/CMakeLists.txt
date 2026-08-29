@@ -528,6 +528,13 @@ if(IS_VOPI_ENGINE)
 	if(VOPI_PLATFORM_SRC_DIR AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
 		include_directories(BEFORE "${VOPI_PLATFORM_SRC_DIR}")
 		list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
+		# Desktop settings that identify a product (game name, fonts) live with
+		# the platform layer, not here. Absent on mobile, where the iOS/Android
+		# projects supply their own settings files.
+		if(NOT ANDROID AND NOT APPLE_IOS
+				AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
+			list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
+		endif()
 		# The platform layer's strong hook definition is compiled into the same
 		# object set as the engine, so it always wins over the weak default —
 		# no static-archive symbol-pull ordering to worry about.
