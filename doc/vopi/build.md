@@ -46,5 +46,34 @@ reports it; nothing branches on it.
 
 | Variable | Purpose |
 |---|---|
-| `VOPI_PLATFORM_SRC_DIR` | Directory of platform C++ compiled into the engine (the iOS/Android porting layer lives outside this repository) |
+| `VOPI_PLATFORM_SRC_DIR` | Directory of platform C++ compiled into the engine — see below |
 | `GETTEXT_PO_PATH` | Honoured for VOPI builds so the embedding project can supply its own translations instead of the ones in `po/` |
+
+## The platform layer
+
+`VOPI_PLATFORM_SRC_DIR` points at a directory of C++ that lives **outside this
+repository** and is compiled alongside the engine. It is where an embedding
+project puts what is specific to it: the content-pack key provider, the
+per-platform default settings, the mobile porting layer.
+
+The engine defines the interfaces and works without any of it:
+
+| With a platform layer | Without one |
+|---|---|
+| encrypted content packs mount | only unencrypted packs mount |
+| the embedding project's default game and fonts apply | no default game, stock fonts |
+| the mobile targets build | desktop targets build; the mobile ones do not |
+
+Leaving it unset is a supported configuration, not a broken one — it is what a
+plain checkout of this repository builds, and what CI builds. CMake reports
+which case you are in:
+
+```
+-- VOPI platform layer: /path/to/layer
+-- VOPI platform layer: none (encrypted packs will not mount)
+```
+
+The engine picks up two files by name when the directory provides them:
+`content_keys.cpp` (always) and `default_desktop_settings.cpp` (desktop
+targets only). Everything else the layer contains is wired up by the embedding
+project's own build — Gradle on Android, Xcode on iOS.
