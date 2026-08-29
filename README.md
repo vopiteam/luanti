@@ -1,3 +1,23 @@
+> ### This is a fork
+>
+> **VOPI Engine** — Luanti modified for mobile, used by the game *Kawaii Craft*
+> on iOS and Android. Built from upstream Luanti `5.16.1`; the fork's own
+> revision is appended to the version string, so this tree reports `5.16.1-ve1`.
+>
+> Everything the fork adds — the mobile platform layer, the content VFS, the UI
+> and touch work, the settings — is documented in **[doc/vopi/](doc/vopi/)**.
+> Every addition is behind the `IS_VOPI_ENGINE` CMake option, which is **off by
+> default**: build this tree without it and you get upstream Luanti.
+>
+> The badges and links below are upstream's and refer to upstream. Issues in
+> unmodified engine code belong at
+> [luanti-org/luanti](https://github.com/luanti-org/luanti); this repository
+> tracks only the fork's changes.
+>
+> Licensed LGPL-2.1-or-later, like upstream.
+
+---
+
 <div align="center">
     <img src="textures/base/pack/logo.png" width="32%">
     <h1>Luanti (formerly Minetest)</h1>

@@ -9,9 +9,14 @@ engine at runtime.
 | Layer | Location |
 |---|---|
 | Shared porting layer | `src/porting.{cpp,h}` |
-| Android specifics | `src/porting_android.{cpp,h}` |
 | State channel | `src/platform_state.{cpp,h}`, `src/script/lua_api/l_platform_state.{cpp,h}` |
 | Application platform layer | **outside this repository**, compiled in via `VOPI_PLATFORM_SRC_DIR` |
+
+> **`src/porting_android.{cpp,h}` as committed here is upstream's.** The mobile
+> implementation is part of the application platform layer, and the embedding
+> project substitutes it at build time. A checkout of this repository alone
+> therefore does not build the Android target — it builds the desktop targets
+> and the engine, which is what `IS_VOPI_ENGINE=OFF` is for.
 
 The application layer — the iOS porting layer, per-platform default settings,
 memory-cap policy, content key provision — is not part of the fork. `CMake`
