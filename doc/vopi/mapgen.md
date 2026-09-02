@@ -1,9 +1,9 @@
 # Mapgen additions
 
-Three flags extend Mapgen Valleys. `sea_level_rivers` is part of the default
-`mgvalleys_spflags` when `IS_VOPI_ENGINE` is on, the other two are opt-in,
-and none of them exists in a build without the option, which generates the
-upstream terrain unchanged.
+Four flags extend Mapgen Valleys. `sea_level_rivers`, `mountains` and
+`remove_floaters` are part of the default `mgvalleys_spflags` when
+`IS_VOPI_ENGINE` is on, `carve_cliffs` is opt-in, and none of them exists in
+a build without the option, which generates the upstream terrain unchanged.
 The code lives in `src/mapgen/mapgen_valleys.cpp`.
 
 ## `sea_level_rivers`
@@ -26,6 +26,41 @@ The 3D relief noise keeps its upstream amplitude either way.
 Channels whose banks were lowered carry river water below the water line;
 lowland channels stay part of the sea, as upstream.
 
+## `mountains`
+
+A second solid joined to the terrain of Valleys: a 3D density in the manner
+of Mapgen v7, stone where
+`(n_mountain + cap) * gate - (y - surface_y) / height > 0`.
+
+- `mgvalleys_np_mountain` is the 3D noise. Its offset keeps most of space
+  below zero, so the body comes as separate lobes: pillars, walls, arches,
+  and windows where two lobes miss each other.
+- The gradient is anchored at the terrain surface of the column rather than
+  at a fixed level, so the body rides on plateaus and valley walls.
+- `mgvalleys_np_mountain_height` is a 2D noise, the vertical distance the
+  gradient spans and so the height a body can reach. Small values give
+  rocks, large ones mountains, and a value of 0 or less switches mountains
+  off, which makes the noise a regional mask as well.
+- The gate is the rise of the valley itself: 0 in the river channel and 1
+  beyond `mgvalleys_mountain_river_width` of the valley profile, so
+  mountains grow where the ground climbs out of the valley and never dam a
+  river.
+- The cap. Where the body touches the ground it has a foot, the noise at
+  the surface. In the band up to `mgvalleys_mountain_cap_height` above the
+  ground the threshold drops by `mgvalleys_mountain_cap` times the strongest
+  foot within `mgvalleys_mountain_cap_reach`, most at half that height and
+  tapering with the distance from the foot. A body widens over its foot into
+  overhangs and mushroom shapes, two feet within reach of each other join
+  into an arch, and every cap hangs from a foot. The terrain of the columns
+  within that reach around the mapchunk is computed along with it, so a foot
+  beyond the mapchunk casts its cap into it like any other.
+- The body is evaluated down to the level the 3D relief cannot cut below,
+  so it fills the relief cut under itself and stands on the ground. Lobes
+  the noise pinches off above the ground are left to `remove_floaters`.
+
+The 3D noise is computed only for mapchunks that can hold a body, and the
+spawn search knows the body.
+
 ## `carve_cliffs`
 
 Carves the walls of high ground into alcoves, undercuts, arches and windows,
@@ -43,8 +78,9 @@ Pieces cut loose are taken away by `remove_floaters`.
 ## `remove_floaters`
 
 The 3D relief noise of Valleys leaves pieces of stone hanging in the air
-above steep ground, the cliff carving adds more, and tunnels near the
-surface cut further pieces loose. For every column the terrain pass records
+above steep ground, the mountain body pinches lobes off above the ground,
+the cliff carving adds more, and tunnels near the surface cut further
+pieces loose. For every column the terrain pass records
 a floor: the level under which the base terrain is solid whatever the 3D
 noise does. After the caves are carved, every column whose topmost run of
 solid nodes ends above that floor seeds a flood fill over connected solid

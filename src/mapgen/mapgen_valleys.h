@@ -15,9 +15,7 @@ Licensing changed by permission of Gael de Sailly.
 #pragma once
 
 #include "mapgen.h"
-#if IS_VOPI_ENGINE
 #include <vector>
-#endif
 
 #define MGVALLEYS_ALT_CHILL        0x01
 #define MGVALLEYS_HUMID_RIVERS     0x02
@@ -27,6 +25,7 @@ Licensing changed by permission of Gael de Sailly.
 #define MGVALLEYS_SEA_LEVEL_RIVERS 0x10
 #define MGVALLEYS_CARVE_CLIFFS     0x20
 #define MGVALLEYS_REMOVE_FLOATERS  0x40
+#define MGVALLEYS_MOUNTAINS        0x80
 #endif
 
 class BiomeGenOriginal;
@@ -45,6 +44,10 @@ struct MapgenValleysParams : public MapgenParams {
 	u16 carve_zero_height = 16;
 	u16 carve_reach = 8;
 	float carve_undercut = 0.3f;
+	float mountain_river_width = 0.4f;
+	float mountain_cap = 1.6f;
+	u16 mountain_cap_height = 44;
+	u16 mountain_cap_reach = 14;
 #endif
 
 	float cave_width = 0.09f;
@@ -74,6 +77,8 @@ struct MapgenValleysParams : public MapgenParams {
 	NoiseParams np_dungeons;
 #if IS_VOPI_ENGINE
 	NoiseParams np_carve;
+	NoiseParams np_mountain;
+	NoiseParams np_mountain_height;
 #endif
 
 	MapgenValleysParams();
@@ -110,7 +115,32 @@ private:
 	float carve_zero_height;
 	s16 carve_reach;
 	float carve_undercut;
+	float mountain_river_width;
+	float mountain_cap;
+	float mountain_cap_height;
+	s16 mountain_cap_reach;
+	// Largest value 'np_mountain' can take, from its parameters: bounds the
+	// height a mountain body can reach above the terrain surface
+	float mountain_noise_max;
 #endif
+
+	// The terrain of one column, from the 2D noises
+	struct Column {
+		float surface_y;      // terrain surface
+		float base;           // river bank level
+		float slope;          // amplitude of the 3D relief
+		float river;          // distance from the river edge, negative inside
+		float river_y;        // river water surface
+		float valley_profile;
+		bool river_water;     // sea level channel carrying river water
+	};
+	void terrainColumn(float n_slope, float n_rivers, float n_terrain_height,
+		float n_valley, float n_valley_profile, Column &c) const;
+	Column columnAt(s16 x, s16 z) const;
+	// Every column of the generation area: the mapchunk and 'column_reach'
+	// around it, which is how far the 2D terrain noises are computed
+	std::vector<Column> columns;
+	s16 column_reach = 0;
 
 	Noise *noise_inter_valley_fill = nullptr;
 	Noise *noise_inter_valley_slope = nullptr;
@@ -121,6 +151,17 @@ private:
 
 #if IS_VOPI_ENGINE
 	Noise *noise_carve = nullptr;
+	// Mountain body: a 3D density anchored at the terrain surface, and the
+	// 2D height it fades over, which switches mountains off where it is <= 0
+	Noise *noise_mountain = nullptr;
+	Noise *noise_mountain_height = nullptr;
+	// Where the body touches the ground, per column of the area, and the
+	// strongest foot within 'mountain_cap_reach' of every mapchunk column
+	std::vector<float> foot;
+	std::vector<float> foot_row;
+	std::vector<float> foot_dil;
+	float mountainGate(const Column &c) const;
+	float mountainFoot(s16 x, s16 z, const Column &c, float gate) const;
 	// Per column: final terrain surface and river bank level, for the
 	// cliff carving and the floating piece removal
 	std::vector<float> surface_cache;

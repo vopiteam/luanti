@@ -43,6 +43,7 @@ const FlagDesc flagdesc_mapgen_valleys[] = {
 	{"sea_level_rivers", MGVALLEYS_SEA_LEVEL_RIVERS},
 	{"carve_cliffs",     MGVALLEYS_CARVE_CLIFFS},
 	{"remove_floaters",  MGVALLEYS_REMOVE_FLOATERS},
+	{"mountains",        MGVALLEYS_MOUNTAINS},
 #endif
 	{NULL,               0}
 };
@@ -66,6 +67,13 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	carve_zero_height  = std::fmax((float)params->carve_zero_height, 1.0f);
 	carve_reach        = params->carve_reach;
 	carve_undercut     = params->carve_undercut;
+	mountain_river_width = std::fmax(params->mountain_river_width, 0.01f);
+	mountain_cap        = params->mountain_cap;
+	mountain_cap_height = std::fmax((float)params->mountain_cap_height, 1.0f);
+	mountain_cap_reach  = params->mountain_cap_reach;
+	mountain_noise_max  = 0.0f;
+	if (spflags & MGVALLEYS_MOUNTAINS)
+		column_reach = mountain_cap_reach;
 #endif
 
 	cave_width         = params->cave_width;
@@ -82,12 +90,16 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	dungeon_ymax       = params->dungeon_ymax;
 
 	//// 2D Terrain noise
+	// The terrain noises cover 'column_reach' beyond the mapchunk on every
+	// side, the filler depth only the mapchunk
+	const u32 area_x = csize.X + 2 * column_reach;
+	const u32 area_z = csize.Z + 2 * column_reach;
 	noise_filler_depth       = new Noise(&params->np_filler_depth,       seed, csize.X, csize.Z);
-	noise_inter_valley_slope = new Noise(&params->np_inter_valley_slope, seed, csize.X, csize.Z);
-	noise_rivers             = new Noise(&params->np_rivers,             seed, csize.X, csize.Z);
-	noise_terrain_height     = new Noise(&params->np_terrain_height,     seed, csize.X, csize.Z);
-	noise_valley_depth       = new Noise(&params->np_valley_depth,       seed, csize.X, csize.Z);
-	noise_valley_profile     = new Noise(&params->np_valley_profile,     seed, csize.X, csize.Z);
+	noise_inter_valley_slope = new Noise(&params->np_inter_valley_slope, seed, area_x, area_z);
+	noise_rivers             = new Noise(&params->np_rivers,             seed, area_x, area_z);
+	noise_terrain_height     = new Noise(&params->np_terrain_height,     seed, area_x, area_z);
+	noise_valley_depth       = new Noise(&params->np_valley_depth,       seed, area_x, area_z);
+	noise_valley_profile     = new Noise(&params->np_valley_profile,     seed, area_x, area_z);
 
 	//// 3D Terrain noise
 	// 1-up 1-down overgeneration
@@ -98,6 +110,20 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 		// 3D noise, 1-up 1-down overgeneration
 		noise_carve = new Noise(&params->np_carve,
 			seed, csize.X, csize.Y + 2, csize.Z);
+	if (spflags & MGVALLEYS_MOUNTAINS) {
+		// 2D noise
+		noise_mountain_height = new Noise(&params->np_mountain_height,
+			seed, area_x, area_z);
+		// 3D noise, 1-up 1-down overgeneration
+		noise_mountain = new Noise(&params->np_mountain,
+			seed, csize.X, csize.Y + 2, csize.Z);
+		// The octaves at their largest, then offset and scale
+		const NoiseParams &np = params->np_mountain;
+		float octaves_max = (np.persist == 1.0f) ? (float)np.octaves :
+			(1.0f - std::pow(np.persist, (float)np.octaves)) /
+			(1.0f - np.persist);
+		mountain_noise_max = np.offset + std::fabs(np.scale) * octaves_max;
+	}
 	surface_cache.resize((size_t)csize.X * csize.Z);
 	bank_cache.resize((size_t)csize.X * csize.Z);
 	floater_floor.resize((size_t)csize.X * csize.Z);
@@ -121,6 +147,8 @@ MapgenValleys::~MapgenValleys()
 	delete noise_valley_profile;
 #if IS_VOPI_ENGINE
 	delete noise_carve;
+	delete noise_mountain;
+	delete noise_mountain_height;
 #endif
 }
 
@@ -139,6 +167,8 @@ MapgenValleysParams::MapgenValleysParams():
 	np_dungeons           (0.9,   0.5,  v3f(500,  500,  500),  0,     2, 0.8,  2.0)
 #if IS_VOPI_ENGINE
 	, np_carve            (-0.4,  1.0,  v3f(48,   32,   48),   2131,  3, 0.55, 2.0)
+	, np_mountain         (-0.45, 1.0,  v3f(192,  256,  192),  3517,  5, 0.7,  2.0)
+	, np_mountain_height  (128.0, 80.0, v3f(1500, 1500, 1500), 4021,  3, 0.6,  2.0)
 #endif
 {
 }
@@ -163,6 +193,10 @@ void MapgenValleysParams::readParams(const Settings *settings)
 	settings->getU16NoEx("mgvalleys_carve_zero_height",    carve_zero_height);
 	settings->getU16NoEx("mgvalleys_carve_reach",          carve_reach);
 	settings->getFloatNoEx("mgvalleys_carve_undercut",     carve_undercut);
+	settings->getFloatNoEx("mgvalleys_mountain_river_width", mountain_river_width);
+	settings->getFloatNoEx("mgvalleys_mountain_cap",         mountain_cap);
+	settings->getU16NoEx("mgvalleys_mountain_cap_height",    mountain_cap_height);
+	settings->getU16NoEx("mgvalleys_mountain_cap_reach",     mountain_cap_reach);
 #endif
 	settings->getFloatNoEx("mgvalleys_cave_width",         cave_width);
 	settings->getS16NoEx("mgvalleys_cavern_limit",         cavern_limit);
@@ -185,6 +219,8 @@ void MapgenValleysParams::readParams(const Settings *settings)
 	settings->getNoiseParams("mgvalleys_np_dungeons",           np_dungeons);
 #if IS_VOPI_ENGINE
 	settings->getNoiseParams("mgvalleys_np_carve",              np_carve);
+	settings->getNoiseParams("mgvalleys_np_mountain",           np_mountain);
+	settings->getNoiseParams("mgvalleys_np_mountain_height",    np_mountain_height);
 #endif
 }
 
@@ -208,6 +244,10 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 	settings->setU16("mgvalleys_carve_zero_height",    carve_zero_height);
 	settings->setU16("mgvalleys_carve_reach",          carve_reach);
 	settings->setFloat("mgvalleys_carve_undercut",     carve_undercut);
+	settings->setFloat("mgvalleys_mountain_river_width", mountain_river_width);
+	settings->setFloat("mgvalleys_mountain_cap",         mountain_cap);
+	settings->setU16("mgvalleys_mountain_cap_height",    mountain_cap_height);
+	settings->setU16("mgvalleys_mountain_cap_reach",     mountain_cap_reach);
 #endif
 	settings->setFloat("mgvalleys_cave_width",         cave_width);
 	settings->setS16("mgvalleys_cavern_limit",         cavern_limit);
@@ -230,6 +270,8 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 	settings->setNoiseParams("mgvalleys_np_dungeons",           np_dungeons);
 #if IS_VOPI_ENGINE
 	settings->setNoiseParams("mgvalleys_np_carve",              np_carve);
+	settings->setNoiseParams("mgvalleys_np_mountain",           np_mountain);
+	settings->setNoiseParams("mgvalleys_np_mountain_height",    np_mountain_height);
 #endif
 }
 
@@ -239,7 +281,8 @@ void MapgenValleysParams::setDefaultSettings(Settings *settings)
 #if IS_VOPI_ENGINE
 	settings->setDefault("mgvalleys_spflags", flagdesc_mapgen_valleys,
 		MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
-		MGVALLEYS_ALT_DRY | MGVALLEYS_SEA_LEVEL_RIVERS);
+		MGVALLEYS_ALT_DRY | MGVALLEYS_SEA_LEVEL_RIVERS |
+		MGVALLEYS_MOUNTAINS | MGVALLEYS_REMOVE_FLOATERS);
 #else
 	settings->setDefault("mgvalleys_spflags", flagdesc_mapgen_valleys,
 		MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
@@ -372,6 +415,125 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 }
 
 
+// The terrain of one column from its 2D noise values: the river bank
+// level, the valley rising away from the river, the amplitude of the 3D
+// relief, the river surface, and the channel where the river runs.
+void MapgenValleys::terrainColumn(float n_slope, float n_rivers,
+	float n_terrain_height, float n_valley, float n_valley_profile,
+	Column &c) const
+{
+	float valley_d = n_valley * n_valley;
+	// 'base' represents the level of the river banks
+	float base = n_terrain_height + valley_d;
+	// 'river' represents the distance from the river edge
+	float river = std::fabs(n_rivers) - river_size_factor;
+	// Use the curve of the function 1-exp(-(x/a)^2) to model valleys.
+	// 'valley_h' represents the height of the terrain, from the rivers.
+	float tv = std::fmax(river / n_valley_profile, 0.0f);
+	float valley_h = valley_d * (1.0f - std::exp(-tv * tv));
+	// Approximate height of the terrain
+	float surface_y = base + valley_h;
+	float slope = n_slope * valley_h;
+	// River water surface is 1 node below river banks
+	float river_y = base - 1.0f;
+	bool river_water = false;
+
+#if IS_VOPI_ENGINE
+	// Sea level river channels carry river water below the water line
+	if (spflags & MGVALLEYS_SEA_LEVEL_RIVERS) {
+		float bank = (float)water_level + river_bank_height;
+		if (base > bank) {
+			// River banks never rise above 'river_bank_height' over the
+			// sea: the height by which they would is removed, fading out over
+			// 'river_valley_width' of the valley profile. The terrain
+			// beyond keeps its height, so the valley deepens instead
+			// and every river is level with the sea.
+			float tg = std::fmax(river /
+				(n_valley_profile * river_valley_width), 0.0f);
+			surface_y -= (base - bank) * std::exp(-tg * tg);
+			base = bank;
+			// River water only below the water line, whatever the bank height
+			river_y = (float)water_level;
+			river_water = river < 0.0f;
+			// The 3D relief never exceeds the height left above the
+			// bank, so lowered ground does not dip under the sea
+			slope = std::fmin(slope, n_slope * (surface_y - base));
+		}
+	}
+#endif
+
+	// Rivers are placed where 'river' is negative
+	if (river < 0.0f) {
+		// Use the function -sqrt(1-x^2) which models a circle
+		float tr = river / river_size_factor + 1.0f;
+		float depth = (river_depth_bed *
+			std::sqrt(std::fmax(0.0f, 1.0f - tr * tr)));
+		// There is no logical equivalent to this using rangelim
+		surface_y = std::fmin(
+			std::fmax(base - depth, (float)(water_level - 3)),
+			surface_y);
+		slope = 0.0f;
+	}
+
+#if IS_VOPI_ENGINE
+	if (river_water) {
+		// Sea level channels are not held above 'water_level - 3':
+		// their depth follows 'river_depth' below the banks
+		float tr = river / river_size_factor + 1.0f;
+		float depth = river_depth_bed *
+			std::sqrt(std::fmax(0.0f, 1.0f - tr * tr));
+		surface_y = std::fmin(base - depth, surface_y);
+	}
+#endif
+
+	c.surface_y = surface_y;
+	c.base = base;
+	c.slope = slope;
+	c.river = river;
+	c.river_y = river_y;
+	c.valley_profile = n_valley_profile;
+	c.river_water = river_water;
+}
+
+
+MapgenValleys::Column MapgenValleys::columnAt(s16 x, s16 z) const
+{
+	Column c;
+	terrainColumn(
+		NoiseFractal2D(&noise_inter_valley_slope->np, x, z, seed),
+		NoiseFractal2D(&noise_rivers->np, x, z, seed),
+		NoiseFractal2D(&noise_terrain_height->np, x, z, seed),
+		NoiseFractal2D(&noise_valley_depth->np, x, z, seed),
+		NoiseFractal2D(&noise_valley_profile->np, x, z, seed), c);
+	return c;
+}
+
+
+#if IS_VOPI_ENGINE
+// How much of the mountain body a column may carry: the rise of the valley
+// itself, 0 in the river channel and 1 beyond 'mountain_river_width' of
+// the valley profile, so mountains grow where the ground climbs out of the
+// valley and never dam a river.
+float MapgenValleys::mountainGate(const Column &c) const
+{
+	float tm = std::fmax(c.river /
+		(c.valley_profile * mountain_river_width), 0.0f);
+	return 1.0f - std::exp(-tm * tm);
+}
+
+
+// The foot of the body in a column: the mountain noise at the ground,
+// gated, where it is positive. A cap can hang from a foot.
+float MapgenValleys::mountainFoot(s16 x, s16 z, const Column &c,
+	float gate) const
+{
+	float ys = std::floor(c.surface_y + 0.5f);
+	float n = NoiseFractal3D(&noise_mountain->np, x, ys, z, seed);
+	return std::fmax(n * gate, 0.0f);
+}
+#endif
+
+
 int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 {
 	// Check if in a river channel
@@ -380,29 +542,37 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 		// Unsuitable spawn point
 		return MAX_MAP_GENERATION_LIMIT;
 
-	float n_slope          = NoiseFractal2D(&noise_inter_valley_slope->np, p.X, p.Y, seed);
-	float n_terrain_height = NoiseFractal2D(&noise_terrain_height->np, p.X, p.Y, seed);
-	float n_valley         = NoiseFractal2D(&noise_valley_depth->np, p.X, p.Y, seed);
-	float n_valley_profile = NoiseFractal2D(&noise_valley_profile->np, p.X, p.Y, seed);
+	Column c = columnAt(p.X, p.Y);
+	float surface_y = c.surface_y;
+	float slope = c.slope;
+	float river_y = c.river_y;
 
-	float valley_d = n_valley * n_valley;
-	float base = n_terrain_height + valley_d;
-	float river = std::fabs(n_rivers) - river_size_factor;
-	float tv = std::fmax(river / n_valley_profile, 0.0f);
-	float valley_h = valley_d * (1.0f - std::exp(-tv * tv));
-	float surface_y = base + valley_h;
-	float slope = n_slope * valley_h;
-	float river_y = base - 1.0f;
 #if IS_VOPI_ENGINE
-	if (spflags & MGVALLEYS_SEA_LEVEL_RIVERS) {
-		float bank = (float)water_level + river_bank_height;
-		if (base > bank) {
-			float tg = std::fmax(river /
-				(n_valley_profile * river_valley_width), 0.0f);
-			surface_y -= (base - bank) * std::exp(-tg * tg);
-			base = bank;
-			river_y = (float)water_level;
-			slope = std::fmin(slope, n_slope * (surface_y - base));
+	// Mountain body of this column, as in generateTerrain: gate, height,
+	// and the strongest foot within reach for the cap
+	float mnt_gate = 0.0f;
+	float mnt_height = 0.0f;
+	float mnt_foot = 0.0f;
+	float mnt_floor = surface_y - 1.5f * std::fabs(slope);
+	if ((spflags & MGVALLEYS_MOUNTAINS) && mountain_noise_max > 0.0f) {
+		mnt_height = NoiseFractal2D(&noise_mountain_height->np, p.X, p.Y, seed);
+		if (mnt_height > 0.0f)
+			mnt_gate = mountainGate(c);
+		if (mnt_gate > 0.0f) {
+			const float taper = 1.0f / (float)(mountain_cap_reach + 1);
+			for (s16 dz = -mountain_cap_reach; dz <= mountain_cap_reach; dz++)
+			for (s16 dx = -mountain_cap_reach; dx <= mountain_cap_reach; dx++) {
+				s16 x = p.X + dx;
+				s16 z = p.Y + dz;
+				if (NoiseFractal2D(&noise_mountain_height->np, x, z, seed) <= 0.0f)
+					continue;
+				Column cn = (dx == 0 && dz == 0) ? c : columnAt(x, z);
+				float gate = mountainGate(cn);
+				if (gate > 0.0f)
+					mnt_foot = std::fmax(mnt_foot, mountainFoot(x, z, cn, gate) *
+						(1.0f - (float)std::abs(dx) * taper) *
+						(1.0f - (float)std::abs(dz) * taper));
+			}
 		}
 	}
 #endif
@@ -420,6 +590,18 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 		float n_fill = NoiseFractal3D(&noise_inter_valley_fill->np, p.X, y, p.Y, seed);
 		float surface_delta = (float)y - surface_y;
 		float density = slope * n_fill - surface_delta;
+#if IS_VOPI_ENGINE
+		if (density <= 0.0f && mnt_gate > 0.0f && (float)y > mnt_floor) {
+			float n_mountain = NoiseFractal3D(&noise_mountain->np, p.X, y, p.Y, seed);
+			float cap = 0.0f;
+			if (mnt_foot > 0.0f && surface_delta > 0.0f &&
+					surface_delta < mountain_cap_height) {
+				float t = surface_delta / mountain_cap_height;
+				cap = mountain_cap * mnt_foot * 4.0f * t * (1.0f - t);
+			}
+			density = (n_mountain + cap) * mnt_gate - surface_delta / mnt_height;
+		}
+#endif
 
 		if (density > 0.0f) {  // If solid
 			// Sometimes surface level is below river water level in places that are not
@@ -627,13 +809,76 @@ int MapgenValleys::generateTerrain()
 	MapNode n_stone(c_stone);
 	MapNode n_water(c_water_source);
 
-	noise_inter_valley_slope->noiseMap2D(node_min.X, node_min.Z);
-	noise_rivers->noiseMap2D(node_min.X, node_min.Z);
-	noise_terrain_height->noiseMap2D(node_min.X, node_min.Z);
-	noise_valley_depth->noiseMap2D(node_min.X, node_min.Z);
-	noise_valley_profile->noiseMap2D(node_min.X, node_min.Z);
+	// The terrain noises and the columns cover 'column_reach' beyond the
+	// mapchunk on every side
+	const s32 reach = column_reach;
+	const s32 area_x = csize.X + 2 * reach;
+	const s32 area_z = csize.Z + 2 * reach;
+	const s32 area_min_x = node_min.X - reach;
+	const s32 area_min_z = node_min.Z - reach;
+
+	noise_inter_valley_slope->noiseMap2D(area_min_x, area_min_z);
+	noise_rivers->noiseMap2D(area_min_x, area_min_z);
+	noise_terrain_height->noiseMap2D(area_min_x, area_min_z);
+	noise_valley_depth->noiseMap2D(area_min_x, area_min_z);
+	noise_valley_profile->noiseMap2D(area_min_x, area_min_z);
 
 	noise_inter_valley_fill->noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
+
+	columns.resize((size_t)area_x * area_z);
+	for (s32 i = 0; i < area_x * area_z; i++)
+		terrainColumn(noise_inter_valley_slope->result[i],
+			noise_rivers->result[i], noise_terrain_height->result[i],
+			noise_valley_depth->result[i], noise_valley_profile->result[i],
+			columns[i]);
+
+#if IS_VOPI_ENGINE
+	// Mountains: the 2D height and the feet now, the 3D noise once a column
+	// needs it, so mapchunks above every mountain or in regions without
+	// them skip it
+	const bool gen_mountains = (spflags & MGVALLEYS_MOUNTAINS) &&
+		mountain_noise_max > 0.0f;
+	bool mountain_noise_ready = false;
+	if (gen_mountains) {
+		noise_mountain_height->noiseMap2D(area_min_x, area_min_z);
+		// The foot of the body in every column of the area, then the
+		// strongest foot within reach of every column of the mapchunk,
+		// tapering with the distance so a cap is widest over its foot and
+		// fades out at the reach. That is what the cap of a body hangs
+		// from, and a foot beyond the mapchunk casts its cap into it like
+		// any other.
+		foot.assign((size_t)area_x * area_z, 0.0f);
+		for (s32 zi = 0; zi < area_z; zi++)
+		for (s32 xi = 0; xi < area_x; xi++) {
+			s32 i = zi * area_x + xi;
+			if (noise_mountain_height->result[i] <= 0.0f)
+				continue;
+			float gate = mountainGate(columns[i]);
+			if (gate > 0.0f)
+				foot[i] = mountainFoot(area_min_x + xi, area_min_z + zi,
+					columns[i], gate);
+		}
+		const float taper = 1.0f / (float)(reach + 1);
+		foot_row.assign((size_t)csize.X * area_z, 0.0f);
+		for (s32 zi = 0; zi < area_z; zi++)
+		for (s32 x = 0; x < csize.X; x++) {
+			float m = 0.0f;
+			for (s32 dx = -reach; dx <= reach; dx++)
+				m = std::fmax(m, foot[zi * area_x + x + reach + dx] *
+					(1.0f - (float)std::abs(dx) * taper));
+			foot_row[zi * csize.X + x] = m;
+		}
+		foot_dil.assign((size_t)csize.X * csize.Z, 0.0f);
+		for (s32 z = 0; z < csize.Z; z++)
+		for (s32 x = 0; x < csize.X; x++) {
+			float m = 0.0f;
+			for (s32 dz = -reach; dz <= reach; dz++)
+				m = std::fmax(m, foot_row[(z + reach + dz) * csize.X + x] *
+					(1.0f - (float)std::abs(dz) * taper));
+			foot_dil[z * csize.X + x] = m;
+		}
+	}
+#endif
 
 	const v3s32 &em = vm->m_area.getExtent();
 	s16 surface_max_y = -MAX_MAP_GENERATION_LIMIT;
@@ -641,80 +886,53 @@ int MapgenValleys::generateTerrain()
 
 	for (s16 z = node_min.Z; z <= node_max.Z; z++)
 	for (s16 x = node_min.X; x <= node_max.X; x++, index_2d++) {
-		float n_slope          = noise_inter_valley_slope->result[index_2d];
-		float n_rivers         = noise_rivers->result[index_2d];
-		float n_terrain_height = noise_terrain_height->result[index_2d];
-		float n_valley         = noise_valley_depth->result[index_2d];
-		float n_valley_profile = noise_valley_profile->result[index_2d];
-
-		float valley_d = n_valley * n_valley;
-		// 'base' represents the level of the river banks
-		float base = n_terrain_height + valley_d;
-		// 'river' represents the distance from the river edge
-		float river = std::fabs(n_rivers) - river_size_factor;
-		// Use the curve of the function 1-exp(-(x/a)^2) to model valleys.
-		// 'valley_h' represents the height of the terrain, from the rivers.
-		float tv = std::fmax(river / n_valley_profile, 0.0f);
-		float valley_h = valley_d * (1.0f - std::exp(-tv * tv));
-		// Approximate height of the terrain
-		float surface_y = base + valley_h;
-		float slope = n_slope * valley_h;
-		// River water surface is 1 node below river banks
-		float river_y = base - 1.0f;
+		const size_t index_area = (size_t)(z - node_min.Z + reach) * area_x +
+			(x - node_min.X + reach);
+		const Column &col = columns[index_area];
+		float surface_y = col.surface_y;
+		float base = col.base;
+		float slope = col.slope;
+		float river_y = col.river_y;
 
 #if IS_VOPI_ENGINE
-		// Sea level river channels carry river water below the water line
-		bool river_water = false;
-		if (spflags & MGVALLEYS_SEA_LEVEL_RIVERS) {
-			float bank = (float)water_level + river_bank_height;
-			if (base > bank) {
-				// River banks never rise above 'river_bank_height' over the
-				// sea: the height by which they would is removed, fading out over
-				// 'river_valley_width' of the valley profile. The terrain
-				// beyond keeps its height, so the valley deepens instead
-				// and every river is level with the sea.
-				float tg = std::fmax(river /
-					(n_valley_profile * river_valley_width), 0.0f);
-				surface_y -= (base - bank) * std::exp(-tg * tg);
-				base = bank;
-				// River water only below the water line, whatever the bank height
-				river_y = (float)water_level;
-				river_water = river < 0.0f;
-				// The 3D relief never exceeds the height left above the
-				// bank, so lowered ground does not dip under the sea
-				slope = std::fmin(slope, n_slope * (surface_y - base));
-			}
-		}
-#endif
-
-		// Rivers are placed where 'river' is negative
-		if (river < 0.0f) {
-			// Use the function -sqrt(1-x^2) which models a circle
-			float tr = river / river_size_factor + 1.0f;
-			float depth = (river_depth_bed *
-				std::sqrt(std::fmax(0.0f, 1.0f - tr * tr)));
-			// There is no logical equivalent to this using rangelim
-			surface_y = std::fmin(
-				std::fmax(base - depth, (float)(water_level - 3)),
-				surface_y);
-			slope = 0.0f;
-		}
-
-#if IS_VOPI_ENGINE
-		if (river_water) {
-			// Sea level channels are not held above 'water_level - 3':
-			// their depth follows 'river_depth' below the banks
-			float tr = river / river_size_factor + 1.0f;
-			float depth = river_depth_bed *
-				std::sqrt(std::fmax(0.0f, 1.0f - tr * tr));
-			surface_y = std::fmin(base - depth, surface_y);
-		}
-
+		bool river_water = col.river_water;
 		// Kept for the cliff carving and the floating piece removal
 		surface_cache[index_2d] = surface_y;
 		bank_cache[index_2d] = base;
 		// Below this the base terrain is solid whatever the 3D relief does
 		floater_floor[index_2d] = surface_y - 1.5f * std::fabs(slope);
+
+		// Mountain body of this column: a 3D density anchored at the terrain
+		// surface, '(n_mountain + cap) * gate - (y - surface_y) / height',
+		// solid where positive. The height, a 2D noise, is the vertical
+		// distance the density gradient spans: small mountains where it is
+		// small, none at all where it is <= 0. The cap lowers the threshold
+		// around a foot, most at half 'mountain_cap_height' above the
+		// ground, so a body widens over its foot into overhangs, and two
+		// feet within reach of each other join into an arch. Evaluated down
+		// to the floater floor as well, so the body fills the relief cut
+		// under itself and stands on the ground.
+		float mnt_gate = 0.0f;
+		float mnt_height = 0.0f;
+		float mnt_foot = 0.0f;
+		bool column_mountains = false;
+		if (gen_mountains) {
+			mnt_height = noise_mountain_height->result[index_area];
+			if (mnt_height > 0.0f)
+				mnt_gate = mountainGate(col);
+			if (mnt_gate > 0.0f) {
+				mnt_foot = foot_dil[index_2d];
+				// Highest node the body can reach: the column is skipped above it
+				float mnt_ymax = surface_y + std::fmax(
+					mountain_noise_max * mnt_gate * mnt_height,
+					mnt_foot > 0.0f ? mountain_cap_height : 0.0f);
+				column_mountains = mnt_ymax >= (float)(node_min.Y - 1);
+			}
+		}
+		if (column_mountains && !mountain_noise_ready) {
+			noise_mountain->noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
+			mountain_noise_ready = true;
+		}
 #endif
 
 		// Optionally vary river depth according to heat and humidity
@@ -745,6 +963,19 @@ int MapgenValleys::generateTerrain()
 				float surface_delta = (float)y - surface_y;
 				// Density = density noise + density gradient
 				float density = slope * n_fill - surface_delta;
+#if IS_VOPI_ENGINE
+				if (density <= 0.0f && column_mountains &&
+						(float)y > floater_floor[index_2d]) {
+					float cap = 0.0f;
+					if (mnt_foot > 0.0f && surface_delta > 0.0f &&
+							surface_delta < mountain_cap_height) {
+						float t = surface_delta / mountain_cap_height;
+						cap = mountain_cap * mnt_foot * 4.0f * t * (1.0f - t);
+					}
+					density = (noise_mountain->result[index_3d] + cap) * mnt_gate -
+						surface_delta / mnt_height;
+				}
+#endif
 
 				if (density > 0.0f) {
 					vm->m_data[index_data] = n_stone; // Stone
