@@ -17,6 +17,7 @@ feature code either compiles out or is not compiled at all. See
 | [platform.md](platform.md) | iOS and Android support, the platform state channel, mobile lifecycle, memory and thermal caps |
 | [content-vfs.md](content-vfs.md) | Reading game content from encrypted containers instead of the filesystem |
 | [ui.md](ui.md) | Formspec and HUD extensions, touch input, font scaling, baked node icons |
+| [mapgen.md](mapgen.md) | Mapgen Valleys additions: rivers level with the sea, a solid floor, cliff carving, floating piece removal |
 | [lua-api.md](lua-api.md) | Index of every Lua API addition, and where each one is documented |
 
 ## Where API reference lives
