@@ -70,7 +70,8 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	mountain_river_width = std::fmax(params->mountain_river_width, 0.01f);
 	mountain_cap        = params->mountain_cap;
 	mountain_cap_height = std::fmax((float)params->mountain_cap_height, 1.0f);
-	mountain_cap_reach  = params->mountain_cap_reach;
+	// The 2D noises grow with the square of the reach
+	mountain_cap_reach  = (s16)std::min<u16>(params->mountain_cap_reach, 32);
 	mountain_noise_max  = 0.0f;
 	if (spflags & MGVALLEYS_MOUNTAINS)
 		column_reach = mountain_cap_reach;
@@ -531,6 +532,29 @@ float MapgenValleys::mountainFoot(s16 x, s16 z, const Column &c,
 	float n = NoiseFractal3D(&noise_mountain->np, x, ys, z, seed);
 	return std::fmax(n * gate, 0.0f);
 }
+
+
+// The strongest foot within reach of a point, tapered, as the cap of a
+// mapchunk column sees it. Costs a neighbourhood of columns.
+float MapgenValleys::spawnFoot(v2s16 p, const Column &c) const
+{
+	float foot = 0.0f;
+	const float taper = 1.0f / (float)(mountain_cap_reach + 1);
+	for (s16 dz = -mountain_cap_reach; dz <= mountain_cap_reach; dz++)
+	for (s16 dx = -mountain_cap_reach; dx <= mountain_cap_reach; dx++) {
+		s16 x = p.X + dx;
+		s16 z = p.Y + dz;
+		if (NoiseFractal2D(&noise_mountain_height->np, x, z, seed) <= 0.0f)
+			continue;
+		Column cn = (dx == 0 && dz == 0) ? c : columnAt(x, z);
+		float gate = mountainGate(cn);
+		if (gate > 0.0f)
+			foot = std::fmax(foot, mountainFoot(x, z, cn, gate) *
+				(1.0f - (float)std::abs(dx) * taper) *
+				(1.0f - (float)std::abs(dz) * taper));
+	}
+	return foot;
+}
 #endif
 
 
@@ -548,32 +572,15 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 	float river_y = c.river_y;
 
 #if IS_VOPI_ENGINE
-	// Mountain body of this column, as in generateTerrain: gate, height,
-	// and the strongest foot within reach for the cap
+	// Mountain body of this column, as in generateTerrain: gate and height.
+	// The cap is looked at only once a level is found, below.
 	float mnt_gate = 0.0f;
 	float mnt_height = 0.0f;
-	float mnt_foot = 0.0f;
 	float mnt_floor = surface_y - 1.5f * std::fabs(slope);
 	if ((spflags & MGVALLEYS_MOUNTAINS) && mountain_noise_max > 0.0f) {
 		mnt_height = NoiseFractal2D(&noise_mountain_height->np, p.X, p.Y, seed);
 		if (mnt_height > 0.0f)
 			mnt_gate = mountainGate(c);
-		if (mnt_gate > 0.0f) {
-			const float taper = 1.0f / (float)(mountain_cap_reach + 1);
-			for (s16 dz = -mountain_cap_reach; dz <= mountain_cap_reach; dz++)
-			for (s16 dx = -mountain_cap_reach; dx <= mountain_cap_reach; dx++) {
-				s16 x = p.X + dx;
-				s16 z = p.Y + dz;
-				if (NoiseFractal2D(&noise_mountain_height->np, x, z, seed) <= 0.0f)
-					continue;
-				Column cn = (dx == 0 && dz == 0) ? c : columnAt(x, z);
-				float gate = mountainGate(cn);
-				if (gate > 0.0f)
-					mnt_foot = std::fmax(mnt_foot, mountainFoot(x, z, cn, gate) *
-						(1.0f - (float)std::abs(dx) * taper) *
-						(1.0f - (float)std::abs(dz) * taper));
-			}
-		}
 	}
 #endif
 
@@ -593,13 +600,7 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 #if IS_VOPI_ENGINE
 		if (density <= 0.0f && mnt_gate > 0.0f && (float)y > mnt_floor) {
 			float n_mountain = NoiseFractal3D(&noise_mountain->np, p.X, y, p.Y, seed);
-			float cap = 0.0f;
-			if (mnt_foot > 0.0f && surface_delta > 0.0f &&
-					surface_delta < mountain_cap_height) {
-				float t = surface_delta / mountain_cap_height;
-				cap = mountain_cap * mnt_foot * 4.0f * t * (1.0f - t);
-			}
-			density = (n_mountain + cap) * mnt_gate - surface_delta / mnt_height;
+			density = n_mountain * mnt_gate - surface_delta / mnt_height;
 		}
 #endif
 
@@ -609,6 +610,29 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 			if (y < water_level || y > max_spawn_y || y < (s16)river_y)
 				// Unsuitable spawn point
 				return MAX_MAP_GENERATION_LIMIT;
+
+#if IS_VOPI_ENGINE
+			// The player stands in y + 2 and y + 3. A cap hanging from a
+			// foot nearby can fill them; that is checked only here, for the
+			// one level that is acceptable otherwise, as it costs a
+			// neighbourhood of columns.
+			if (mnt_gate > 0.0f && (float)(y + 3) > surface_y &&
+					(float)(y + 1) - surface_y < mountain_cap_height) {
+				float foot = spawnFoot(p, c);
+				for (s16 yy = y + 1; foot > 0.0f && yy <= y + 3; yy++) {
+					float delta = (float)yy - surface_y;
+					if (delta <= 0.0f || delta >= mountain_cap_height)
+						continue;
+					float t = delta / mountain_cap_height;
+					float cap = mountain_cap * foot * 4.0f * t * (1.0f - t);
+					float n_mountain = NoiseFractal3D(&noise_mountain->np,
+						p.X, yy, p.Y, seed);
+					if ((n_mountain + cap) * mnt_gate - delta / mnt_height > 0.0f)
+						// Inside a cap
+						return MAX_MAP_GENERATION_LIMIT;
+				}
+			}
+#endif
 
 			// y + 2 because y is surface and due to biome 'dust' nodes.
 			return y + 2;
@@ -739,6 +763,13 @@ void MapgenValleys::removeFloaters()
 			(p.X - node_min.X)];
 	};
 
+	// Marks: 1 on a node of the piece being filled, 2 on a node of a piece
+	// found grounded. A fill that touches a grounded node is grounded too.
+	// Without that, the nodes a grounded fill left marked but unexplored
+	// would wall off a later fill whose only way to the ground runs through
+	// them, and a thin crown or overhang standing on the ground would go.
+	const u8 M_PIECE = 1;
+	const u8 M_GROUNDED = 2;
 	std::vector<v3s16> stack;
 	std::vector<v3s16> piece;
 	u32 index_2d = 0;
@@ -766,10 +797,10 @@ void MapgenValleys::removeFloaters()
 		stack.clear();
 		piece.clear();
 		stack.emplace_back(x, top, z);
-		floater_visited[local_index(stack.back())] = 1;
+		floater_visited[local_index(stack.back())] = M_PIECE;
 		bool grounded = false;
 
-		while (!stack.empty()) {
+		while (!stack.empty() && !grounded) {
 			v3s16 p = stack.back();
 			stack.pop_back();
 			piece.push_back(p);
@@ -783,17 +814,29 @@ void MapgenValleys::removeFloaters()
 			for (const v3s16 &d : dirs) {
 				v3s16 q = p + d;
 				size_t li = local_index(q);
-				if (floater_visited[li])
+				u8 mark = floater_visited[li];
+				if (mark == M_GROUNDED) {
+					grounded = true;
+					break;
+				}
+				if (mark != 0)
 					continue;
 				if (!ndef->get(vm->m_data[vm->m_area.index(q.X, q.Y, q.Z)]).walkable)
 					continue;
-				floater_visited[li] = 1;
+				floater_visited[li] = M_PIECE;
 				stack.push_back(q);
 			}
 		}
 
-		if (grounded)
+		if (grounded) {
+			// Everything reached is connected to the ground: the piece and
+			// what is still waiting on the stack
+			for (const v3s16 &p : piece)
+				floater_visited[local_index(p)] = M_GROUNDED;
+			for (const v3s16 &p : stack)
+				floater_visited[local_index(p)] = M_GROUNDED;
 			continue;
+		}
 		for (const v3s16 &p : piece)
 			vm->m_data[vm->m_area.index(p.X, p.Y, p.Z)] =
 				(p.Y <= water_level) ? n_water : n_air;
@@ -839,8 +882,24 @@ int MapgenValleys::generateTerrain()
 	const bool gen_mountains = (spflags & MGVALLEYS_MOUNTAINS) &&
 		mountain_noise_max > 0.0f;
 	bool mountain_noise_ready = false;
+	bool feet_ready = false;
 	if (gen_mountains) {
 		noise_mountain_height->noiseMap2D(area_min_x, area_min_z);
+		// The feet matter only where the cap band, 'mountain_cap_height'
+		// above the ground, reaches into this mapchunk in some column of
+		// it; mapchunks under the ground or high above it skip them
+		float s_min = (float)MAX_MAP_GENERATION_LIMIT;
+		float s_max = -(float)MAX_MAP_GENERATION_LIMIT;
+		for (s32 z = 0; z < csize.Z; z++)
+		for (s32 x = 0; x < csize.X; x++) {
+			float s = columns[(size_t)(z + reach) * area_x + (x + reach)].surface_y;
+			s_min = std::fmin(s_min, s);
+			s_max = std::fmax(s_max, s);
+		}
+		feet_ready = s_max + mountain_cap_height > (float)(node_min.Y - 1) &&
+			s_min < (float)(node_max.Y + 1);
+	}
+	if (feet_ready) {
 		// The foot of the body in every column of the area, then the
 		// strongest foot within reach of every column of the mapchunk,
 		// tapering with the distance so a cap is widest over its foot and
@@ -921,12 +980,14 @@ int MapgenValleys::generateTerrain()
 			if (mnt_height > 0.0f)
 				mnt_gate = mountainGate(col);
 			if (mnt_gate > 0.0f) {
-				mnt_foot = foot_dil[index_2d];
-				// Highest node the body can reach: the column is skipped above it
+				mnt_foot = feet_ready ? foot_dil[index_2d] : 0.0f;
+				// Highest node the body can reach: the column is skipped
+				// above it, and below the floor the relief cannot cut under
 				float mnt_ymax = surface_y + std::fmax(
 					mountain_noise_max * mnt_gate * mnt_height,
 					mnt_foot > 0.0f ? mountain_cap_height : 0.0f);
-				column_mountains = mnt_ymax >= (float)(node_min.Y - 1);
+				column_mountains = mnt_ymax >= (float)(node_min.Y - 1) &&
+					(float)(node_max.Y + 1) > floater_floor[index_2d];
 			}
 		}
 		if (column_mountains && !mountain_noise_ready) {

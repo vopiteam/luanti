@@ -162,6 +162,7 @@ private:
 	std::vector<float> foot_dil;
 	float mountainGate(const Column &c) const;
 	float mountainFoot(s16 x, s16 z, const Column &c, float gate) const;
+	float spawnFoot(v2s16 p, const Column &c) const;
 	// Per column: final terrain surface and river bank level, for the
 	// cliff carving and the floating piece removal
 	std::vector<float> surface_cache;
