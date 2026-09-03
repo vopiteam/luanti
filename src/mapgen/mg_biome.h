@@ -58,8 +58,8 @@ public:
 	s16 depth_riverbed  = 0;
 #if IS_VOPI_ENGINE
 	// Layer laid under sea water in place of the top and filler layers, so a
-	// biome can give its sea floor one node and the floors of its caves
-	// another. CONTENT_IGNORE leaves the sea floor to node_top and
+	// biome whose range holds both dry ground and sea floor can give each its
+	// own node. CONTENT_IGNORE leaves the sea floor to node_top and
 	// node_filler as before.
 	content_t c_seabed = CONTENT_IGNORE;
 	s16 depth_seabed = 0;

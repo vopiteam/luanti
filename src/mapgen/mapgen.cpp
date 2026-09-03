@@ -737,7 +737,7 @@ void MapgenBasic::generateBiomes()
 #if IS_VOPI_ENGINE
 				} else if (sea_water_above && biome->c_seabed != CONTENT_IGNORE) {
 					// The sea floor takes the biome's seabed layer; the top and
-					// filler layers stay for floors under air, i.e. in caves.
+					// filler layers stay for the surfaces under air.
 					if (nplaced < depth_seabed) {
 						vm->m_data[vi] = MapNode(biome->c_seabed);
 						nplaced++;
