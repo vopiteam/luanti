@@ -23,6 +23,7 @@ Documented beside the upstream elements they extend:
 | `ObjectRef:set_camera_yaw_range` / `get_camera_yaw_range` | camera limits |
 | `ObjectRef:set_camera` / `get_camera` | camera control |
 | `ObjectRef:set_view_bobbing` / `get_view_bobbing` | server-side view bobbing control |
+| `node_seabed`, `depth_seabed` | biome definition fields, mechanism in [mapgen.md](mapgen.md) |
 
 ## In this directory
 

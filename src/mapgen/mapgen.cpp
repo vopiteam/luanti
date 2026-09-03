@@ -644,6 +644,9 @@ void MapgenBasic::generateBiomes()
 		u16 base_filler = 0;
 		u16 depth_water_top = 0;
 		u16 depth_riverbed = 0;
+#if IS_VOPI_ENGINE
+		u16 depth_seabed = 0;
+#endif
 		u32 vi = vm->m_area.index(x, node_max.Y, z);
 
 		s16 biome_y_next = biomegen->getNextTransitionY(node_max.Y);
@@ -654,6 +657,9 @@ void MapgenBasic::generateBiomes()
 		bool air_above = c_above == CONTENT_AIR;
 		bool river_water_above = c_above == c_river_water_source;
 		bool water_above = c_above == c_water_source || river_water_above;
+#if IS_VOPI_ENGINE
+		bool sea_water_above = c_above == c_water_source;
+#endif
 
 		biomemap[index] = BIOME_NONE;
 
@@ -703,6 +709,9 @@ void MapgenBasic::generateBiomes()
 					noise_filler_depth->result[index], 0.0f);
 				depth_water_top = biome->depth_water_top;
 				depth_riverbed = biome->depth_riverbed;
+#if IS_VOPI_ENGINE
+				depth_seabed = biome->depth_seabed;
+#endif
 			}
 
 			if (c == c_stone) {
@@ -725,6 +734,19 @@ void MapgenBasic::generateBiomes()
 						nplaced = U16_MAX;  // Disable top/filler placement
 						river_water_above = false;
 					}
+#if IS_VOPI_ENGINE
+				} else if (sea_water_above && biome->c_seabed != CONTENT_IGNORE) {
+					// The sea floor takes the biome's seabed layer; the top and
+					// filler layers stay for floors under air, i.e. in caves.
+					if (nplaced < depth_seabed) {
+						vm->m_data[vi] = MapNode(biome->c_seabed);
+						nplaced++;
+					} else {
+						vm->m_data[vi] = MapNode(biome->c_stone);
+						nplaced = U16_MAX;  // Disable top/filler placement
+						sea_water_above = false;
+					}
+#endif
 				} else if (nplaced < depth_top) {
 					vm->m_data[vi] = MapNode(biome->c_top);
 					nplaced++;
@@ -744,20 +766,32 @@ void MapgenBasic::generateBiomes()
 				nplaced = 0;  // Enable top/filler placement for next surface
 				air_above = false;
 				water_above = true;
+#if IS_VOPI_ENGINE
+				sea_water_above = true;
+#endif
 			} else if (c == c_river_water_source) {
 				vm->m_data[vi] = MapNode(biome->c_river_water);
 				nplaced = 0;  // Enable riverbed placement for next surface
 				air_above = false;
 				water_above = true;
 				river_water_above = true;
+#if IS_VOPI_ENGINE
+				sea_water_above = false;
+#endif
 			} else if (c == CONTENT_AIR) {
 				nplaced = 0;  // Enable top/filler placement for next surface
 				air_above = true;
 				water_above = false;
+#if IS_VOPI_ENGINE
+				sea_water_above = false;
+#endif
 			} else {  // Possible various nodes overgenerated from neighboring mapchunks
 				nplaced = U16_MAX;  // Disable top/filler placement
 				air_above = false;
 				water_above = false;
+#if IS_VOPI_ENGINE
+				sea_water_above = false;
+#endif
 			}
 
 			VoxelArea::add_y(em, vi, -1);

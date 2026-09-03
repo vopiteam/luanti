@@ -56,6 +56,14 @@ public:
 	s16 depth_filler    = -MAX_MAP_GENERATION_LIMIT;
 	s16 depth_water_top = 0;
 	s16 depth_riverbed  = 0;
+#if IS_VOPI_ENGINE
+	// Layer laid under sea water in place of the top and filler layers, so a
+	// biome can give its sea floor one node and the floors of its caves
+	// another. CONTENT_IGNORE leaves the sea floor to node_top and
+	// node_filler as before.
+	content_t c_seabed = CONTENT_IGNORE;
+	s16 depth_seabed = 0;
+#endif
 
 	v3s16 min_pos = -MAX_MAP_GENERATION_LIMIT_V3;
 	v3s16 max_pos =  MAX_MAP_GENERATION_LIMIT_V3;

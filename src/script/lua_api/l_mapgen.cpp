@@ -368,6 +368,9 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	getintfield(L,    index, "depth_filler",    b->depth_filler);
 	getintfield(L,    index, "depth_water_top", b->depth_water_top);
 	getintfield(L,    index, "depth_riverbed",  b->depth_riverbed);
+#if IS_VOPI_ENGINE
+	getintfield(L,    index, "depth_seabed",    b->depth_seabed);
+#endif
 	getfloatfield(L,  index, "heat_point",      b->heat_point);
 	getfloatfield(L,  index, "humidity_point",  b->humidity_point);
 	getintfield(L,    index, "vertical_blend",  b->vertical_blend);
@@ -400,6 +403,9 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	nn.push_back(getstringfield_default(L, index, "node_dungeon",       ""));
 	nn.push_back(getstringfield_default(L, index, "node_dungeon_alt",   ""));
 	nn.push_back(getstringfield_default(L, index, "node_dungeon_stair", ""));
+#if IS_VOPI_ENGINE
+	nn.push_back(getstringfield_default(L, index, "node_seabed",        ""));
+#endif
 	ndef->pendNodeResolve(b);
 
 	return b;

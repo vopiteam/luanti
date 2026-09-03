@@ -11822,6 +11822,15 @@ performance and computing power the practical limit is much lower.
     -- Node placed under river water and thickness of this layer.
     -- Integer range of depth: [0, 32767]
 
+    node_seabed = "default:sand",
+    depth_seabed = 3,
+    -- VOPI Engine extension. Node placed under sea water in place of the
+    -- top and filler layers, and the thickness of this layer. Surfaces
+    -- under air keep node_top and node_filler, so one biome can span dry
+    -- ground and sea floor and give each its own node.
+    -- If absent, sea floors take node_top and node_filler as before.
+    -- Integer range of depth: [0, 32767]
+
     node_cave_liquid = "default:lava_source",
     node_cave_liquid = {"default:water_source", "default:lava_source"},
     -- Nodes placed inside 50% of the medium size caves.

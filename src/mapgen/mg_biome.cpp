@@ -37,6 +37,9 @@ BiomeManager::BiomeManager(Server *server) :
 	b->m_nodenames.emplace_back("ignore");
 	b->m_nodenames.emplace_back("ignore");
 	b->m_nodenames.emplace_back("ignore");
+#if IS_VOPI_ENGINE
+	b->m_nodenames.emplace_back("ignore");
+#endif
 	m_ndef->pendNodeResolve(b);
 
 	add(b);
@@ -304,6 +307,10 @@ ObjDef *Biome::clone() const
 	obj->depth_filler = depth_filler;
 	obj->depth_water_top = depth_water_top;
 	obj->depth_riverbed = depth_riverbed;
+#if IS_VOPI_ENGINE
+	obj->c_seabed = c_seabed;
+	obj->depth_seabed = depth_seabed;
+#endif
 
 	obj->min_pos = min_pos;
 	obj->max_pos = max_pos;
@@ -329,4 +336,7 @@ void Biome::resolveNodeNames()
 	getIdFromNrBacklog(&c_dungeon,       "ignore",                    CONTENT_IGNORE, false);
 	getIdFromNrBacklog(&c_dungeon_alt,   "ignore",                    CONTENT_IGNORE, false);
 	getIdFromNrBacklog(&c_dungeon_stair, "ignore",                    CONTENT_IGNORE, false);
+#if IS_VOPI_ENGINE
+	getIdFromNrBacklog(&c_seabed,        "ignore",                    CONTENT_IGNORE, false);
+#endif
 }

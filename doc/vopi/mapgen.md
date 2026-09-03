@@ -100,3 +100,18 @@ past their mapchunk, and a neighbour generated later would otherwise reopen
 a floor already laid. Ores and decorations run after it and may still place
 into that stone. It must lie below the terrain; the default of -31000 is
 below the map and does nothing.
+
+## Biome `node_seabed`
+
+A field of the biome definition rather than a flag, read by every mapgen
+that uses the biome API. Upstream lays a biome's `node_top` and
+`node_filler` on every solid surface inside the biome's Y range, whether
+water or air stands above it, so a biome whose range spans both dry ground
+and sea floor, a shore biome reaching from the shallows up onto the beach,
+gives both the same node. With `node_seabed` and `depth_seabed` set, a
+surface under sea water takes that layer instead, and surfaces under air
+keep the top and filler layers. The seabed layer is `depth_seabed` nodes
+deep and is followed by the biome's `node_stone`; it mirrors
+`node_riverbed`, which upstream already applies under river water. A biome
+without the field behaves as before. Caves are carved after the biome
+layers, so cave floors are untouched by either field.
