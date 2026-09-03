@@ -110,8 +110,17 @@ void Schematic::resolveNodeNames()
 }
 
 
-void Schematic::blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_place)
+void Schematic::blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_place,
+	PcgRandom *pr)
 {
+	// Probability rolls come from the caller's generator when it has one, so
+	// that a decoration reproduces for a seed; otherwise from the process-wide
+	// generator, as upstream does.
+	auto roll = [pr]() -> s32 {
+		return pr ? pr->range(1, MTSCHEM_PROB_ALWAYS)
+			: myrand_range(1, MTSCHEM_PROB_ALWAYS);
+	};
+
 	assert(schemdata && slice_probs);
 	sanity_check(m_ndef != NULL);
 
@@ -151,7 +160,7 @@ void Schematic::blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_pla
 	s16 y_map = p.Y;
 	for (s16 y = 0; y != sy; y++) {
 		if ((slice_probs[y] != MTSCHEM_PROB_ALWAYS) &&
-			(slice_probs[y] <= myrand_range(1, MTSCHEM_PROB_ALWAYS)))
+			(slice_probs[y] <= roll()))
 			continue;
 
 		for (s16 z = 0; z != sz; z++) {
@@ -178,7 +187,7 @@ void Schematic::blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_pla
 				}
 
 				if ((placement_prob != MTSCHEM_PROB_ALWAYS) &&
-					(placement_prob <= myrand_range(1, MTSCHEM_PROB_ALWAYS)))
+					(placement_prob <= roll()))
 					continue;
 
 				vm->m_data[vi] = schemdata[i];

@@ -445,7 +445,13 @@ size_t DecoSchematic::generate(MMVManip *vm, PcgRandom *pr, v3s16 p, bool ceilin
 
 	bool force_placement = (flags & DECO_FORCE_PLACEMENT);
 
+#if IS_VOPI_ENGINE
+	// The decoration's own generator also rolls the schematic's probabilities,
+	// so the same seed places the same trees.
+	schematic->blitToVManip(vm, p, rot, force_placement, pr);
+#else
 	schematic->blitToVManip(vm, p, rot, force_placement);
+#endif
 
 	return 1;
 }

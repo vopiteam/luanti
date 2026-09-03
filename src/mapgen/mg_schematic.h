@@ -92,7 +92,10 @@ public:
 	bool serializeToMts(std::ostream *os) const;
 	bool serializeToLua(std::ostream *os, bool use_comments, u32 indent_spaces) const;
 
-	void blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_place);
+	// pr: generator for the probability rolls of Y slices and nodes; without
+	// one the process-wide generator is used, as upstream does.
+	void blitToVManip(MMVManip *vm, v3s16 p, Rotation rot, bool force_place,
+		PcgRandom *pr = nullptr);
 	bool placeOnVManip(MMVManip *vm, v3s16 p, u32 flags, Rotation rot, bool force_place);
 	void placeOnMap(ServerMap *map, v3s16 p, u32 flags, Rotation rot, bool force_place);
 

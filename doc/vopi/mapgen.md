@@ -115,3 +115,14 @@ deep and is followed by the biome's `node_stone`; it mirrors
 `node_riverbed`, which upstream already applies under river water. A biome
 without the field behaves as before. Caves are carved after the biome
 layers, so cave floors are untouched by either field.
+
+## Schematic decorations draw from the decoration's generator
+
+Upstream rolls the placement probability of every schematic node, and of
+every Y slice, with the process-wide random generator, so the trees of a
+decoration differ from one run to the next even for the same seed. With
+`IS_VOPI_ENGINE` the schematic blit of a decoration draws those rolls
+from the decoration's own generator, the one that already chooses its
+positions and rotation, and a seed reproduces the world node for node.
+Schematics placed from Lua with `core.place_schematic` and
+`core.place_schematic_on_vmanip` keep the upstream behaviour.
