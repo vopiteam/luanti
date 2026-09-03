@@ -168,7 +168,7 @@ MapgenValleysParams::MapgenValleysParams():
 	np_dungeons           (0.9,   0.5,  v3f(500,  500,  500),  0,     2, 0.8,  2.0)
 #if IS_VOPI_ENGINE
 	, np_carve            (-0.4,  1.0,  v3f(48,   32,   48),   2131,  3, 0.55, 2.0)
-	, np_mountain         (-0.45, 1.0,  v3f(192,  256,  192),  3517,  5, 0.7,  2.0)
+	, np_mountain         (-0.48, 1.0,  v3f(192,  256,  192),  3517,  5, 0.7,  2.0)
 	, np_mountain_height  (128.0, 80.0, v3f(1500, 1500, 1500), 4021,  3, 0.6,  2.0)
 #endif
 {
