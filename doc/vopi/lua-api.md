@@ -39,6 +39,7 @@ Documented beside the upstream elements they extend:
 | `core.is_chat_open()` | **client-side only** | below |
 | `core.set_day_cycle`, `core.set_day_cycle_paused`, `core.set_world_time`, `core.advance_time` | server | [day-cycle.md](day-cycle.md) |
 | `core.get_day_cycle_state` | server, client-side | [day-cycle.md](day-cycle.md) |
+| `core.get_world_load_info` | server | [day-cycle.md](day-cycle.md#world-load-information) |
 
 ## `core.is_chat_open()`
 

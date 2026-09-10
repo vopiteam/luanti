@@ -773,28 +773,40 @@ int ModApiEnv::l_set_day_cycle(lua_State *L)
 		d.day_light = cycleNumber(L, -1, "day_light", d.day_light, d.enabled);
 	}
 	lua_pop(L, 1);
-	std::string migration_id;
-	double source_sunrise = 0.25, source_sunset = 0.75;
-	lua_getfield(L, 1, "migration");
-	if (!lua_isnil(L, -1)) {
-		luaL_checktype(L, -1, LUA_TTABLE);
-		migration_id = getstringfield_default(L, -1, "id", "");
-		if (migration_id.empty() || migration_id.size() > 64 ||
-				migration_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
-			return luaL_error(L, "migration id must contain 1..64 ASCII letters, digits, underscores or hyphens");
-		source_sunrise = cycleNumber(L, -1, "source_sunrise", source_sunrise);
-		source_sunset = cycleNumber(L, -1, "source_sunset", source_sunset);
+	// Do not silently accept definitions from games using the removed options.
+	for (const char *key : {"migration", "legacy_timeofday"}) {
+		lua_getfield(L, 1, key);
+		if (!lua_isnil(L, -1))
+			return luaL_error(L, "%s is no longer supported; use Lua world initialization", key);
+		lua_pop(L, 1);
 	}
-	lua_pop(L, 1);
 	try {
-		d.validate();
-		if (!migration_id.empty())
-			migrateDayCycleTime({1, 0, false}, source_sunrise, source_sunset, d);
-		getServer(L)->configureDayCycle(d, migration_id, source_sunrise, source_sunset);
+		getServer(L)->configureDayCycle(d);
 	} catch (const std::exception &e) {
 		return luaL_error(L, "%s", e.what());
 	}
 	return 0;
+}
+
+int ModApiEnv::l_get_world_load_info(lua_State *L)
+{
+	MAP_LOCK_REQUIRED;
+	DEBUG_ASSERT_NO_CLIENTAPI;
+	// Absence during mod loading is part of this read-only API's contract.
+	auto *env = static_cast<ServerEnvironment *>(getEnv(L));
+	if (!env)
+		return 0;
+	const auto *info = env->getWorldLoadInfo();
+	if (!info)
+		return 0;
+	lua_newtable(L);
+	lua_pushboolean(L, info->has_metadata);
+	lua_setfield(L, -2, "has_metadata");
+	lua_pushboolean(L, info->has_day_cycle_state);
+	lua_setfield(L, -2, "has_day_cycle_state");
+	lua_pushboolean(L, info->day_cycle_enabled);
+	lua_setfield(L, -2, "day_cycle_enabled");
+	return 1;
 }
 
 int ModApiEnv::l_get_day_cycle_state(lua_State *L)
@@ -803,8 +815,9 @@ int ModApiEnv::l_get_day_cycle_state(lua_State *L)
 	std::optional<double> time;
 	if (!lua_isnoneornil(L, 1)) {
 		time = luaL_checknumber(L, 1);
-		luaL_argcheck(L, std::isfinite(*time) && *time >= 0 && *time < 1, 1,
-				"time must be finite and in [0, 1)");
+		// A full day wraps to midnight, matching the light forecast queries.
+		luaL_argcheck(L, std::isfinite(*time) && *time >= 0 && *time <= 1, 1,
+				"time must be finite and in [0, 1]");
 	}
 	auto snapshot = env->getDayCycleSnapshot();
 	auto s = evaluateDayCycle(snapshot.definition, time.value_or(snapshot.clock.timeofday));
@@ -1565,6 +1578,7 @@ void ModApiEnv::Initialize(lua_State *L, int top)
 	API_FCT(set_timeofday);
 #if IS_VOPI_ENGINE
 	API_FCT(set_day_cycle);
+	API_FCT(get_world_load_info);
 	API_FCT(get_day_cycle_state);
 	API_FCT(set_day_cycle_paused);
 	API_FCT(set_world_time);

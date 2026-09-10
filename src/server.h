@@ -263,9 +263,7 @@ public:
 #if IS_VOPI_ENGINE
 	// Server Lua calls these under the environment lock; configuration may be queued
 	// before environment creation. Startup applies it after persisted time is loaded.
-	void configureDayCycle(const DayCycleDefinition &definition,
-			const std::string &migration_id = "", double source_sunrise = 0.25,
-			double source_sunset = 0.75);
+	void configureDayCycle(const DayCycleDefinition &definition);
 	void setDayCyclePaused(bool paused);
 	void setWorldTime(const DayCycleTime &time);
 	void advanceTime(double seconds);
@@ -742,11 +740,6 @@ private:
 	std::optional<std::string> m_day_cycle_observed_speed;
 	std::optional<DayCycleDefinition> m_pending_day_cycle;
 	std::optional<bool> m_pending_day_cycle_pause;
-	std::string m_day_cycle_migration_id;
-	std::string m_day_cycle_backup_path;
-	double m_day_cycle_source_sunrise = 0.25;
-	double m_day_cycle_source_sunset = 0.75;
-	void prepareDayCycleBackup();
 	void initializeDayCycle();
 #endif
 

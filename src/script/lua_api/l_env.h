@@ -148,6 +148,7 @@ private:
 	static int l_set_timeofday(lua_State *L);
 #if IS_VOPI_ENGINE
 	static int l_set_day_cycle(lua_State *L);
+	static int l_get_world_load_info(lua_State *L);
 	static int l_get_day_cycle_state(lua_State *L);
 	static int l_set_day_cycle_paused(lua_State *L);
 	static int l_set_world_time(lua_State *L);

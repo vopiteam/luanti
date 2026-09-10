@@ -57,7 +57,6 @@ public:
 	void testValidation();
 	void testLegacy();
 	void testSnapshots();
-	void testMigration();
 	void testClockText();
 	void testClockMinuteBoundaries(IGameDef *gamedef);
 };
@@ -72,7 +71,6 @@ void TestDayCycle::runTests(IGameDef *gamedef)
 	TEST(testValidation);
 	TEST(testLegacy);
 	TEST(testSnapshots);
-	TEST(testMigration);
 	TEST(testClockText);
 	TEST(testClockMinuteBoundaries, gamedef);
 }
@@ -217,23 +215,6 @@ void TestDayCycle::testSnapshots()
 	EXCEPTION_CHECK(std::invalid_argument, DayCycleSnapshot::deserialize(s.serialize()));
 	s.clock.timeofday = std::numeric_limits<double>::infinity();
 	EXCEPTION_CHECK(std::invalid_argument, DayCycleSnapshot::deserialize(s.serialize()));
-}
-
-void TestDayCycle::testMigration()
-{
-	auto d = exampleCycle();
-	for (auto example : {std::pair<double, double>{0, 1}, {5, 5}, {12, 13},
-			{19, 21}, {22.75, 24}, {23, 24.2}}) {
-		auto migrated = migrateDayCycleTime({7, example.first / 24, true},
-				5.0 / 24, 19.0 / 24, d);
-		UASSERTEQ(uint32_t, migrated.day, example.second >= 24 ? 8 : 7);
-		near(migrated.timeofday, dayCycleWrap(example.second / 24));
-		UASSERT(migrated.paused);
-	}
-	DayCycleTime time{7, d.night_start, false};
-	time.advance(135, d, 0);
-	UASSERTEQ(uint32_t, time.day, 8);
-	near(time.timeofday, 0);
 }
 
 void TestDayCycle::testClockText()

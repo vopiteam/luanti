@@ -108,6 +108,13 @@ private:
 	Server *m_server;
 };
 
+#if IS_VOPI_ENGINE
+// An iteration that spans a suspended process (mobile background, host sleep)
+// or a stalled host is not simulated as one giant step. The world does not
+// catch up with the wall clock after such a gap.
+static constexpr float SERVER_STEP_MAX_DTIME = 5.0f;
+#endif
+
 void *ServerThread::run()
 {
 	ZoneScoped;
@@ -168,6 +175,13 @@ void *ServerThread::run()
 		}
 
 		dtime = 1e-6f * (porting::getTimeUs() - t0);
+#if IS_VOPI_ENGINE
+		if (dtime > SERVER_STEP_MAX_DTIME) {
+			warningstream << "Server: skipping " << dtime
+					<< " s of wall time after a suspended or stalled step" << std::endl;
+			dtime = 0.0f;
+		}
+#endif
 		framemarker.end();
 	}
 
@@ -495,13 +509,6 @@ void Server::init()
 		throw ServerError(std::string("Failed to initialize world: ") + e.what());
 	}
 
-#if IS_VOPI_ENGINE
-	try {
-		prepareDayCycleBackup();
-	} catch (const std::exception &e) {
-		throw ServerError(std::string("Cannot prepare day cycle backup: ") + e.what());
-	}
-#endif
 	// Create emerge manager
 	m_emerge = std::make_unique<EmergeManager>(this, m_metrics_backend.get());
 
@@ -610,7 +617,7 @@ void Server::init()
 		m_env->loadMeta();
 		initializeDayCycle();
 	} catch (const std::exception &e) {
-		throw ServerError(std::string("Cannot initialize world clock: ") + e.what());
+		throw ServerError(std::string("Cannot load world metadata: ") + e.what());
 	}
 #else
 	m_env->loadMeta();
@@ -1443,15 +1450,11 @@ void Server::setTimeOfDay(u32 time)
 
 
 #if IS_VOPI_ENGINE
-void Server::configureDayCycle(const DayCycleDefinition &definition,
-		const std::string &migration_id, double source_sunrise, double source_sunset)
+void Server::configureDayCycle(const DayCycleDefinition &definition)
 {
 	definition.validate();
 	if (!m_day_cycle_ready) {
 		m_pending_day_cycle = definition;
-		m_day_cycle_migration_id = migration_id;
-		m_day_cycle_source_sunrise = source_sunrise;
-		m_day_cycle_source_sunset = source_sunset;
 		return;
 	}
 	if (definition.enabled) {
@@ -1463,8 +1466,6 @@ void Server::configureDayCycle(const DayCycleDefinition &definition,
 		}
 	}
 	m_env->setDayCycle(definition);
-	if (definition.enabled)
-		m_env->markDayCycleConfigured();
 	m_time_of_day_send_timer = 0;
 }
 
@@ -1494,57 +1495,10 @@ void Server::advanceTime(double seconds)
 	m_time_of_day_send_timer = 0;
 }
 
-void Server::prepareDayCycleBackup()
-{
-	// Called before opening map/player/mod-storage databases. A copy made after
-	// mod loading could miss uncommitted database changes.
-	if (!g_settings->getBool("day_cycle_migration_backup"))
-		return;
-	std::string meta_path = m_path_world + DIR_DELIM "env_meta.txt";
-	if (!fs::PathExists(meta_path))
-		return;
-	auto input = open_ifstream(meta_path.c_str(), true);
-	Settings meta("EnvArgsEnd");
-	if (!input.good() || !meta.parseConfigLines(input))
-		throw ServerError("Cannot read world metadata before day cycle backup");
-	if ((meta.exists("day_cycle_configured") && meta.getBool("day_cycle_configured")) ||
-			meta.exists("day_cycle_migration") ||
-			(meta.exists("day_cycle_state") &&
-			DayCycleSnapshot::deserialize(meta.get("day_cycle_state")).definition.enabled))
-		return;
-	std::string name;
-	std::string parent = fs::RemoveLastPathComponent(m_path_world, &name);
-	std::string base = parent + DIR_DELIM ".day-cycle-backups" + DIR_DELIM + name;
-	for (unsigned attempt = 0; attempt < 1000; ++attempt) {
-		std::string path = base + "-" + std::to_string(porting::getTimeMs()) +
-				"-" + std::to_string(attempt);
-		if (fs::PathExists(path))
-			continue;
-		if (!fs::CopyDir(m_path_world, path))
-			throw ServerError("Cannot back up world before day cycle migration: " + path);
-		m_day_cycle_backup_path = path;
-		actionstream << "Day cycle: saved world backup to " << path << std::endl;
-		return;
-	}
-	throw ServerError("Cannot allocate a day cycle world backup directory");
-}
-
 void Server::initializeDayCycle()
 {
-	if (m_pending_day_cycle) {
-		if (m_pending_day_cycle->enabled && !m_day_cycle_migration_id.empty() &&
-				m_env->hasLegacyTimeMetadata()) {
-			if (m_day_cycle_backup_path.empty())
-				throw ServerError("Day cycle migration requires day_cycle_migration_backup = true before startup");
-			m_env->migrateDayCycle(*m_pending_day_cycle, m_day_cycle_migration_id,
-					m_day_cycle_source_sunrise, m_day_cycle_source_sunset,
-					m_day_cycle_backup_path);
-		} else {
-			m_env->setDayCycle(*m_pending_day_cycle);
-			if (m_pending_day_cycle->enabled)
-				m_env->markDayCycleConfigured();
-		}
-	}
+	if (m_pending_day_cycle)
+		m_env->setDayCycle(*m_pending_day_cycle);
 	if (m_pending_day_cycle_pause)
 		m_env->setDayCyclePaused(*m_pending_day_cycle_pause);
 	m_day_cycle_ready = true;

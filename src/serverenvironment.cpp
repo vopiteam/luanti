@@ -454,12 +454,6 @@ void ServerEnvironment::saveMeta()
 #if IS_VOPI_ENGINE
 	args.setU64("day_count", getDayCount());
 	args.set("day_cycle_state", getDayCycleSnapshot().serialize());
-	args.setBool("day_cycle_configured", m_day_cycle_configured);
-	if (!m_day_cycle_migration.empty()) {
-		args.set("day_cycle_migration", m_day_cycle_migration);
-		args.set("day_cycle_migration_source", m_day_cycle_migration_source);
-		args.set("day_cycle_backup", m_day_cycle_backup);
-	}
 #else
 	args.setU64("day_count", m_day_count);
 #endif
@@ -495,26 +489,26 @@ void ServerEnvironment::loadMeta()
 
 	// Read into temporary values. Failed validation must not publish partial
 	// state or allow saveMeta() to replace the original metadata during teardown.
-	u32 game_time = args.getU64("game_time");
+	u32 game_time;
+	try {
+		game_time = args.getU64("game_time");
+	} catch (SettingNotFoundException &e) {
+		// Getting this is crucial, otherwise timestamps are useless
+		throw SerializationError("Couldn't read game_time from env meta");
+	}
 	u32 last_clear_objects_time = args.exists("last_clear_objects_time") ?
 			args.getU64("last_clear_objects_time") : 0;
 	auto snapshot = getDayCycleSnapshot();
-	bool configured = false;
-	std::string migration, migration_source, backup;
+	WorldLoadInfo load_info;
+	load_info.has_metadata = true;
 	try {
 		snapshot.clock.timeofday = (args.exists("time_of_day") ?
 				args.getU64("time_of_day") % 24000 : 5250) / 24000.0;
 		snapshot.clock.day = args.exists("day_count") ? args.getU32("day_count") : 0;
-		if (args.exists("day_cycle_state"))
+		load_info.has_day_cycle_state = args.exists("day_cycle_state");
+		if (load_info.has_day_cycle_state)
 			snapshot = DayCycleSnapshot::deserialize(args.get("day_cycle_state"));
-		configured = args.exists("day_cycle_configured") ?
-				args.getBool("day_cycle_configured") : snapshot.definition.enabled;
-		if (args.exists("day_cycle_migration")) {
-			migration = args.get("day_cycle_migration");
-			migration_source = args.get("day_cycle_migration_source");
-			backup = args.get("day_cycle_backup");
-			configured = true;
-		}
+		load_info.day_cycle_enabled = snapshot.definition.enabled;
 	} catch (const std::exception &e) {
 		throw SerializationError(std::string("Cannot load day cycle: ") + e.what());
 	}
@@ -536,11 +530,7 @@ void ServerEnvironment::loadMeta()
 	setDayCycleSnapshot(snapshot);
 	m_game_time = game_time;
 	m_last_clear_objects_time = last_clear_objects_time;
-	m_day_cycle_configured = configured;
-	m_day_cycle_migration = std::move(migration);
-	m_day_cycle_migration_source = std::move(migration_source);
-	m_day_cycle_backup = std::move(backup);
-	m_has_time_metadata = true;
+	m_world_load_info = std::move(load_info);
 	m_meta_loaded = true;
 }
 
@@ -608,33 +598,6 @@ void ServerEnvironment::loadMeta()
 
 #endif
 
-#if IS_VOPI_ENGINE
-void ServerEnvironment::migrateDayCycle(const DayCycleDefinition &definition,
-		const std::string &id, double source_sunrise, double source_sunset,
-		const std::string &backup_path)
-{
-	auto old = getDayCycleSnapshot();
-	auto migrated = migrateDayCycleTime(old.clock, source_sunrise, source_sunset, definition);
-	setDayCycle(definition);
-	setWorldTime(migrated);
-	m_day_cycle_configured = true;
-	m_day_cycle_migration = id;
-	m_day_cycle_migration_source = old.serialize();
-	m_day_cycle_backup = backup_path;
-	// State and marker are committed together, before the first simulation tick.
-	try {
-		saveMeta();
-	} catch (...) {
-		setDayCycleSnapshot(old);
-		m_day_cycle_configured = false;
-		m_day_cycle_migration.clear();
-		m_day_cycle_migration_source.clear();
-		m_day_cycle_backup.clear();
-		throw;
-	}
-}
-
-#endif
 
 /**
  * called if env_meta.txt doesn't exist (e.g. new world)

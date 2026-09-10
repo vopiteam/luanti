@@ -77,6 +77,4 @@ struct DayCycleSnapshot {
 	static DayCycleSnapshot deserialize(const std::string &value);
 };
 
-DayCycleTime migrateDayCycleTime(const DayCycleTime &source,
-		double source_sunrise, double source_sunset, const DayCycleDefinition &target);
 #endif

@@ -19,7 +19,7 @@ See [build.md](build.md).
 | [content-vfs.md](content-vfs.md) | Reading game content from encrypted containers instead of the filesystem |
 | [ui.md](ui.md) | Formspec and HUD extensions, touch input, font scaling, baked node icons |
 | [mapgen.md](mapgen.md) | Mapgen Valleys additions: rivers level with the sea, a solid floor, cliff carving, floating piece removal |
-| [day-cycle.md](day-cycle.md) | Configurable civil clock, visual phases, synchronization and migration |
+| [day-cycle.md](day-cycle.md) | Configurable civil clock, visual phases, synchronization and world load information |
 | [lua-api.md](lua-api.md) | Index of every Lua API addition, and where each one is documented |
 
 ## Where API reference lives

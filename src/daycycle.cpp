@@ -290,26 +290,4 @@ DayCycleSnapshot DayCycleSnapshot::deserialize(const std::string &value)
 	return s;
 }
 
-DayCycleTime migrateDayCycleTime(const DayCycleTime &source,
-		double source_sunrise, double source_sunset, const DayCycleDefinition &target)
-{
-	source.validate();
-	target.validate();
-	for (double t : {source_sunrise, source_sunset})
-		require(std::isfinite(t) && t >= 0 && t < 1, "invalid source cycle position");
-	double source_length = dayCycleWrap(source_sunset - source_sunrise);
-	require(source_length > 0 && source_length < 1, "invalid source cycle interval");
-	double target_length = dayCycleWrap(target.night_start - target.day_start);
-	double offset = dayCycleWrap(source.timeofday - source_sunrise);
-	double mapped = target.day_start + (offset < source_length ?
-			offset / source_length * target_length : target_length +
-			(offset - source_length) / (1 - source_length) * (1 - target_length));
-	// Avoid assigning a boundary value such as 23:59:59.999999999 to the old day.
-	if (std::abs(mapped - std::round(mapped)) < 8 * std::numeric_limits<double>::epsilon())
-		mapped = std::round(mapped);
-	double shifted_day = source.day + std::floor(mapped) -
-			(source.timeofday < source_sunrise ? 1 : 0);
-	require(shifted_day >= 0 && shifted_day <= UINT32_MAX, "migration day counter overflow");
-	return {static_cast<uint32_t>(shifted_day), dayCycleWrap(mapped), source.paused};
-}
 #endif

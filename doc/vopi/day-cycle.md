@@ -7,7 +7,7 @@ ordinary `time_speed`, the standard light curve and standard celestial orbit
 remain in use, with the precise clock and its pause fixes.
 
 With `IS_VOPI_ENGINE=OFF`, the day-cycle module and tests are excluded from the
-build. The new Lua APIs, network capability, saved metadata, backup setting,
+build. The new Lua APIs, network capability, saved metadata,
 clock formspec element and shader uniform are absent. The previous Luanti
 clock implementation, light queries, protocol and rendering remain intact.
 A disabled runtime profile in a VOPI build is distinct from this compile-time
@@ -35,7 +35,7 @@ core.set_day_cycle({
 `enabled` defaults to true. All timing and visual fields are required when
 enabled. This replaces a definition, rather than patching selected fields.
 `core.set_day_cycle({enabled=false})` returns to the standard cycle without
-changing the time or clearing the pause or the world's migration marker.
+changing the time or clearing the pause.
 
 Positions are finite fractions in `[0,1)`. Timing intervals must each span at
 least one game second. Durations are simulation seconds in `[1,31536000]`;
@@ -70,9 +70,9 @@ Time edits require an initialized world; perform them from a server callback.
   every crossed midnight, even while paused. Negative/non-finite values and
   day-counter overflow are rejected without changing the clock.
 - `core.get_day_cycle_state([timeofday])` is available on server and CSM.
-  It returns nil before an environment exists. An optional fraction forecasts
-  the visual/timing state without mutating the world; date and pause still
-  describe the current world. CSM reads the synchronized, locally predicted
+  It returns nil before an environment exists. An optional fraction in
+  `[0,1]`, where 1 wraps to midnight, forecasts the visual/timing state
+  without mutating the world; date and pause still describe the current world. CSM reads the synchronized, locally predicted
   clock and does not have authority to change it.
 
 State fields:
@@ -106,7 +106,9 @@ curve usable without a world; use the new state API for controlled worlds.
 
 Changing `time_speed` while the controlled cycle is enabled has no effect and
 logs a warning when its value changes. No automatic wall-clock catch-up is
-performed on resume. ABM/LBM timers and `get_gametime` retain their own semantics.
+performed on resume: a server iteration that measures more than five seconds of
+wall time, for example after the process was suspended, is skipped rather than
+simulated as one step. ABM/LBM timers and `get_gametime` retain their own semantics.
 
 ## Synchronization and persistence
 
@@ -129,44 +131,53 @@ an incompatible client is already connected fails atomically.
 
 `env_meta.txt` stores `day_cycle_state` (version 1, 17-digit numbers), retaining
 legacy time/day fields for tools. Unknown or malformed snapshots fail to load
-instead of silently discarding the saved clock. `day_cycle_configured` persists
-the clock basis independently of the enabled flag. Loading validates the
-saved values before publishing them. Invalid metadata produces a handled
-startup error; an incompletely initialized world does not run ordinary
-shutdown callbacks or save over the original environment metadata.
+instead of silently discarding the saved clock. Any other `day_cycle_*` field
+is ignored and dropped by the next save. Loading validates saved values before
+publishing them. Invalid metadata produces a handled startup error; an
+incompletely initialized world does not run ordinary shutdown callbacks or
+save over the original environment metadata.
 
-### Explicit migration
+The saved profile stays active when a world is later opened by a game that
+does not configure one. `core.set_day_cycle({enabled=false})` returns such a
+world to the standard cycle.
 
-A game that formerly remapped the engine clock may add this to its initial
-`set_day_cycle` call:
+### World load information
 
-```lua
-migration = {id="civil_clock_v1", source_sunrise=6/24, source_sunset=18/24}
-```
+`core.get_world_load_info()` is a server-only, read-only API. It returns nil
+before successful environment metadata loading, including during mod loading
+and `register_on_mods_loaded`, without a deprecation warning or error even with
+`deprecated_lua_api_handling = error`. Use it from a later server callback, such
+as the first globalstep. Each call returns a fresh table of facts from that load:
 
-The ID is 1..64 ASCII letters, digits, underscores or hyphens. Source boundaries
-must describe the game's previous piecewise day/night mapping. The first load
-of an unconfigured existing world maps its phase position to the target
-timing boundaries, correcting the date when the mapped civil midnight differs.
-The engine cannot infer old Lua mappings. A fresh world needs no migration.
-Runtime profile replacements do not perform migrations. A disabled startup
-profile also leaves migration pending, preserving the saved time and existing
-markers. A later enabled startup performs the first conversion.
+| Field | Meaning |
+|---|---|
+| `has_metadata` | An existing `env_meta.txt` was read successfully; false when default metadata was used |
+| `has_day_cycle_state` | The file contained a valid native clock snapshot |
+| `day_cycle_enabled` | Enabled flag in the saved snapshot; false without a native snapshot |
 
-Enable `day_cycle_migration_backup = true` before startup. The option is
-registered by VOPI-only C++ defaults and documented here, rather than in the
-shared, non-preprocessed `builtin/settingtypes.txt`. Before opening world
-databases or loading mods, the server copies an eligible local world directory
-to its sibling `.day-cycle-backups/<world>-<unique suffix>`. Migration refuses
-to proceed without a successful backup. The built-in directory copy does not snapshot remote database services; deployments
-using such storage must arrange a consistent external backup as well.
+These facts do not change when a queued startup profile, a time edit or a
+runtime profile replacement changes the active clock. Editing the returned
+Lua table does not modify native state. The API is not synchronized to clients
+or available in CSM. It exposes no file paths or mutable metadata writer.
 
-Migration saves the original clock snapshot, ID and backup path alongside the
-new state. The persistent configured marker prevents repeated conversion,
-including after temporarily disabling and re-enabling the profile. Existing
-player progress is not reset. Already corrupted historical day counters cannot
-be reconstructed from time alone. Restore the saved directory while the server
-is stopped to roll back the conversion; retain the corresponding game version.
+A game can combine these facts with its own version in mod storage to perform
+a world upgrade. The engine does not classify a world as needing an upgrade,
+choose its new hour, or write a migration marker. Existing hours and dates are
+retained during profile configuration; missing metadata uses `world_start_time`.
+An explicit `core.set_world_time({timeofday=...})` from Lua keeps the date.
+
+`migration` and `legacy_timeofday` are no longer accepted in `set_day_cycle`,
+either at startup or at runtime. Passing either field raises an error instead
+of silently ignoring an old game's request. Deploy the updated game and engine
+together. Backup directories left by previous versions are not deleted; no
+new backup or special startup metadata save is performed.
+
+Clock state and mod storage use their ordinary independent save mechanisms.
+A game-owned version marker and a time edit do not form a shared transaction:
+forced termination can persist either component alone. A game must choose
+appropriate retry/skip semantics. Format validation and the existing clock's
+safe metadata replacement remain engine responsibilities. Unrelated shutdown
+I/O failures retain ordinary engine handling.
 
 ## UI and assets
 
@@ -187,5 +198,5 @@ cannot correctly represent a controlled profile.
 
 With `IS_VOPI_ENGINE=ON`, `--run-unittests --test-module TestDayCycle` covers phase integration, arbitrary
 step partitioning, freeze/resume, calendar jumps, legacy light samples, visual
-weights/orbit, validation, snapshot parsing, migration and clock formatting.
+weights/orbit, validation, snapshot parsing and clock formatting.
 These headless tests do not replace device validation of shaders and formspecs.

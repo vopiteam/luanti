@@ -148,11 +148,14 @@ public:
 	void saveMeta();
 	void loadMeta();
 #if IS_VOPI_ENGINE
-	bool hasLegacyTimeMetadata() { return m_has_time_metadata &&
-			!m_day_cycle_configured; }
-	void markDayCycleConfigured() { m_day_cycle_configured = true; }
-	void migrateDayCycle(const DayCycleDefinition &definition, const std::string &id,
-			double source_sunrise, double source_sunset, const std::string &backup_path);
+	// Facts read at startup, independent of later profile/time changes.
+	struct WorldLoadInfo {
+		bool has_metadata = false;
+		bool has_day_cycle_state = false;
+		bool day_cycle_enabled = false;
+	};
+	const WorldLoadInfo *getWorldLoadInfo() const
+	{ return m_meta_loaded ? &m_world_load_info : nullptr; }
 #endif
 
 	u32 addParticleSpawner(float exptime);
@@ -394,11 +397,7 @@ private:
 	// Whether the variables below have been read from file yet
 	bool m_meta_loaded = false;
 #if IS_VOPI_ENGINE
-	bool m_has_time_metadata = false;
-	bool m_day_cycle_configured = false;
-	std::string m_day_cycle_migration;
-	std::string m_day_cycle_migration_source;
-	std::string m_day_cycle_backup;
+	WorldLoadInfo m_world_load_info;
 #endif
 	// Are we shutting down?
 	bool m_shutting_down = false;
