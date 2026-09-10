@@ -5,6 +5,9 @@
 #include "test.h"
 
 #include "server/ban.h"
+#if IS_VOPI_ENGINE
+#include "exceptions.h"
+#endif
 
 class TestBan : public TestBase
 {
@@ -21,6 +24,10 @@ private:
 	void testModificationFlag();
 	void testGetBanName();
 	void testGetBanDescription();
+#if IS_VOPI_ENGINE
+	void testDestructorSaveReload();
+	void testSaveFailure();
+#endif
 
 	std::string m_testbm, m_testbm2;
 	void reinitTestEnv();
@@ -47,6 +54,13 @@ void TestBan::runTests(IGameDef *gamedef)
 
 	reinitTestEnv();
 	TEST(testGetBanDescription);
+#if IS_VOPI_ENGINE
+	reinitTestEnv();
+	TEST(testDestructorSaveReload);
+
+	reinitTestEnv();
+	TEST(testSaveFailure);
+#endif
 }
 
 void TestBan::reinitTestEnv()
@@ -153,3 +167,34 @@ void TestBan::testGetBanDescription()
 	UASSERT(bm.getBanDescription(bm_test1_entry) == bm_test1_result);
 	UASSERT(bm.getBanDescription(bm_test1_entry2) == bm_test1_result);
 }
+#if IS_VOPI_ENGINE
+
+void TestBan::testDestructorSaveReload()
+{
+	{
+		BanManager bm(m_testbm);
+		bm.add("192.0.2.1", "saved_user");
+	}
+	{
+		BanManager bm(m_testbm);
+		UASSERT(bm.isIpBanned("192.0.2.1"));
+		UASSERT(bm.getBanName("192.0.2.1") == "saved_user");
+		bm.remove("192.0.2.1");
+	}
+	BanManager bm(m_testbm);
+	UASSERT(!bm.isIpBanned("192.0.2.1"));
+}
+
+void TestBan::testSaveFailure()
+{
+	// A file used as a parent directory fails on every platform, even as root.
+	UASSERT(fs::safeWriteToFile(m_testbm, "not a directory"));
+	{
+		BanManager bm(m_testbm + DIR_DELIM "ipban.txt");
+		bm.add("192.0.2.1", "unsaved_user");
+		EXCEPTION_CHECK(SerializationError, bm.save());
+		UASSERT(bm.isModified());
+	} // Destruction must handle the same failure without aborting the process.
+	UASSERT(fs::IsFile(m_testbm));
+}
+#endif

@@ -26,7 +26,17 @@ BanManager::BanManager(const std::string &banfilepath):
 
 BanManager::~BanManager()
 {
+#if IS_VOPI_ENGINE
+	try {
+		save();
+	} catch (const SerializationError &e) {
+		// A failed save during teardown must not terminate error recovery.
+		errorstream << "BanManager: could not save bans during shutdown: "
+				<< e.what() << std::endl;
+	}
+#else
 	save();
+#endif
 }
 
 void BanManager::load()
