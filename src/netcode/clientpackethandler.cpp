@@ -26,6 +26,9 @@
 #include "netcode/clientopcodes.h"
 #include "netcode/connection.h"
 #include "netcode/networkpacket.h"
+#if IS_VOPI_ENGINE
+#include "netcode/networkexceptions.h"
+#endif
 #include "script/scripting_client.h"
 #include "util/serialize.h"
 #if IS_VOPI_ENGINE
@@ -155,7 +158,11 @@ void Client::handleCommand_AuthAccept(NetworkPacket* pkt)
 		lang.clear();
 
 	NetworkPacket resp_pkt(TOSERVER_INIT2, sizeof(u16) + lang.size());
+#if IS_VOPI_ENGINE
+	resp_pkt << lang << DAY_CYCLE_CAPABILITY << DAY_CYCLE_PROTOCOL;
+#else
 	resp_pkt << lang;
+#endif
 	Send(&resp_pkt);
 
 	m_state = LC_Init;
@@ -370,6 +377,44 @@ void Client::handleCommand_Inventory(NetworkPacket* pkt)
 	m_inventory_from_server_age = 0.0f;
 }
 
+#if IS_VOPI_ENGINE
+void Client::handleCommand_TimeOfDay(NetworkPacket* pkt)
+{
+	if (pkt->getSize() < 6)
+		return;
+	u16 time;
+	float speed;
+	*pkt >> time >> speed;
+	if (!std::isfinite(speed) || speed < 0)
+		throw con::InvalidIncomingDataException("Invalid time speed");
+	if (pkt->getRemainingBytes() > 0) {
+		if (pkt->getRemainingBytes() < 8 || pkt->getRemainingBytes() > 2056)
+			throw con::InvalidIncomingDataException("Invalid day cycle extension size");
+		try {
+			u32 capability;
+			u16 version;
+			std::string data;
+			*pkt >> capability >> version >> data;
+			if (capability != DAY_CYCLE_CAPABILITY || version != DAY_CYCLE_PROTOCOL ||
+					pkt->hasRemainingBytes())
+				throw con::InvalidIncomingDataException("Unsupported day cycle extension");
+			auto snapshot = DayCycleSnapshot::deserialize(data);
+			m_env.setDayCycleSnapshot(snapshot);
+		} catch (const std::exception &e) {
+			throw con::InvalidIncomingDataException(e.what());
+		}
+	} else {
+		// Legacy packets have no calendar. Corrections still must not add days.
+		auto clock = m_env.getWorldTime();
+		clock.timeofday = (time % 24000) / 24000.0;
+		clock.paused = false;
+		m_env.setDayCycle(DayCycleDefinition{});
+		m_env.setWorldTime(clock);
+	}
+	m_env.setTimeOfDaySpeed(speed);
+}
+
+#else
 void Client::handleCommand_TimeOfDay(NetworkPacket* pkt)
 {
 	if (pkt->getSize() < 2)
@@ -387,6 +432,7 @@ void Client::handleCommand_TimeOfDay(NetworkPacket* pkt)
 	m_env.setTimeOfDaySpeed(time_speed);
 }
 
+#endif
 void Client::handleCommand_ChatMessage(NetworkPacket *pkt)
 {
 	/*

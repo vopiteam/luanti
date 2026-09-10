@@ -17,6 +17,9 @@ class ShadowUniformSetter : public IShaderUniformSetter
 	CachedPixelShaderSetting<f32> m_shadow_strength{"f_shadow_strength"};
 	CachedPixelShaderSetting<f32, 3> m_shadow_tint{ "shadow_tint" };
 	CachedPixelShaderSetting<f32> m_time_of_day{"f_timeofday"};
+#if IS_VOPI_ENGINE
+	CachedVertexShaderSetting<f32> m_day_cycle_factor{"f_day_cycle_shadow"};
+#endif
 	CachedPixelShaderSetting<f32> m_shadowfar{"f_shadowfar"};
 	CachedPixelShaderSetting<f32, 4> m_camera_pos{"CameraPos"};
 	CachedPixelShaderSetting<s32> m_shadow_texture{"ShadowMapSampler"};

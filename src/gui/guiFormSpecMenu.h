@@ -368,6 +368,10 @@ protected:
 	std::unordered_map<std::string, bool> m_dropdown_index_event;
 	std::vector<FieldSpec> m_fields;
 	std::vector<std::pair<FieldSpec, GUITable *>> m_tables;
+#if IS_VOPI_ENGINE
+	std::vector<std::pair<gui::IGUIElement *, bool>> m_clock_labels;
+	s32 m_clock_minute = -1;
+#endif
 	std::vector<std::pair<FieldSpec, gui::IGUICheckBox *>> m_checkboxes;
 	std::map<std::string, TooltipSpec> m_tooltips;
 	std::vector<std::pair<gui::IGUIElement *, TooltipSpec>> m_tooltip_rects;
@@ -567,6 +571,9 @@ private:
 			const std::string &type);
 	void parseHyperText(parserData *data, const std::string &element);
 	void parseLabel(parserData* data, const std::string &element);
+#if IS_VOPI_ENGINE
+	void parseClock(parserData* data, const std::string &element);
+#endif
 	void parseVertLabel(parserData* data, const std::string &element);
 	void parseImageButton(parserData* data, const std::string &element);
 	void parseItemImageButton(parserData* data, const std::string &element);

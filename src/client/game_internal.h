@@ -84,7 +84,13 @@ struct GameRunData {
 
 	v3f update_draw_list_last_cam_dir;
 
+#if IS_VOPI_ENGINE
+	double time_of_day_smooth;
+	u32 day_cycle_revision = 0;
+	u32 day_cycle_discontinuity = 0;
+#else
 	float time_of_day_smooth;
+#endif
 };
 
 struct ClientEventHandler

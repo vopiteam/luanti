@@ -11,6 +11,9 @@
 #include "camera.h" // CameraMode
 #include "irr_ptr.h"
 #include "skyparams.h"
+#if IS_VOPI_ENGINE
+#include "daycycle.h"
+#endif
 
 #define SKY_MATERIAL_COUNT 12
 
@@ -42,8 +45,17 @@ public:
 	virtual u32 getMaterialCount() const { return SKY_MATERIAL_COUNT; }
 
 	void update(float m_time_of_day, float time_brightness, float direct_brightness,
+#if IS_VOPI_ENGINE
+			bool sunlight_seen, CameraMode cam_mode, float yaw, float pitch, float dtime = 1.0f / 60);
+#else
 			bool sunlight_seen, CameraMode cam_mode, float yaw, float pitch);
+#endif
 
+#if IS_VOPI_ENGINE
+	void setDayCycle(const DayCycleDefinition &definition) { m_day_cycle = definition; }
+	float getOrbitTime() const { return m_cycle_state.orbit_time; }
+	float getDayCycleShadow() const { return m_cycle_state.shadow_factor; }
+#endif
 	float getBrightness() { return m_brightness; }
 
 	video::SColor getBgColor() const
@@ -139,6 +151,10 @@ private:
 	{
 		if (!m_sunlight_seen)
 			return 0;
+#if IS_VOPI_ENGINE
+		if (m_day_cycle.enabled)
+			return m_cycle_state.dawn_weight;
+#endif
 		float x = m_time_of_day >= 0.5 ? (1 - m_time_of_day) * 2
 					       : m_time_of_day * 2;
 
@@ -171,6 +187,10 @@ private:
 		return result;
 	}
 
+#if IS_VOPI_ENGINE
+	DayCycleDefinition m_day_cycle;
+	DayCycleState m_cycle_state;
+#endif
 	bool m_visible = true;
 	// Used when m_visible=false
 	video::SColor m_fallback_bg_color = video::SColor(255, 255, 255, 255);

@@ -3532,6 +3532,19 @@ Elements
 * `name` is the name of the field as returned in fields to `on_receive_fields` in case of action in text.
 * `text` is the formatted text using `Markup Language` described below.
 
+### `clock[<X>,<Y>;<W>,<H>;<format>;<alignment>]`
+
+* VOPI Engine extension; requires `IS_VOPI_ENGINE=ON`. Use real coordinates
+  (formspec version 2 or newer), a positive width and height, and a connected
+  client world. Ignored in the main menu. At most 64 clocks per form.
+* `format` is `24h` (`13:05`) or `12h` (`1:05 PM`). The date is not displayed.
+* The optional `alignment` uses the VOPI area-label anchor convention above.
+  With `IS_VOPI_ENGINE=OFF`, this element is not registered.
+* Inherits `label` styling. Reserve enough width for the longest formatted text.
+* Reads the synchronized civil clock and updates existing text each minute,
+  preserving focus, unsent input and scroll state without resending the form.
+* See [Configurable day cycle](vopi/day-cycle.md) for clock semantics.
+
 ### `vertlabel[<X>,<Y>;<label>]`
 * Textual label drawn vertically
 * `label` is the text on the label
@@ -7152,6 +7165,11 @@ Environment access
       Use `core.objects_in_area` instead to iterate only valid objects.
 * `core.objects_in_area(min_pos, max_pos)`
     * returns an iterator of valid objects
+* VOPI day-cycle APIs (require `IS_VOPI_ENGINE=ON`): `core.set_day_cycle(def)`,
+  `core.get_day_cycle_state([timeofday])`, `core.set_day_cycle_paused(boolean)`,
+  `core.set_world_time({day=..., timeofday=...})`, `core.advance_time(game_seconds)`.
+  See [Configurable day cycle](vopi/day-cycle.md) for the definition schema,
+  lifecycle, validation, persistence and client compatibility.
 * `core.set_timeofday(val)`: set time of day
     * `val` is a number between `0` and `1`; `0` for midnight, `0.5` for midday
 * `core.get_timeofday()`: get time of day

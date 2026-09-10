@@ -3819,6 +3819,49 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 	/*
 		Calculate general brightness
 	*/
+#if IS_VOPI_ENGINE
+	auto &environment = client->getEnv();
+	auto cycle = environment.getDayCycleSnapshot();
+	double time_of_day_smooth = runData.time_of_day_smooth;
+	if (cycle.definition.enabled) {
+		if (runData.day_cycle_revision != cycle.revision ||
+			runData.day_cycle_discontinuity != cycle.discontinuity || cycle.clock.paused) {
+			time_of_day_smooth = cycle.clock.timeofday;
+		} else {
+			DayCycleTime predicted{0, dayCycleWrap(time_of_day_smooth), false};
+			predicted.advance(dtime, cycle.definition, 0);
+			double error = dayCycleWrap(cycle.clock.timeofday - predicted.timeofday + 0.5) - 0.5;
+			time_of_day_smooth = std::abs(error) > 0.05 ? cycle.clock.timeofday :
+					dayCycleWrap(predicted.timeofday + error * (1 - std::exp(-10 * dtime)));
+		}
+		runData.day_cycle_revision = cycle.revision;
+		runData.day_cycle_discontinuity = cycle.discontinuity;
+		runData.time_of_day_smooth = time_of_day_smooth;
+		environment.setDayCycleRenderTime(time_of_day_smooth);
+	} else {
+		float time_of_day = client->getEnv().getTimeOfDayF();
+
+		static const float maxsm = 0.05f;
+		static const float todsm = 0.05f;
+
+		if (std::fabs(time_of_day - time_of_day_smooth) > maxsm &&
+				std::fabs(time_of_day - time_of_day_smooth + 1.0) > maxsm &&
+				std::fabs(time_of_day - time_of_day_smooth - 1.0) > maxsm)
+			time_of_day_smooth = time_of_day;
+
+		if (time_of_day_smooth > 0.8 && time_of_day < 0.2)
+			time_of_day_smooth = time_of_day_smooth * (1.0 - todsm)
+					+ (time_of_day + 1.0) * todsm;
+		else
+			time_of_day_smooth = time_of_day_smooth * (1.0 - todsm)
+					+ time_of_day * todsm;
+
+		runData.time_of_day_smooth = time_of_day_smooth;
+		environment.setDayCycleRenderTime(std::nullopt);
+	}
+	sky->setDayCycle(cycle.definition);
+
+#endif
 	u32 daynight_ratio = client->getEnv().getDayNightRatio();
 	float time_brightness = decode_light_f((float)daynight_ratio / 1000.0f);
 	float direct_brightness;
@@ -3840,6 +3883,7 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 				/ 255.0;
 	}
 
+#if !IS_VOPI_ENGINE
 	float time_of_day_smooth = runData.time_of_day_smooth;
 	float time_of_day = client->getEnv().getTimeOfDayF();
 
@@ -3859,10 +3903,15 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 				+ time_of_day * todsm;
 
 	runData.time_of_day_smooth = time_of_day_smooth;
+#endif
 
 	sky->update(time_of_day_smooth, time_brightness, direct_brightness,
 			sunlight_seen, camera->getCameraMode(), player->getYaw(),
+#if IS_VOPI_ENGINE
+			player->getPitch(), dtime);
+#else
 			player->getPitch());
+#endif
 
 	/*
 		Update clouds
@@ -4048,7 +4097,11 @@ void Game::updateShadows()
 		shadow->setShadowIntensity(lighting.shadow_intensity);
 		light = lighting.shadow_direction;
 	} else {
+#if IS_VOPI_ENGINE
+		float timeoftheday = sky->getOrbitTime();
+#else
 		float timeoftheday = getWickedTimeOfDay(in_timeofday);
+#endif
 		bool is_day = timeoftheday > 0.25f && timeoftheday < 0.75f;
 		bool is_shadow_visible = is_day ? sky->getSunVisible() : sky->getMoonVisible();
 		shadow->setShadowIntensity(is_shadow_visible ? lighting.shadow_intensity : 0.0f);
@@ -4058,6 +4111,10 @@ void Game::updateShadows()
 	v3f sun_pos = light * offset_constant;
 	shadow->getDirectionalLight().setDirection(sun_pos);
 	shadow->setTimeOfDay(in_timeofday);
+#if IS_VOPI_ENGINE
+	shadow->setDayCycleFactor(client->getEnv().getDayCycle().enabled &&
+			lighting.shadow_direction.getLengthSQ() > 0 ? 1 : sky->getDayCycleShadow());
+#endif
 
 	shadow->getDirectionalLight().updateFrustum(camera, client);
 }

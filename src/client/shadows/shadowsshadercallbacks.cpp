@@ -30,6 +30,10 @@ void ShadowUniformSetter::onSetUniforms(video::IMaterialRendererServices *servic
 
 	f32 timeOfDay = shadow->getTimeOfDay();
 	m_time_of_day.set(&timeOfDay, services);
+#if IS_VOPI_ENGINE
+	f32 cycleFactor = shadow->getDayCycleFactor();
+	m_day_cycle_factor.set(&cycleFactor, services);
+#endif
 
 	f32 shadowFar = shadow->getMaxShadowFar();
 	m_shadowfar.set(&shadowFar, services);

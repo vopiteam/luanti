@@ -147,6 +147,13 @@ public:
 	*/
 	void saveMeta();
 	void loadMeta();
+#if IS_VOPI_ENGINE
+	bool hasLegacyTimeMetadata() { return m_has_time_metadata &&
+			!m_day_cycle_configured; }
+	void markDayCycleConfigured() { m_day_cycle_configured = true; }
+	void migrateDayCycle(const DayCycleDefinition &definition, const std::string &id,
+			double source_sunrise, double source_sunset, const std::string &backup_path);
+#endif
 
 	u32 addParticleSpawner(float exptime);
 	u32 addParticleSpawner(float exptime, u16 attached_id);
@@ -386,6 +393,13 @@ private:
 	IntervalLimiter m_active_blocks_nodemetadata_interval;
 	// Whether the variables below have been read from file yet
 	bool m_meta_loaded = false;
+#if IS_VOPI_ENGINE
+	bool m_has_time_metadata = false;
+	bool m_day_cycle_configured = false;
+	std::string m_day_cycle_migration;
+	std::string m_day_cycle_migration_source;
+	std::string m_day_cycle_backup;
+#endif
 	// Are we shutting down?
 	bool m_shutting_down = false;
 	// Time from the beginning of the game in seconds.

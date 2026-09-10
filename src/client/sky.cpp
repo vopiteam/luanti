@@ -134,7 +134,11 @@ void Sky::render()
 		video::SColorf mooncolor_f(0.50, 0.57, 0.65, 1);
 		video::SColorf mooncolor2_f(0.85, 0.875, 0.9, 1);
 
+#if IS_VOPI_ENGINE
+		float wicked_time_of_day = getOrbitTime();
+#else
 		float wicked_time_of_day = getWickedTimeOfDay(m_time_of_day);
+#endif
 
 		video::SColor suncolor = suncolor_f.toSColor();
 		video::SColor suncolor2 = suncolor2_f.toSColor();
@@ -142,7 +146,12 @@ void Sky::render()
 		video::SColor mooncolor2 = mooncolor2_f.toSColor();
 
 		// Calculate offset normalized to the X dimension of a 512x1 px tonemap
+#if IS_VOPI_ENGINE
+		float tonemap_time = m_day_cycle.enabled ? wicked_time_of_day : m_time_of_day;
+		float offset = (1.0 - fabs(sin((tonemap_time - 0.5) * core::PI))) * 511;
+#else
 		float offset = (1.0 - fabs(sin((m_time_of_day - 0.5) * core::PI))) * 511;
+#endif
 
 		if (m_sun_tonemap) {
 			auto texel_color = m_sun_tonemap->getPixel(offset, 0);
@@ -243,7 +252,12 @@ void Sky::render()
 			float mid1 = 0.25;
 			float mid = wicked_time_of_day < 0.5 ? mid1 : (1.0 - mid1);
 			float a_ = 1.0f - std::fabs(wicked_time_of_day - mid) * 35.0f;
+#if IS_VOPI_ENGINE
+			float a = m_day_cycle.enabled ? m_cycle_state.dawn_weight :
+					easeCurve(MYMAX(0, MYMIN(1, a_)));
+#else
 			float a = easeCurve(MYMAX(0, MYMIN(1, a_)));
+#endif
 			//std::cerr<<"a_="<<a_<<" a="<<a<<std::endl;
 			video::SColor c(255, 255, 255, 255);
 			float y = -(1.0 - a) * 0.22;
@@ -311,7 +325,11 @@ void Sky::render()
 
 void Sky::update(float time_of_day, float time_brightness,
 	float direct_brightness, bool sunlight_seen,
+#if IS_VOPI_ENGINE
+	CameraMode cam_mode, float yaw, float pitch, float dtime)
+#else
 	CameraMode cam_mode, float yaw, float pitch)
+#endif
 {
 	// Stabilize initial brightness and color values by flooding updates
 	if (m_first_update) {
@@ -322,12 +340,19 @@ void Sky::update(float time_of_day, float time_brightness,
 		m_first_update = false;
 		for (u32 i = 0; i < 100; i++) {
 			update(time_of_day, time_brightness, direct_brightness,
+#if IS_VOPI_ENGINE
+					sunlight_seen, cam_mode, yaw, pitch, dtime);
+#else
 					sunlight_seen, cam_mode, yaw, pitch);
+#endif
 		}
 		return;
 	}
 
 	m_time_of_day = time_of_day;
+#if IS_VOPI_ENGINE
+	m_cycle_state = evaluateDayCycle(m_day_cycle, time_of_day);
+#endif
 	m_time_brightness = time_brightness;
 	m_sunlight_seen = sunlight_seen;
 	m_in_clouds = false;
@@ -346,25 +371,65 @@ void Sky::update(float time_of_day, float time_brightness,
 	video::SColorf cloudcolor_bright_normal_f = m_cloudcolor_day_f;
 	video::SColorf cloudcolor_bright_dawn_f = m_cloudcolor_dawn_f;
 
+#if IS_VOPI_ENGINE
+	float cloud_color_change_fraction = m_day_cycle.enabled ? std::pow(0.95f, dtime * 60) : 0.95f;
+#else
 	float cloud_color_change_fraction = 0.95;
+#endif
 	if (sunlight_seen) {
+#if IS_VOPI_ENGINE
+		if (m_day_cycle.enabled) {
+			m_brightness = time_brightness;
+			cloud_color_change_fraction = 0;
+		} else if (std::fabs(time_brightness - m_brightness) < 0.2f) {
+#else
 		if (std::fabs(time_brightness - m_brightness) < 0.2f) {
+#endif
 			m_brightness = m_brightness * 0.95 + time_brightness * 0.05;
 		} else {
 			m_brightness = m_brightness * 0.80 + time_brightness * 0.20;
 			cloud_color_change_fraction = 0.0;
 		}
 	} else {
+#if IS_VOPI_ENGINE
+		float fraction = direct_brightness < m_brightness ? 0.95f : 0.98f;
+		if (m_day_cycle.enabled)
+			fraction = std::pow(fraction, dtime * 60);
+		m_brightness = m_brightness * fraction + direct_brightness * (1 - fraction);
+#else
 		if (direct_brightness < m_brightness)
 			m_brightness = m_brightness * 0.95 + direct_brightness * 0.05;
 		else
 			m_brightness = m_brightness * 0.98 + direct_brightness * 0.02;
+#endif
 	}
 
 	m_clouds_visible = true;
+#if IS_VOPI_ENGINE
+	float color_change_fraction = m_day_cycle.enabled ? std::pow(0.98f, dtime * 60) : 0.98f;
+#else
 	float color_change_fraction = 0.98f;
+#endif
 	if (sunlight_seen) {
+#if IS_VOPI_ENGINE
+		if (m_day_cycle.enabled) {
+			auto blend = [&](video::SColorf day, video::SColorf dawn, video::SColorf night) {
+				const auto &s = m_cycle_state;
+				return video::SColorf(
+					day.r * s.day_weight + dawn.r * s.dawn_weight + night.r * s.night_weight,
+					day.g * s.day_weight + dawn.g * s.dawn_weight + night.g * s.night_weight,
+					day.b * s.day_weight + dawn.b * s.dawn_weight + night.b * s.night_weight, 1);
+			};
+			m_bgcolor_bright_f = blend(bgcolor_bright_normal_f,
+					bgcolor_bright_dawn_f, bgcolor_bright_night_f);
+			m_skycolor_bright_f = blend(skycolor_bright_normal_f,
+					skycolor_bright_dawn_f, skycolor_bright_night_f);
+			m_cloudcolor_bright_f = blend(cloudcolor_bright_normal_f,
+					cloudcolor_bright_dawn_f, cloudcolor_bright_normal_f);
+		} else if (is_dawn) { // Dawn
+#else
 		if (is_dawn) { // Dawn
+#endif
 			m_bgcolor_bright_f = m_bgcolor_bright_f.getInterpolated(
 				bgcolor_bright_dawn_f, color_change_fraction);
 			m_skycolor_bright_f = m_skycolor_bright_f.getInterpolated(
@@ -432,7 +497,11 @@ void Sky::update(float time_of_day, float time_brightness,
 			pointcolor_blend += (0.5 - pointcolor_blend) *
 				(1 - MYMIN((90 - std::fabs(pitch)) / 90 * 1.5, 1));
 			// Invert direction to match where the sun and moon are rising
+#if IS_VOPI_ENGINE
+			if ((m_day_cycle.enabled ? getOrbitTime() : m_time_of_day) > 0.5)
+#else
 			if (m_time_of_day > 0.5)
+#endif
 				pointcolor_blend = 1 - pointcolor_blend;
 			// Horizon colors of sun and moon
 			f32 pointcolor_light = rangelim(m_time_brightness * 3, 0.2, 1);
@@ -493,7 +562,17 @@ void Sky::update(float time_of_day, float time_brightness,
 
 	float cloud_direct_brightness = 0.0f;
 	if (sunlight_seen) {
+#if IS_VOPI_ENGINE
+		if (m_day_cycle.enabled) {
+			// The boost follows palette weights instead of switching at a gamma-dependent
+			// brightness threshold, which would make clouds jump during twilight.
+			cloud_direct_brightness = std::min(1.0f, time_brightness *
+					static_cast<float>(1 + 0.3 * (1 - m_cycle_state.day_weight)) +
+					(m_directional_colored_fog ? m_horizon_blend() * 0.15f : 0));
+		} else if (!m_directional_colored_fog) {
+#else
 		if (!m_directional_colored_fog) {
+#endif
 			cloud_direct_brightness = time_brightness;
 			// Boost cloud brightness relative to sky, at dawn, dusk and at night
 			if (time_brightness < 0.7f)
@@ -535,12 +614,20 @@ static v3f getSkyBodyPosition(float horizon_position, float day_position, float 
 
 v3f Sky::getSunDirection()
 {
+#if IS_VOPI_ENGINE
+	return getSkyBodyPosition(90, getOrbitTime() * 360 - 90, m_sky_params.body_orbit_tilt);
+#else
 	return getSkyBodyPosition(90, getWickedTimeOfDay(m_time_of_day) * 360 - 90, m_sky_params.body_orbit_tilt);
+#endif
 }
 
 v3f Sky::getMoonDirection()
 {
+#if IS_VOPI_ENGINE
+	return getSkyBodyPosition(270, getOrbitTime() * 360 - 90, m_sky_params.body_orbit_tilt);
+#else
 	return getSkyBodyPosition(270, getWickedTimeOfDay(m_time_of_day) * 360 - 90, m_sky_params.body_orbit_tilt);
+#endif
 }
 
 void Sky::draw_sun(video::IVideoDriver *driver, const video::SColor &suncolor,
@@ -652,7 +739,12 @@ void Sky::draw_stars(video::IVideoDriver * driver, float wicked_time_of_day)
 
 	float tod = wicked_time_of_day < 0.5f ? wicked_time_of_day : (1.0f - wicked_time_of_day);
 	float day_opacity = clamp(m_star_params.day_opacity, 0.0f, 1.0f);
+#if IS_VOPI_ENGINE
+	float starbrightness = m_day_cycle.enabled ? m_cycle_state.night_weight :
+			(0.25f - std::abs(tod)) * 20.0f;
+#else
 	float starbrightness = (0.25f - std::abs(tod)) * 20.0f;
+#endif
 	float alpha = clamp(starbrightness, day_opacity, 1.0f);
 
 	video::SColorf color(m_star_params.starcolor);
@@ -901,6 +993,9 @@ void Sky::addTextureToSkybox(const std::string &texture, int material_id,
 
 float getWickedTimeOfDay(float time_of_day)
 {
+#if IS_VOPI_ENGINE
+	return legacyDayCycleOrbit(time_of_day);
+#else
 	float nightlength = 0.415f;
 	float wn = nightlength / 2;
 	float wicked_time_of_day = 0;
@@ -911,4 +1006,5 @@ float getWickedTimeOfDay(float time_of_day)
 	else
 		wicked_time_of_day = 1.0f - ((1.0f - time_of_day) / wn * 0.25f);
 	return wicked_time_of_day;
+#endif
 }

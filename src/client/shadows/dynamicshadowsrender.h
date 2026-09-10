@@ -83,6 +83,10 @@ public:
 
 	bool is_active() const { return m_shadows_enabled && shadowMapTextureFinal != nullptr; }
 	void setTimeOfDay(float isDay) { m_time_day = isDay; };
+#if IS_VOPI_ENGINE
+	void setDayCycleFactor(float factor) { m_day_cycle_factor = factor; }
+	float getDayCycleFactor() const { return m_day_cycle_factor; }
+#endif
 	void setShadowIntensity(float shadow_intensity);
 	void setShadowTint(video::SColor shadow_tint) { m_shadow_tint = shadow_tint; }
 
@@ -127,7 +131,12 @@ private:
 	float m_shadow_strength_gamma;
 	float m_shadow_map_max_distance;
 	u32 m_shadow_map_texture_size;
+#if IS_VOPI_ENGINE
+	float m_time_day = 0;
+	float m_day_cycle_factor = 1;
+#else
 	float m_time_day;
+#endif
 	bool m_shadow_map_texture_32bit;
 	bool m_shadows_enabled;
 	bool m_shadows_supported;

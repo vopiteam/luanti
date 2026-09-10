@@ -3,6 +3,9 @@
 // Copyright (C) 2013 celeron55, Perttu Ahola <celeron55@gmail.com>
 
 #include <algorithm>
+#if IS_VOPI_ENGINE
+#include <cmath>
+#endif
 #include "lua_api/l_env.h"
 #include "lua_api/l_internal.h"
 #include "lua_api/l_nodemeta.h"
@@ -297,11 +300,17 @@ int ModApiEnv::l_get_node_light(lua_State *L)
 
 	// Do it
 	v3s16 pos = read_v3s16(L, 1);
+#if IS_VOPI_ENGINE
+	double time = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : env->getTimeOfDayF();
+	luaL_argcheck(L, std::isfinite(time), 2, "time must be finite");
+	u32 dnr = std::lround(env->getDayCycleState(time).day_night_ratio * 1000);
+#else
 	u32 time_of_day = env->getTimeOfDay();
 	if(lua_isnumber(L, 2))
 		time_of_day = 24000.0 * lua_tonumber(L, 2);
 	time_of_day %= 24000;
 	u32 dnr = time_to_daynight_ratio(time_of_day, true);
+#endif
 
 	bool is_position_ok;
 	MapNode n = env->getMap().getNode(pos, &is_position_ok);
@@ -333,6 +342,11 @@ int ModApiEnv::l_get_natural_light(lua_State *L)
 		return 1;
 	}
 
+#if IS_VOPI_ENGINE
+	double time = lua_isnumber(L, 2) ? lua_tonumber(L, 2) : env->getTimeOfDayF();
+	luaL_argcheck(L, std::isfinite(time), 2, "time must be finite");
+	u32 dnr = std::lround(env->getDayCycleState(time).day_night_ratio * 1000);
+#else
 	u32 time_of_day;
 	if (lua_isnumber(L, 2)) {
 		time_of_day = 24000.0 * lua_tonumber(L, 2);
@@ -341,6 +355,7 @@ int ModApiEnv::l_get_natural_light(lua_State *L)
 		time_of_day = env->getTimeOfDay();
 	}
 	u32 dnr = time_to_daynight_ratio(time_of_day, true);
+#endif
 
 	// If it's the same as the artificial light, the sunlight needs to be
 	// searched for because the value may not emanate from the sun
@@ -704,6 +719,163 @@ int ModApiEnv::l_get_objects_in_area(lua_State *L)
 	return 1;
 }
 
+
+#if IS_VOPI_ENGINE
+namespace {
+double cycleNumber(lua_State *L, int table, const char *name, double fallback,
+		bool required = false)
+{
+	lua_getfield(L, table, name);
+	if (required && lua_isnil(L, -1))
+		luaL_error(L, "Missing day cycle field: %s", name);
+	double value = lua_isnil(L, -1) ? fallback : luaL_checknumber(L, -1);
+	lua_pop(L, 1);
+	return value;
+}
+
+void pushCycleNumber(lua_State *L, const char *name, double value)
+{
+	lua_pushnumber(L, value);
+	lua_setfield(L, -2, name);
+}
+}
+
+int ModApiEnv::l_set_day_cycle(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TTABLE);
+	DayCycleDefinition d;
+	lua_getfield(L, 1, "enabled");
+	if (!lua_isnil(L, -1))
+		luaL_checktype(L, -1, LUA_TBOOLEAN);
+	d.enabled = lua_isnil(L, -1) || lua_toboolean(L, -1);
+	lua_pop(L, 1);
+	lua_getfield(L, 1, "timing");
+	if (d.enabled)
+		luaL_checktype(L, -1, LUA_TTABLE);
+	if (lua_istable(L, -1)) {
+		d.day_start = cycleNumber(L, -1, "day_start", d.day_start, d.enabled);
+		d.night_start = cycleNumber(L, -1, "night_start", d.night_start, d.enabled);
+		d.day_duration = cycleNumber(L, -1, "day_duration_seconds", d.day_duration, d.enabled);
+		d.night_duration = cycleNumber(L, -1, "night_duration_seconds", d.night_duration, d.enabled);
+	}
+	lua_pop(L, 1);
+	lua_getfield(L, 1, "visual");
+	if (d.enabled)
+		luaL_checktype(L, -1, LUA_TTABLE);
+	if (lua_istable(L, -1)) {
+		d.dawn_start = cycleNumber(L, -1, "dawn_start", d.dawn_start, d.enabled);
+		d.sunrise = cycleNumber(L, -1, "sunrise", d.sunrise, d.enabled);
+		d.dawn_end = cycleNumber(L, -1, "dawn_end", d.dawn_end, d.enabled);
+		d.dusk_start = cycleNumber(L, -1, "dusk_start", d.dusk_start, d.enabled);
+		d.sunset = cycleNumber(L, -1, "sunset", d.sunset, d.enabled);
+		d.dusk_end = cycleNumber(L, -1, "dusk_end", d.dusk_end, d.enabled);
+		d.night_light = cycleNumber(L, -1, "night_light", d.night_light, d.enabled);
+		d.day_light = cycleNumber(L, -1, "day_light", d.day_light, d.enabled);
+	}
+	lua_pop(L, 1);
+	std::string migration_id;
+	double source_sunrise = 0.25, source_sunset = 0.75;
+	lua_getfield(L, 1, "migration");
+	if (!lua_isnil(L, -1)) {
+		luaL_checktype(L, -1, LUA_TTABLE);
+		migration_id = getstringfield_default(L, -1, "id", "");
+		if (migration_id.empty() || migration_id.size() > 64 ||
+				migration_id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos)
+			return luaL_error(L, "migration id must contain 1..64 ASCII letters, digits, underscores or hyphens");
+		source_sunrise = cycleNumber(L, -1, "source_sunrise", source_sunrise);
+		source_sunset = cycleNumber(L, -1, "source_sunset", source_sunset);
+	}
+	lua_pop(L, 1);
+	try {
+		d.validate();
+		if (!migration_id.empty())
+			migrateDayCycleTime({1, 0, false}, source_sunrise, source_sunset, d);
+		getServer(L)->configureDayCycle(d, migration_id, source_sunrise, source_sunset);
+	} catch (const std::exception &e) {
+		return luaL_error(L, "%s", e.what());
+	}
+	return 0;
+}
+
+int ModApiEnv::l_get_day_cycle_state(lua_State *L)
+{
+	GET_PLAIN_ENV_PTR;
+	std::optional<double> time;
+	if (!lua_isnoneornil(L, 1)) {
+		time = luaL_checknumber(L, 1);
+		luaL_argcheck(L, std::isfinite(*time) && *time >= 0 && *time < 1, 1,
+				"time must be finite and in [0, 1)");
+	}
+	auto snapshot = env->getDayCycleSnapshot();
+	auto s = evaluateDayCycle(snapshot.definition, time.value_or(snapshot.clock.timeofday));
+	lua_newtable(L);
+	lua_pushboolean(L, snapshot.definition.enabled);
+	lua_setfield(L, -2, "enabled");
+	lua_pushboolean(L, snapshot.clock.paused);
+	lua_setfield(L, -2, "paused");
+	lua_pushboolean(L, s.is_day);
+	lua_setfield(L, -2, "is_day");
+	lua_pushstring(L, s.is_dawn ? "dawn" : s.is_dusk ? "dusk" :
+			s.daylight >= 0.5 ? "day" : "night");
+	lua_setfield(L, -2, "phase");
+	pushCycleNumber(L, "timeofday", s.timeofday);
+	pushCycleNumber(L, "day", snapshot.clock.day);
+	pushCycleNumber(L, "revision", snapshot.revision);
+	pushCycleNumber(L, "discontinuity", snapshot.discontinuity);
+	pushCycleNumber(L, "daylight", s.daylight);
+	pushCycleNumber(L, "day_night_ratio", s.day_night_ratio);
+	pushCycleNumber(L, "day_weight", s.day_weight);
+	pushCycleNumber(L, "dawn_weight", s.dawn_weight);
+	pushCycleNumber(L, "night_weight", s.night_weight);
+	pushCycleNumber(L, "orbit_time", s.orbit_time);
+	pushCycleNumber(L, "shadow_factor", s.shadow_factor);
+	pushCycleNumber(L, "speed", snapshot.clock.paused ? 0 : snapshot.definition.enabled ?
+			snapshot.definition.speed(s.timeofday) : env->getTimeOfDaySpeed());
+	pushCycleNumber(L, "day_start", snapshot.definition.day_start);
+	pushCycleNumber(L, "night_start", snapshot.definition.night_start);
+	pushCycleNumber(L, "day_duration_seconds", snapshot.definition.day_duration);
+	pushCycleNumber(L, "night_duration_seconds", snapshot.definition.night_duration);
+	return 1;
+}
+
+int ModApiEnv::l_set_day_cycle_paused(lua_State *L)
+{
+	luaL_checktype(L, 1, LUA_TBOOLEAN);
+	getServer(L)->setDayCyclePaused(lua_toboolean(L, 1));
+	return 0;
+}
+
+int ModApiEnv::l_set_world_time(lua_State *L)
+{
+	GET_ENV_PTR;
+	luaL_checktype(L, 1, LUA_TTABLE);
+	auto clock = env->getWorldTime();
+	double day = cycleNumber(L, 1, "day", clock.day);
+	luaL_argcheck(L, std::isfinite(day) && day >= 0 && day <= UINT32_MAX &&
+			day == std::floor(day), 1, "day must be an integer in [0, 4294967295]");
+	clock.day = day;
+	clock.timeofday = cycleNumber(L, 1, "timeofday", clock.timeofday);
+	try {
+		getServer(L)->setWorldTime(clock);
+	} catch (const std::exception &e) {
+		return luaL_error(L, "%s", e.what());
+	}
+	return 0;
+}
+
+int ModApiEnv::l_advance_time(lua_State *L)
+{
+	GET_ENV_PTR;
+	double seconds = luaL_checknumber(L, 1);
+	try {
+		getServer(L)->advanceTime(seconds);
+	} catch (const std::exception &e) {
+		return luaL_error(L, "%s", e.what());
+	}
+	return 0;
+}
+
+#endif
 int ModApiEnv::l_set_timeofday(lua_State *L)
 {
 	GET_ENV_PTR;
@@ -1391,6 +1563,13 @@ void ModApiEnv::Initialize(lua_State *L, int top)
 	API_FCT(get_objects_in_area);
 	API_FCT(get_objects_inside_radius);
 	API_FCT(set_timeofday);
+#if IS_VOPI_ENGINE
+	API_FCT(set_day_cycle);
+	API_FCT(get_day_cycle_state);
+	API_FCT(set_day_cycle_paused);
+	API_FCT(set_world_time);
+	API_FCT(advance_time);
+#endif
 	API_FCT(get_timeofday);
 	API_FCT(get_gametime);
 	API_FCT(get_day_count);
@@ -1421,6 +1600,9 @@ void ModApiEnv::Initialize(lua_State *L, int top)
 
 void ModApiEnv::InitializeClient(lua_State *L, int top)
 {
+#if IS_VOPI_ENGINE
+	API_FCT(get_day_cycle_state);
+#endif
 	API_FCT(get_node_light);
 	API_FCT(get_timeofday);
 	API_FCT(get_node_max_level);

@@ -146,6 +146,13 @@ private:
 	// set_timeofday(val)
 	// val = 0...1
 	static int l_set_timeofday(lua_State *L);
+#if IS_VOPI_ENGINE
+	static int l_set_day_cycle(lua_State *L);
+	static int l_get_day_cycle_state(lua_State *L);
+	static int l_set_day_cycle_paused(lua_State *L);
+	static int l_set_world_time(lua_State *L);
+	static int l_advance_time(lua_State *L);
+#endif
 
 	// get_timeofday() -> 0...1
 	static int l_get_timeofday(lua_State *L);

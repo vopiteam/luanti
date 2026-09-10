@@ -2091,6 +2091,34 @@ void GUIFormSpecMenu::parseHyperText(parserData *data, const std::string &elemen
 	m_fields.push_back(spec);
 }
 
+#if IS_VOPI_ENGINE
+void GUIFormSpecMenu::parseClock(parserData *data, const std::string &element)
+{
+	std::vector<std::string> parts;
+	if (!precheckElement("clock", element, 3, 4, parts) || !m_client ||
+			m_clock_labels.size() >= 64)
+		return;
+	if (parts[2] != "12h" && parts[2] != "24h") {
+		errorstream << "Invalid clock format: expected 12h or 24h" << std::endl;
+		return;
+	}
+	bool twelve_hour = parts[2] == "12h";
+	std::string label = parts[0] + ";" + parts[1] + ";" +
+			formatDayCycleTime(m_client->getEnv().getTimeOfDayF(), twelve_hour);
+#if IS_VOPI_ENGINE
+	if (parts.size() == 4)
+		label += ";" + parts[3];
+#endif
+	size_t before = m_fields.size();
+	parseLabel(data, label);
+	if (m_fields.size() == before + 1) {
+		auto *text = getElementFromId(m_fields.back().fid, true);
+		if (text)
+			m_clock_labels.emplace_back(text, twelve_hour);
+	}
+}
+
+#endif
 void GUIFormSpecMenu::parseLabel(parserData* data, const std::string &element)
 {
 	std::vector<std::string> parts;
@@ -3649,6 +3677,10 @@ void GUIFormSpecMenu::parseAllowClose(parserData *data, const std::string &eleme
 void GUIFormSpecMenu::removeAll()
 {
 #if IS_VOPI_ENGINE
+	m_clock_labels.clear();
+	m_clock_minute = -1;
+#endif
+#if IS_VOPI_ENGINE
 	// GUIScene pointers in m_scene_models are about to be invalidated by
 	// removeAllChildren(). Clear the index first so no stale lookup can
 	// race with the cleanup (parseModelOverlay races aren't realistic
@@ -3719,6 +3751,9 @@ const std::unordered_map<std::string, std::function<void(GUIFormSpecMenu*, GUIFo
 		{"textarea",               &GUIFormSpecMenu::parseField},
 		{"hypertext",              &GUIFormSpecMenu::parseHyperText},
 		{"label",                  &GUIFormSpecMenu::parseLabel},
+#if IS_VOPI_ENGINE
+		{"clock",                  &GUIFormSpecMenu::parseClock},
+#endif
 		{"vertlabel",              &GUIFormSpecMenu::parseVertLabel},
 		{"item_image_button",      &GUIFormSpecMenu::parseItemImageButton},
 		{"image_button",           &GUIFormSpecMenu::parseImageButton},
@@ -4402,6 +4437,18 @@ void GUIFormSpecMenu::drawSelectedItem()
 
 void GUIFormSpecMenu::drawMenu()
 {
+#if IS_VOPI_ENGINE
+	// Updating the existing text nodes preserves edits, focus and scroll state.
+	if (m_client && !m_clock_labels.empty()) {
+		double time = m_client->getEnv().getTimeOfDayF();
+		s32 minute = dayCycleMinute(time);
+		if (minute != m_clock_minute) {
+			m_clock_minute = minute;
+			for (const auto &label : m_clock_labels)
+				label.first->setText(utf8_to_wide(formatDayCycleTime(time, label.second)).c_str());
+		}
+	}
+#endif
 	if (m_form_src) {
 		const std::string &newform = m_form_src->getForm();
 		if (newform != m_formspec_string) {

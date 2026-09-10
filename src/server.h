@@ -5,6 +5,9 @@
 #pragma once
 
 #include "irr_v3d.h"
+#if IS_VOPI_ENGINE
+#include "daycycle.h"
+#endif
 #include "map.h"
 #include "hud_element.h" // HudElementStat
 #include "gamedef.h"
@@ -257,6 +260,16 @@ public:
 	// Both setter and getter need no envlock,
 	// can be called freely from threads
 	void setTimeOfDay(u32 time);
+#if IS_VOPI_ENGINE
+	// Server Lua calls these under the environment lock; configuration may be queued
+	// before environment creation. Startup applies it after persisted time is loaded.
+	void configureDayCycle(const DayCycleDefinition &definition,
+			const std::string &migration_id = "", double source_sunrise = 0.25,
+			double source_sunset = 0.75);
+	void setDayCyclePaused(bool paused);
+	void setWorldTime(const DayCycleTime &time);
+	void advanceTime(double seconds);
+#endif
 
 	/*
 		Shall be called with the environment locked.
@@ -724,6 +737,18 @@ private:
 
 	// Environment
 	ServerEnvironment *m_env = nullptr;
+#if IS_VOPI_ENGINE
+	bool m_day_cycle_ready = false;
+	std::optional<std::string> m_day_cycle_observed_speed;
+	std::optional<DayCycleDefinition> m_pending_day_cycle;
+	std::optional<bool> m_pending_day_cycle_pause;
+	std::string m_day_cycle_migration_id;
+	std::string m_day_cycle_backup_path;
+	double m_day_cycle_source_sunrise = 0.25;
+	double m_day_cycle_source_sunset = 0.75;
+	void prepareDayCycleBackup();
+	void initializeDayCycle();
+#endif
 
 	// server connection
 	std::shared_ptr<con::IConnection> m_con;

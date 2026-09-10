@@ -451,7 +451,18 @@ void ServerEnvironment::saveMeta()
 	args.setU64("lbm_introduction_times_version", 1);
 	args.set("lbm_introduction_times",
 		m_lbm_mgr.createIntroductionTimesString());
+#if IS_VOPI_ENGINE
+	args.setU64("day_count", getDayCount());
+	args.set("day_cycle_state", getDayCycleSnapshot().serialize());
+	args.setBool("day_cycle_configured", m_day_cycle_configured);
+	if (!m_day_cycle_migration.empty()) {
+		args.set("day_cycle_migration", m_day_cycle_migration);
+		args.set("day_cycle_migration_source", m_day_cycle_migration_source);
+		args.set("day_cycle_backup", m_day_cycle_backup);
+	}
+#else
 	args.setU64("day_count", m_day_count);
+#endif
 	args.writeLines(ss);
 
 	if(!fs::safeWriteToFile(path, ss.str()))
@@ -462,6 +473,78 @@ void ServerEnvironment::saveMeta()
 	}
 }
 
+#if IS_VOPI_ENGINE
+void ServerEnvironment::loadMeta()
+{
+	SANITY_CHECK(!m_meta_loaded);
+	infostream << "ServerEnvironment: " << m_abms.size() << " ABMs are registered" << std::endl;
+	std::string path = m_server->getWorldPath() + DIR_DELIM "env_meta.txt";
+	if (!fs::PathExists(path)) {
+		loadDefaultMeta();
+		m_meta_loaded = true;
+		return;
+	}
+
+	infostream << "ServerEnvironment: Loading environment metadata from file" << std::endl;
+	auto is = open_ifstream(path.c_str(), true);
+	if (!is.good())
+		throw SerializationError("Couldn't load env meta");
+	Settings args("EnvArgsEnd");
+	if (!args.parseConfigLines(is))
+		throw SerializationError("ServerEnvironment::loadMeta(): EnvArgsEnd not found!");
+
+	// Read into temporary values. Failed validation must not publish partial
+	// state or allow saveMeta() to replace the original metadata during teardown.
+	u32 game_time = args.getU64("game_time");
+	u32 last_clear_objects_time = args.exists("last_clear_objects_time") ?
+			args.getU64("last_clear_objects_time") : 0;
+	auto snapshot = getDayCycleSnapshot();
+	bool configured = false;
+	std::string migration, migration_source, backup;
+	try {
+		snapshot.clock.timeofday = (args.exists("time_of_day") ?
+				args.getU64("time_of_day") % 24000 : 5250) / 24000.0;
+		snapshot.clock.day = args.exists("day_count") ? args.getU32("day_count") : 0;
+		if (args.exists("day_cycle_state"))
+			snapshot = DayCycleSnapshot::deserialize(args.get("day_cycle_state"));
+		configured = args.exists("day_cycle_configured") ?
+				args.getBool("day_cycle_configured") : snapshot.definition.enabled;
+		if (args.exists("day_cycle_migration")) {
+			migration = args.get("day_cycle_migration");
+			migration_source = args.get("day_cycle_migration_source");
+			backup = args.get("day_cycle_backup");
+			configured = true;
+		}
+	} catch (const std::exception &e) {
+		throw SerializationError(std::string("Cannot load day cycle: ") + e.what());
+	}
+
+	std::string lbm_introduction_times;
+	try {
+		u32 ver = args.getU32("lbm_introduction_times_version");
+		if (ver == 1) {
+			lbm_introduction_times = args.get("lbm_introduction_times");
+		} else {
+			warningstream << "ServerEnvironment::loadMeta(): Unsupported"
+					<< " introduction time version " << ver << std::endl;
+		}
+	} catch (SettingNotFoundException &e) {
+		// Old worlds may not have LBM metadata yet.
+	}
+	m_lbm_mgr.loadIntroductionTimes(lbm_introduction_times, m_server, game_time);
+
+	setDayCycleSnapshot(snapshot);
+	m_game_time = game_time;
+	m_last_clear_objects_time = last_clear_objects_time;
+	m_day_cycle_configured = configured;
+	m_day_cycle_migration = std::move(migration);
+	m_day_cycle_migration_source = std::move(migration_source);
+	m_day_cycle_backup = std::move(backup);
+	m_has_time_metadata = true;
+	m_meta_loaded = true;
+}
+
+#else
 void ServerEnvironment::loadMeta()
 {
 	SANITY_CHECK(!m_meta_loaded);
@@ -522,6 +605,36 @@ void ServerEnvironment::loadMeta()
 	}
 	m_lbm_mgr.loadIntroductionTimes(lbm_introduction_times, m_server, m_game_time);
 }
+
+#endif
+
+#if IS_VOPI_ENGINE
+void ServerEnvironment::migrateDayCycle(const DayCycleDefinition &definition,
+		const std::string &id, double source_sunrise, double source_sunset,
+		const std::string &backup_path)
+{
+	auto old = getDayCycleSnapshot();
+	auto migrated = migrateDayCycleTime(old.clock, source_sunrise, source_sunset, definition);
+	setDayCycle(definition);
+	setWorldTime(migrated);
+	m_day_cycle_configured = true;
+	m_day_cycle_migration = id;
+	m_day_cycle_migration_source = old.serialize();
+	m_day_cycle_backup = backup_path;
+	// State and marker are committed together, before the first simulation tick.
+	try {
+		saveMeta();
+	} catch (...) {
+		setDayCycleSnapshot(old);
+		m_day_cycle_configured = false;
+		m_day_cycle_migration.clear();
+		m_day_cycle_migration_source.clear();
+		m_day_cycle_backup.clear();
+		throw;
+	}
+}
+
+#endif
 
 /**
  * called if env_meta.txt doesn't exist (e.g. new world)

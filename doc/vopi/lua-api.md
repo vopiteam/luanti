@@ -5,7 +5,9 @@ Additions that extend an existing upstream concept are documented next to their
 upstream peers in `doc/lua_api.md`; the rest are here or in their subsystem
 document.
 
-Everything below requires `IS_VOPI_ENGINE`.
+Everything below requires `IS_VOPI_ENGINE`, including the day-cycle APIs and
+`clock[]`. With the option off, these functions and the formspec parser are not
+registered.
 
 ## In `doc/lua_api.md`
 
@@ -35,6 +37,8 @@ Documented beside the upstream elements they extend:
 | `core.get_content_pack_info(id)` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |
 | `core.get_mounted_content_packs()` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |
 | `core.is_chat_open()` | **client-side only** | below |
+| `core.set_day_cycle`, `core.set_day_cycle_paused`, `core.set_world_time`, `core.advance_time` | server | [day-cycle.md](day-cycle.md) |
+| `core.get_day_cycle_state` | server, client-side | [day-cycle.md](day-cycle.md) |
 
 ## `core.is_chat_open()`
 

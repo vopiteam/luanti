@@ -14,6 +14,9 @@
 	- etc.
 */
 
+#if IS_VOPI_ENGINE
+#include "daycycle.h"
+#endif
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -46,11 +49,28 @@ public:
 	virtual Map &getMap() = 0;
 
 	u32 getDayNightRatio();
+#if IS_VOPI_ENGINE
+	void setDayCycleRenderTime(std::optional<double> time);
+#endif
 
 	// 0-23999
 	virtual void setTimeOfDay(u32 time);
 	u32 getTimeOfDay();
+#if IS_VOPI_ENGINE
+	double getTimeOfDayF();
+	DayCycleSnapshot getDayCycleSnapshot();
+	void setDayCycleSnapshot(const DayCycleSnapshot &snapshot);
+	DayCycleTime getWorldTime();
+	void setWorldTime(const DayCycleTime &time);
+	void advanceTime(double game_seconds);
+	void setDayCycle(const DayCycleDefinition &definition);
+	DayCycleDefinition getDayCycle();
+	DayCycleState getDayCycleState(std::optional<double> time = std::nullopt);
+	void setDayCyclePaused(bool paused);
+	double getTimeOfDaySpeed();
+#else
 	float getTimeOfDayF();
+#endif
 
 	void stepTimeOfDay(float dtime);
 
@@ -102,6 +122,14 @@ protected:
 	/*
 	 * Below: values managed by m_time_lock
 	 */
+#if IS_VOPI_ENGINE
+	DayCycleTime m_clock;
+	DayCycleDefinition m_day_cycle;
+	u32 m_day_cycle_revision = 1;
+	u32 m_time_discontinuity = 0;
+	std::optional<double> m_day_cycle_render_time;
+	// Per-player rendering override; it does not change the clock or phase.
+#else
 	// Time of day in milli-hours (0-23999), determines day and night
 	u32 m_time_of_day;
 	// Time of day in 0...1
@@ -110,11 +138,16 @@ protected:
 	// to be applied at next conversion, so that there is no real skew.
 	float m_time_conversion_skew = 0.0f;
 	// Overriding the day-night ratio is useful for custom sky visuals
+#endif
 	bool m_enable_day_night_ratio_override = false;
+#if IS_VOPI_ENGINE
+	u32 m_day_night_ratio_override = 0;
+#else
 	u32 m_day_night_ratio_override = 0.0f;
 	// Days from the server start, accounts for time shift
 	// in game (e.g. /time or bed usage)
 	std::atomic<u32> m_day_count;
+#endif
 	/*
 	 * Above: values managed by m_time_lock
 	 */

@@ -31,7 +31,11 @@ CENTROID_ VARYING_ float nightRatio;
 	uniform mat4 m_ShadowViewProj;
 	uniform float f_shadowfar;
 	uniform float f_shadow_strength;
+#if defined(IS_VOPI_ENGINE) && IS_VOPI_ENGINE
+	uniform float f_day_cycle_shadow;
+#else
 	uniform float f_timeofday;
+#endif
 	uniform vec4 CameraPos;
 
 	VARYING_ float cosLight;
@@ -257,6 +261,9 @@ void main(void)
 #endif
 		perspective_factor = pFactor;
 
+#if defined(IS_VOPI_ENGINE) && IS_VOPI_ENGINE
+		adj_shadow_strength = f_shadow_strength * f_day_cycle_shadow;
+#else
 		if (f_timeofday < 0.2) {
 			adj_shadow_strength = f_shadow_strength * 0.5 *
 				(1.0 - mtsmoothstep(0.18, 0.2, f_timeofday));
@@ -268,6 +275,7 @@ void main(void)
 				mtsmoothstep(0.20, 0.25, f_timeofday) *
 				(1.0 - mtsmoothstep(0.7, 0.8, f_timeofday));
 		}
+#endif
 	}
 #endif
 }

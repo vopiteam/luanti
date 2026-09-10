@@ -788,6 +788,10 @@ void ShaderSource::generateShader(ShaderInfo &shaderinfo)
 		)";
 	}
 
+#if IS_VOPI_ENGINE
+	shaders_header << "#define IS_VOPI_ENGINE 1\n";
+#endif
+
 	// legacy semantic texture name
 	fragment_header += "#define baseTexture texture0\n";
 

@@ -320,6 +320,9 @@ public:
 	u8 getPatch() const { return m_version_patch; }
 	const std::string &getFullVer() const { return m_full_version; }
 
+#if IS_VOPI_ENGINE
+	bool supports_day_cycle = false;
+#endif
 	void setLangCode(const std::string &code);
 	const std::string &getLangCode() const { return m_lang_code; }
 

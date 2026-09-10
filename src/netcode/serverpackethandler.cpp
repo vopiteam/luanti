@@ -284,6 +284,20 @@ void Server::handleCommand_Init2(NetworkPacket* pkt)
 	std::string lang;
 	if (pkt->getSize() > 0)
 		*pkt >> lang;
+#if IS_VOPI_ENGINE
+	if (pkt->getRemainingBytes() == 6) {
+		u32 capability;
+		u16 version;
+		*pkt >> capability >> version;
+		client->supports_day_cycle = capability == DAY_CYCLE_CAPABILITY &&
+				version == DAY_CYCLE_PROTOCOL;
+	}
+	if (m_env->getDayCycle().enabled && !client->supports_day_cycle) {
+		DenyAccess(peer_id, SERVER_ACCESSDENIED_CUSTOM_STRING,
+				"This world requires a client with day cycle support. Please update your client.");
+		return;
+	}
+#endif
 
 	/*
 		Send some initialization data
@@ -321,7 +335,11 @@ void Server::handleCommand_Init2(NetworkPacket* pkt)
 
 	// Send time of day
 	u16 time = m_env->getTimeOfDay();
+#if IS_VOPI_ENGINE
+	float time_speed = m_env->getTimeOfDaySpeed();
+#else
 	float time_speed = g_settings->getFloat("time_speed");
+#endif
 	SendTimeOfDay(peer_id, time, time_speed);
 
 	SendCSMRestrictionFlags(peer_id);

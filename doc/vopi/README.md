@@ -5,9 +5,10 @@ upstream Luanti. This directory documents what it adds and where each piece
 lives; the rest of `doc/` is upstream reference material and applies unchanged.
 
 Everything here is gated behind the `IS_VOPI_ENGINE` CMake option, which
-defaults to `OFF`. With the option off, the build is upstream Luanti — the
-feature code either compiles out or is not compiled at all. See
-[build.md](build.md).
+defaults to `OFF`. With the option off, the feature code is excluded and the
+previous Luanti behaviour is preserved. This includes the day-cycle clock,
+Lua APIs, network extension, persistence, rendering and clock formspec element.
+See [build.md](build.md).
 
 ## Contents
 
@@ -18,6 +19,7 @@ feature code either compiles out or is not compiled at all. See
 | [content-vfs.md](content-vfs.md) | Reading game content from encrypted containers instead of the filesystem |
 | [ui.md](ui.md) | Formspec and HUD extensions, touch input, font scaling, baked node icons |
 | [mapgen.md](mapgen.md) | Mapgen Valleys additions: rivers level with the sea, a solid floor, cliff carving, floating piece removal |
+| [day-cycle.md](day-cycle.md) | Configurable civil clock, visual phases, synchronization and migration |
 | [lua-api.md](lua-api.md) | Index of every Lua API addition, and where each one is documented |
 
 ## Where API reference lives

@@ -517,7 +517,7 @@ if(BUILD_UNITTESTS OR BUILD_BENCHMARKS)
 endif()
 
 if(IS_VOPI_ENGINE)
-	list(APPEND common_SRCS content_vfs.cpp platform_state.cpp)
+	list(APPEND common_SRCS content_vfs.cpp platform_state.cpp daycycle.cpp)
 	set(VOPI_AES_LIBRARY aes)
 	# Proprietary platform layer sources (content pack key provider, ...).
 	# VOPI_PLATFORM_SRC_DIR points at the embedding project's src/ directory that

@@ -9,8 +9,150 @@
 #include "settings.h"
 #include "daynightratio.h"
 #include "emerge.h"
+#if IS_VOPI_ENGINE
+#include <cmath>
+#endif
 
 
+#if IS_VOPI_ENGINE
+Environment::Environment(IGameDef *gamedef):
+	m_time_of_day_speed(0.0f),
+	m_gamedef(gamedef)
+{
+	m_clock.timeofday = (g_settings->getU32("world_start_time") % 24000) / 24000.0;
+}
+
+u32 Environment::getDayNightRatio()
+{
+	MutexAutoLock lock(m_time_lock);
+	if (m_enable_day_night_ratio_override)
+		return m_day_night_ratio_override;
+	return std::lround(evaluateDayCycle(m_day_cycle, m_day_cycle_render_time.value_or(m_clock.timeofday)).day_night_ratio * 1000);
+}
+
+void Environment::setDayCycleRenderTime(std::optional<double> time)
+{
+	MutexAutoLock lock(m_time_lock);
+	m_day_cycle_render_time = time;
+}
+
+void Environment::setTimeOfDaySpeed(float speed)
+{
+	if (std::isfinite(speed) && speed >= 0)
+		m_time_of_day_speed = speed;
+}
+
+double Environment::getTimeOfDaySpeed()
+{
+	MutexAutoLock lock(m_time_lock);
+	if (m_clock.paused)
+		return 0;
+	return m_day_cycle.enabled ? m_day_cycle.speed(m_clock.timeofday) :
+			m_time_of_day_speed.load();
+}
+
+void Environment::setDayNightRatioOverride(bool enable, u32 value)
+{
+	MutexAutoLock lock(m_time_lock);
+	m_enable_day_night_ratio_override = enable;
+	m_day_night_ratio_override = value;
+}
+
+void Environment::setTimeOfDay(u32 time)
+{
+	MutexAutoLock lock(m_time_lock);
+	time %= 24000;
+	double next = time / 24000.0;
+	if (static_cast<u32>(m_clock.timeofday * 24000) > time)
+		m_clock.advanceDays(1);
+	m_clock.timeofday = next;
+	++m_time_discontinuity;
+}
+
+u32 Environment::getTimeOfDay()
+{
+	MutexAutoLock lock(m_time_lock);
+	return std::min<u32>(23999, m_clock.timeofday * 24000);
+}
+
+double Environment::getTimeOfDayF()
+{
+	MutexAutoLock lock(m_time_lock);
+	return m_clock.timeofday;
+}
+
+DayCycleSnapshot Environment::getDayCycleSnapshot()
+{
+	MutexAutoLock lock(m_time_lock);
+	return {m_day_cycle, m_clock, m_day_cycle_revision, m_time_discontinuity};
+}
+
+void Environment::setDayCycleSnapshot(const DayCycleSnapshot &snapshot)
+{
+	snapshot.definition.validate();
+	snapshot.clock.validate();
+	MutexAutoLock lock(m_time_lock);
+	m_day_cycle = snapshot.definition;
+	m_clock = snapshot.clock;
+	m_day_cycle_revision = snapshot.revision;
+	m_time_discontinuity = snapshot.discontinuity;
+}
+
+DayCycleTime Environment::getWorldTime()
+{
+	MutexAutoLock lock(m_time_lock);
+	return m_clock;
+}
+
+void Environment::setWorldTime(const DayCycleTime &time)
+{
+	time.validate();
+	MutexAutoLock lock(m_time_lock);
+	m_clock = time;
+	++m_time_discontinuity;
+}
+
+void Environment::advanceTime(double game_seconds)
+{
+	MutexAutoLock lock(m_time_lock);
+	m_clock.advanceDays(game_seconds / 86400);
+	++m_time_discontinuity;
+}
+
+void Environment::setDayCycle(const DayCycleDefinition &definition)
+{
+	definition.validate();
+	MutexAutoLock lock(m_time_lock);
+	if (m_day_cycle.serialize() != definition.serialize()) {
+		m_day_cycle = definition;
+		if (++m_day_cycle_revision == 0)
+			m_day_cycle_revision = 1;
+		++m_time_discontinuity;
+	}
+}
+
+DayCycleDefinition Environment::getDayCycle()
+{
+	MutexAutoLock lock(m_time_lock);
+	return m_day_cycle;
+}
+
+DayCycleState Environment::getDayCycleState(std::optional<double> time)
+{
+	MutexAutoLock lock(m_time_lock);
+	return evaluateDayCycle(m_day_cycle, time.value_or(m_clock.timeofday));
+}
+
+void Environment::setDayCyclePaused(bool paused)
+{
+	MutexAutoLock lock(m_time_lock);
+	if (m_clock.paused != paused) {
+		m_clock.paused = paused;
+		++m_time_discontinuity;
+	}
+}
+
+#else
 Environment::Environment(IGameDef *gamedef):
 	m_time_of_day_speed(0.0f),
 	m_day_count(0),
@@ -61,6 +203,7 @@ float Environment::getTimeOfDayF()
 	return m_time_of_day_f;
 }
 
+#endif
 bool Environment::line_of_sight(v3f pos1, v3f pos2, v3s16 *p)
 {
 	// Iterate trough nodes on the line
@@ -279,6 +422,19 @@ void Environment::continueRaycast(RaycastState *state, PointedThing *result_p)
 	}
 }
 
+#if IS_VOPI_ENGINE
+void Environment::stepTimeOfDay(float dtime)
+{
+	MutexAutoLock lock(m_time_lock);
+	m_clock.advance(dtime, m_day_cycle, m_time_of_day_speed.load());
+}
+
+u32 Environment::getDayCount()
+{
+	MutexAutoLock lock(m_time_lock);
+	return m_clock.day;
+}
+#else
 void Environment::stepTimeOfDay(float dtime)
 {
 	MutexAutoLock lock(this->m_time_lock);
@@ -318,3 +474,4 @@ u32 Environment::getDayCount()
 	// Atomic<u32> counter
 	return m_day_count;
 }
+#endif

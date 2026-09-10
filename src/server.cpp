@@ -387,6 +387,10 @@ Server::~Server()
 	if (m_env) {
 		EnvAutoLock envlock(this);
 
+#if IS_VOPI_ENGINE
+		// Failed startup must not run game hooks or save a partially loaded clock.
+		if (m_day_cycle_ready) {
+#endif
 		infostream << "Server: Executing shutdown hooks" << std::endl;
 		try {
 			m_script->on_shutdown();
@@ -420,6 +424,10 @@ Server::~Server()
 
 		infostream << "Server: Saving environment metadata" << std::endl;
 		m_env->saveMeta();
+
+#if IS_VOPI_ENGINE
+		}
+#endif
 
 		// Delete classes that depend on the environment
 		m_inventory_mgr.reset();
@@ -487,6 +495,13 @@ void Server::init()
 		throw ServerError(std::string("Failed to initialize world: ") + e.what());
 	}
 
+#if IS_VOPI_ENGINE
+	try {
+		prepareDayCycleBackup();
+	} catch (const std::exception &e) {
+		throw ServerError(std::string("Cannot prepare day cycle backup: ") + e.what());
+	}
+#endif
 	// Create emerge manager
 	m_emerge = std::make_unique<EmergeManager>(this, m_metrics_backend.get());
 
@@ -590,7 +605,16 @@ void Server::init()
 	// Register us to receive map edit events
 	servermap.addEventReceiver(this);
 
+#if IS_VOPI_ENGINE
+	try {
+		m_env->loadMeta();
+		initializeDayCycle();
+	} catch (const std::exception &e) {
+		throw ServerError(std::string("Cannot initialize world clock: ") + e.what());
+	}
+#else
 	m_env->loadMeta();
+#endif
 
 	// Those settings can be overwritten in world.mt, they are
 	// intended to be cached after environment loading.
@@ -694,7 +718,19 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 	/*
 		Update time of day and overall game time
 	*/
+#if IS_VOPI_ENGINE
+	std::string requested_speed = g_settings->get("time_speed");
+	if (m_env->getDayCycle().enabled) {
+		if (m_day_cycle_observed_speed && *m_day_cycle_observed_speed != requested_speed)
+			warningstream << "time_speed change ignored: the active day cycle owns the clock rate" << std::endl;
+		m_day_cycle_observed_speed = requested_speed;
+	} else {
+		m_day_cycle_observed_speed.reset();
+		m_env->setTimeOfDaySpeed(g_settings->getFloat("time_speed"));
+	}
+#else
 	m_env->setTimeOfDaySpeed(g_settings->getFloat("time_speed"));
+#endif
 
 	/*
 		Send to clients at constant intervals
@@ -705,7 +741,11 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 	if (m_time_of_day_send_timer < 0) {
 		m_time_of_day_send_timer = time_send_interval;
 		u16 time = m_env->getTimeOfDay();
+#if IS_VOPI_ENGINE
+		float time_speed = m_env->getTimeOfDaySpeed();
+#else
 		float time_speed = g_settings->getFloat("time_speed");
+#endif
 		SendTimeOfDay(PEER_ID_INEXISTENT, time, time_speed);
 
 		m_timeofday_gauge->set(time);
@@ -1401,6 +1441,116 @@ void Server::setTimeOfDay(u32 time)
 	m_time_of_day_send_timer = 0;
 }
 
+
+#if IS_VOPI_ENGINE
+void Server::configureDayCycle(const DayCycleDefinition &definition,
+		const std::string &migration_id, double source_sunrise, double source_sunset)
+{
+	definition.validate();
+	if (!m_day_cycle_ready) {
+		m_pending_day_cycle = definition;
+		m_day_cycle_migration_id = migration_id;
+		m_day_cycle_source_sunrise = source_sunrise;
+		m_day_cycle_source_sunset = source_sunset;
+		return;
+	}
+	if (definition.enabled) {
+		ClientInterface::AutoLock clientlock(m_clients);
+		for (const auto &entry : m_clients.getClientList()) {
+			const auto *client = entry.second;
+			if (client->getState() >= CS_InitDone && !client->supports_day_cycle)
+				throw std::invalid_argument("a connected client does not support the day cycle");
+		}
+	}
+	m_env->setDayCycle(definition);
+	if (definition.enabled)
+		m_env->markDayCycleConfigured();
+	m_time_of_day_send_timer = 0;
+}
+
+void Server::setDayCyclePaused(bool paused)
+{
+	if (!m_day_cycle_ready) {
+		m_pending_day_cycle_pause = paused;
+		return;
+	}
+	m_env->setDayCyclePaused(paused);
+	m_time_of_day_send_timer = 0;
+}
+
+void Server::setWorldTime(const DayCycleTime &time)
+{
+	if (!m_day_cycle_ready)
+		throw std::invalid_argument("world time is not available during mod loading");
+	m_env->setWorldTime(time);
+	m_time_of_day_send_timer = 0;
+}
+
+void Server::advanceTime(double seconds)
+{
+	if (!m_day_cycle_ready)
+		throw std::invalid_argument("world time is not available during mod loading");
+	m_env->advanceTime(seconds);
+	m_time_of_day_send_timer = 0;
+}
+
+void Server::prepareDayCycleBackup()
+{
+	// Called before opening map/player/mod-storage databases. A copy made after
+	// mod loading could miss uncommitted database changes.
+	if (!g_settings->getBool("day_cycle_migration_backup"))
+		return;
+	std::string meta_path = m_path_world + DIR_DELIM "env_meta.txt";
+	if (!fs::PathExists(meta_path))
+		return;
+	auto input = open_ifstream(meta_path.c_str(), true);
+	Settings meta("EnvArgsEnd");
+	if (!input.good() || !meta.parseConfigLines(input))
+		throw ServerError("Cannot read world metadata before day cycle backup");
+	if ((meta.exists("day_cycle_configured") && meta.getBool("day_cycle_configured")) ||
+			meta.exists("day_cycle_migration") ||
+			(meta.exists("day_cycle_state") &&
+			DayCycleSnapshot::deserialize(meta.get("day_cycle_state")).definition.enabled))
+		return;
+	std::string name;
+	std::string parent = fs::RemoveLastPathComponent(m_path_world, &name);
+	std::string base = parent + DIR_DELIM ".day-cycle-backups" + DIR_DELIM + name;
+	for (unsigned attempt = 0; attempt < 1000; ++attempt) {
+		std::string path = base + "-" + std::to_string(porting::getTimeMs()) +
+				"-" + std::to_string(attempt);
+		if (fs::PathExists(path))
+			continue;
+		if (!fs::CopyDir(m_path_world, path))
+			throw ServerError("Cannot back up world before day cycle migration: " + path);
+		m_day_cycle_backup_path = path;
+		actionstream << "Day cycle: saved world backup to " << path << std::endl;
+		return;
+	}
+	throw ServerError("Cannot allocate a day cycle world backup directory");
+}
+
+void Server::initializeDayCycle()
+{
+	if (m_pending_day_cycle) {
+		if (m_pending_day_cycle->enabled && !m_day_cycle_migration_id.empty() &&
+				m_env->hasLegacyTimeMetadata()) {
+			if (m_day_cycle_backup_path.empty())
+				throw ServerError("Day cycle migration requires day_cycle_migration_backup = true before startup");
+			m_env->migrateDayCycle(*m_pending_day_cycle, m_day_cycle_migration_id,
+					m_day_cycle_source_sunrise, m_day_cycle_source_sunset,
+					m_day_cycle_backup_path);
+		} else {
+			m_env->setDayCycle(*m_pending_day_cycle);
+			if (m_pending_day_cycle->enabled)
+				m_env->markDayCycleConfigured();
+		}
+	}
+	if (m_pending_day_cycle_pause)
+		m_env->setDayCyclePaused(*m_pending_day_cycle_pause);
+	m_day_cycle_ready = true;
+}
+
+#endif
 void Server::onMapEditEvent(const MapEditEvent &event)
 {
 	if (m_ignore_map_edit_events_area.contains(event.getArea()))
@@ -2103,6 +2253,25 @@ void Server::SendCamera(session_t peer_id, Player *player)
 	Send(&pkt);
 }
 
+#if IS_VOPI_ENGINE
+void Server::SendTimeOfDay(session_t peer_id, u16 time, f32 time_speed)
+{
+	if (peer_id == PEER_ID_INEXISTENT) {
+		for (session_t id : m_clients.getClientIDs())
+			SendTimeOfDay(id, time, time_speed);
+		return;
+	}
+	NetworkPacket pkt(TOCLIENT_TIME_OF_DAY, 0, peer_id);
+	pkt << time << time_speed;
+	auto *client = getClientNoEx(peer_id, CS_InitDone);
+	if (client && client->supports_day_cycle) {
+		pkt << DAY_CYCLE_CAPABILITY << DAY_CYCLE_PROTOCOL;
+		pkt << m_env->getDayCycleSnapshot().serialize();
+	}
+	Send(&pkt);
+}
+
+#else
 void Server::SendTimeOfDay(session_t peer_id, u16 time, f32 time_speed)
 {
 	NetworkPacket pkt(TOCLIENT_TIME_OF_DAY, 0, peer_id);
@@ -2116,6 +2285,7 @@ void Server::SendTimeOfDay(session_t peer_id, u16 time, f32 time_speed)
 	}
 }
 
+#endif
 void Server::SendPlayerBreath(PlayerSAO *sao)
 {
 	assert(sao);
