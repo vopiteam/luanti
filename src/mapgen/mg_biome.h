@@ -10,6 +10,10 @@
 #include "nodedef.h"
 #include "noise.h"
 #include "debug.h" // FATAL_ERROR_IF
+#if IS_VOPI_ENGINE
+#include "mg_biome_terrain.h"
+#include <limits>
+#endif
 
 class Server;
 class Settings;
@@ -71,6 +75,17 @@ public:
 	float humidity_point = 0.0f;
 	s16 vertical_blend = 0;
 	float weight = 1.0f;
+#if IS_VOPI_ENGINE
+	// Inclusive bounds on the modeled surface at this X/Z. Omitted bounds
+	// preserve the original biome selection without sampling terrain.
+	float slope_min = 0.0f;
+	float slope_max = 90.0f;
+	float relief_min = 0.0f;
+	float relief_max = std::numeric_limits<float>::infinity();
+
+	bool hasTerrainConstraints() const;
+	bool matchesTerrain(const BiomeTerrain &terrain) const;
+#endif
 
 	virtual void resolveNodeNames();
 };
@@ -196,11 +211,19 @@ public:
 	Biome *calcBiomeFromNoise(float heat, float humidity, v3s16 pos) const;
 	s16 getNextTransitionY(s16 y) const;
 
+#if IS_VOPI_ENGINE
+	void setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler);
+	bool getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const;
+#endif
+
 	float *heatmap;
 	float *humidmap;
 
 private:
 	const BiomeParamsOriginal *m_params;
+#if IS_VOPI_ENGINE
+	std::unique_ptr<BiomeTerrainSampler> m_terrain_sampler;
+#endif
 
 	Noise *noise_heat;
 	Noise *noise_humidity;

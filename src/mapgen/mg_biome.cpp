@@ -11,6 +11,9 @@
 #include "settings.h"
 
 #include <algorithm>
+#if IS_VOPI_ENGINE
+#include <cmath>
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -160,7 +163,12 @@ s16 BiomeGenOriginal::getNextTransitionY(s16 y) const
 
 BiomeGen *BiomeGenOriginal::clone(BiomeManager *biomemgr) const
 {
-	return new BiomeGenOriginal(biomemgr, m_params, m_csize);
+	auto copy = new BiomeGenOriginal(biomemgr, m_params, m_csize);
+#if IS_VOPI_ENGINE
+	if (m_terrain_sampler)
+		copy->setTerrainSampler(m_terrain_sampler->clone());
+#endif
+	return copy;
 }
 
 float BiomeGenOriginal::calcHeatAtPoint(v3s16 pos) const
@@ -237,6 +245,11 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 	Biome *biome_closest_blend = nullptr;
 	float dist_min = FLT_MAX;
 	float dist_min_blend = FLT_MAX;
+#if IS_VOPI_ENGINE
+	BiomeTerrain terrain;
+	bool terrain_sampled = false;
+	bool terrain_available = false;
+#endif
 
 	for (size_t i = 1; i < m_bmgr->getNumObjects(); i++) {
 		Biome *b = (Biome *)m_bmgr->getRaw(i);
@@ -246,6 +259,16 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 				pos.Z < b->min_pos.Z || pos.Z > b->max_pos.Z)
 			continue;
 
+#if IS_VOPI_ENGINE
+		if (b->hasTerrainConstraints()) {
+			if (!terrain_sampled) {
+				terrain_available = getBiomeTerrain(v2s16(pos.X, pos.Z), terrain);
+				terrain_sampled = true;
+			}
+			if (!terrain_available || !b->matchesTerrain(terrain))
+				continue;
+		}
+#endif
 		float d_heat = heat - b->heat_point;
 		float d_humidity = humidity - b->humidity_point;
 		float dist = ((d_heat * d_heat) + (d_humidity * d_humidity));
@@ -318,9 +341,43 @@ ObjDef *Biome::clone() const
 	obj->humidity_point = humidity_point;
 	obj->vertical_blend = vertical_blend;
 	obj->weight = weight;
+#if IS_VOPI_ENGINE
+	obj->slope_min = slope_min;
+	obj->slope_max = slope_max;
+	obj->relief_min = relief_min;
+	obj->relief_max = relief_max;
+#endif
 
 	return obj;
 }
+
+#if IS_VOPI_ENGINE
+bool Biome::hasTerrainConstraints() const
+{
+	return slope_min > 0.0f || slope_max < 90.0f ||
+		relief_min > 0.0f || std::isfinite(relief_max);
+}
+
+bool Biome::matchesTerrain(const BiomeTerrain &terrain) const
+{
+	return terrain.slope >= slope_min && terrain.slope <= slope_max &&
+		terrain.relief >= relief_min && terrain.relief <= relief_max;
+}
+
+void BiomeGenOriginal::setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler)
+{
+	m_terrain_sampler = std::move(sampler);
+}
+
+bool BiomeGenOriginal::getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const
+{
+	if (!m_terrain_sampler)
+		return false;
+	terrain = m_terrain_sampler->sample(pos);
+	return std::isfinite(terrain.height) && std::isfinite(terrain.slope) &&
+		std::isfinite(terrain.relief);
+}
+#endif
 
 void Biome::resolveNodeNames()
 {

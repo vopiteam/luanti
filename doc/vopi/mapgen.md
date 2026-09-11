@@ -126,3 +126,92 @@ from the decoration's own generator, the one that already chooses its
 positions and rotation, and a seed reproduces the world node for node.
 Schematics placed from Lua with `core.place_schematic` and
 `core.place_schematic_on_vmanip` keep the upstream behaviour.
+
+## Biome terrain constraints
+
+With `IS_VOPI_ENGINE`, `core.register_biome` accepts four optional, inclusive
+bounds. They select biomes for the existing terrain; they do not change terrain
+noise, density, rivers or the generation order.
+
+| Field | Unit | Default | Accepted explicit values |
+|---|---|---|---|
+| `slope_min` | degrees | 0 | finite number from 0 to 90 |
+| `slope_max` | degrees | 90 | finite number from 0 to 90 |
+| `relief_min` | nodes | 0 | finite nonnegative number representable as a float |
+| `relief_max` | nodes | unlimited | finite nonnegative number representable as a float |
+
+An inverted range, nonnumeric value, NaN or infinity is a registration error.
+All bounds must pass, together with the existing position and Y bounds, before
+weighted heat/humidity distance selects the winner. A terrain-rejected biome
+cannot enter through `vertical_blend`. Keep an unconstrained fallback biome
+for any climate/height that the constrained biomes do not cover; if no candidate
+passes, the existing default biome is returned.
+
+Only Valleys supplies terrain metrics. On other mapgens, a biome with an
+operative terrain restriction is ineligible. Bounds equal to the unrestricted
+defaults (`slope_min = 0`, `slope_max = 90`, `relief_min = 0`) do not impose a
+restriction. Definitions without restrictions preserve the original selection
+and do not sample terrain. A definition is copied with its bounds into emerge
+threads.
+
+For example, the following fields may be added to a complete biome definition:
+
+```lua
+    y_min = 2,
+    y_max = 80,
+    slope_max = 12,
+    relief_max = 20,
+```
+
+These are illustrative thresholds, not universal values for a biome type.
+Y remains the position being classified, while slope and relief describe the
+natural surface above that X/Z, including for an underground biome query.
+
+## `core.get_biome_terrain(pos)`
+
+Available in server and emerge Lua environments. Returns
+`{height = number, slope = number, relief = number}` for Valleys, or `nil` when
+no supported terrain sampler is available (including before mapgen setup).
+Only X/Z select the surface; Y does not select a cave floor or a vertical chunk.
+No mapblocks need to be loaded or generated first.
+
+The query and biome filter use the same deterministic modeled natural surface.
+It includes the base 3D density, mountain bodies, mountain caps, solid floor,
+`carve_cliffs` and removal of natural floating components. The latter two use
+canonical chunk bounds, including components retained at chunk boundaries,
+the supporting floor, the native component-size limit and the native seeding
+rule: only a column's topmost solid node starts a fill, and not one whose run
+of solid nodes reaches the floor or the chunk bottom.
+
+Cave carving and changes to biome materials are excluded: they depend on the
+already selected biome, so including their complete effects before selection
+would create a dependency cycle. Decorations and player edits are excluded
+as well. The query describes the landscape for classification, not the exact
+final visible voxel surface. Water does not replace the ground below it.
+
+Surface heights are sampled on a world-aligned lattice every **8 nodes**.
+At each lattice point:
+
+- `height` is the highest modeled solid node, in node coordinates.
+- `slope` is `atan(g)` in degrees. For each axis, take the larger absolute
+  height difference to either adjacent sample, divided by 8. Combine these
+  X/Z derivatives with `hypot`; `g` is the larger of that result and each
+  absolute diagonal height difference divided by `8 * sqrt(2)`. Opposite
+  flanks of a ridge or valley therefore cannot cancel each other.
+- `relief` is the highest minus the lowest sampled height in a square with
+  radius **16 nodes** (5 by 5 samples).
+
+Between lattice points, all three metrics are bilinearly interpolated.
+Negative coordinates use floor alignment. Sampling extends beyond the active
+chunk and is independent of its Y range, generation order and saved mapblocks.
+These smoothed metrics cannot detect every feature narrower than 8 nodes.
+Caches are bounded and owned by each generator. Every cached value depends on
+the mapgen parameters and the world position alone, so they are kept across
+mapchunks and discarded only when full, without affecting results. Restrictive
+candidates and explicit API queries compute metrics on demand; without either,
+no heights are sampled.
+
+`core.get_biome_data(pos)` applies terrain restrictions but retains its existing
+raw heat/humidity semantics. Valleys adjusts the climate during generation;
+this API therefore still does not promise the same biome ID as the generated
+biomemap. The new terrain query does not change that older climate distinction.

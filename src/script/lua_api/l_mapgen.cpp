@@ -21,6 +21,9 @@
 #include "filesys.h"
 #include "settings.h"
 #include "log.h"
+#if IS_VOPI_ENGINE
+#include <cmath>
+#endif
 
 struct EnumString ModApiMapgen::es_BiomeTerrainType[] =
 {
@@ -354,6 +357,26 @@ Biome *get_or_load_biome(lua_State *L, int index, BiomeManager *biomemgr)
 }
 
 
+#if IS_VOPI_ENGINE
+static lua_Number read_terrain_bound(lua_State *L, int index, const char *name,
+		float fallback, float upper)
+{
+	lua_getfield(L, index, name);
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 1);
+		return fallback;
+	}
+	bool is_number = lua_type(L, -1) == LUA_TNUMBER;
+	lua_Number value = lua_tonumber(L, -1);
+	lua_pop(L, 1);
+	if (!is_number || !std::isfinite(value) || value < 0 || value > upper ||
+			(value > 0 && static_cast<float>(value) == 0))
+		throw LuaError(std::string("Biome field '") + name +
+			"' must be a finite nonnegative number within its allowed range");
+	return value;
+}
+#endif
+
 Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 {
 	if (!lua_istable(L, index))
@@ -361,7 +384,22 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 
 	BiomeType biometype = (BiomeType)getenumfield(L, index, "type",
 		ModApiMapgen::es_BiomeTerrainType, BIOMETYPE_NORMAL);
+#if IS_VOPI_ENGINE
+	lua_Number slope_min = read_terrain_bound(L, index, "slope_min", 0.0f, 90.0f);
+	lua_Number slope_max = read_terrain_bound(L, index, "slope_max", 90.0f, 90.0f);
+	lua_Number relief_min = read_terrain_bound(L, index, "relief_min", 0.0f, std::numeric_limits<float>::max());
+	lua_Number relief_max = read_terrain_bound(L, index, "relief_max",
+		std::numeric_limits<float>::infinity(), std::numeric_limits<float>::max());
+	if (slope_min > slope_max || relief_min > relief_max)
+		throw LuaError("Biome terrain minimum must not exceed its maximum");
+#endif
 	Biome *b = BiomeManager::create(biometype);
+#if IS_VOPI_ENGINE
+	b->slope_min = static_cast<float>(slope_min);
+	b->slope_max = static_cast<float>(slope_max);
+	b->relief_min = static_cast<float>(relief_min);
+	b->relief_max = static_cast<float>(relief_max);
+#endif
 
 	getstringfield(L, index, "name", b->name);
 	getintfield(L,    index, "depth_top",       b->depth_top);
@@ -542,6 +580,30 @@ int ModApiMapgen::l_get_humidity(lua_State *L)
 	return 1;
 }
 
+
+#if IS_VOPI_ENGINE
+// Query the same modeled surface used by terrain-constrained biomes.
+int ModApiMapgen::l_get_biome_terrain(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+	v3s16 pos = read_v3s16(L, 1);
+	const BiomeGen *biomegen = getBiomeGen(L);
+	if (!biomegen || biomegen->getType() != BIOMEGEN_ORIGINAL)
+		return 0;
+	BiomeTerrain terrain;
+	if (!static_cast<const BiomeGenOriginal *>(biomegen)->getBiomeTerrain(
+			v2s16(pos.X, pos.Z), terrain))
+		return 0;
+	lua_createtable(L, 0, 3);
+	lua_pushnumber(L, terrain.height);
+	lua_setfield(L, -2, "height");
+	lua_pushnumber(L, terrain.slope);
+	lua_setfield(L, -2, "slope");
+	lua_pushnumber(L, terrain.relief);
+	lua_setfield(L, -2, "relief");
+	return 1;
+}
+#endif
 
 // get_biome_data(pos)
 // returns a table containing the biome id, heat and humidity at the position
@@ -2077,6 +2139,9 @@ void ModApiMapgen::Initialize(lua_State *L, int top)
 	API_FCT(get_heat);
 	API_FCT(get_humidity);
 	API_FCT(get_biome_data);
+#if IS_VOPI_ENGINE
+	API_FCT(get_biome_terrain);
+#endif
 	API_FCT(get_mapgen_object);
 	API_FCT(get_spawn_level);
 
@@ -2121,6 +2186,9 @@ void ModApiMapgen::InitializeEmerge(lua_State *L, int top)
 	API_FCT(get_heat);
 	API_FCT(get_humidity);
 	API_FCT(get_biome_data);
+#if IS_VOPI_ENGINE
+	API_FCT(get_biome_terrain);
+#endif
 	API_FCT(get_mapgen_object);
 
 	API_FCT(get_seed);

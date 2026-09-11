@@ -37,6 +37,9 @@ private:
 	// get_biome_data(pos)
 	// returns a table containing the biome id, heat and humidity at the position
 	static int l_get_biome_data(lua_State *L);
+#if IS_VOPI_ENGINE
+	static int l_get_biome_terrain(lua_State *L);
+#endif
 
 	// get_mapgen_object(objectname)
 	// returns the requested object used during map generation

@@ -11886,6 +11886,14 @@ performance and computing power the practical limit is much lower.
     -- Any x, y or z field left undefined defaults to -31000 in 'min_pos' or
     -- 31000 in 'max_pos'.
 
+    -- VOPI Engine: optional terrain bounds; Valleys only.
+    -- slope_min / slope_max: inclusive degrees in [0, 90], defaults 0 / 90.
+    -- relief_min / relief_max: inclusive local height difference in nodes,
+    -- defaults 0 / unlimited. Explicit bounds must be finite and nonnegative.
+    -- All bounds must pass before climate selection. They do not shape terrain.
+    -- Without a terrain provider, restrictive biomes are ineligible.
+    -- See doc/vopi/mapgen.md for sampling scale and core.get_biome_terrain().
+
     vertical_blend = 8,
     -- Vertical distance in nodes above 'y_max' over which the biome will
     -- blend with the biome above.

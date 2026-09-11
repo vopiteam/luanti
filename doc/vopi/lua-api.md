@@ -25,12 +25,14 @@ Documented beside the upstream elements they extend:
 | `ObjectRef:set_camera_yaw_range` / `get_camera_yaw_range` | camera limits |
 | `ObjectRef:set_camera` / `get_camera` | camera control |
 | `ObjectRef:set_view_bobbing` / `get_view_bobbing` | server-side view bobbing control |
+| `slope_min`, `slope_max`, `relief_min`, `relief_max` | biome terrain bounds, [mapgen.md](mapgen.md#biome-terrain-constraints) |
 | `node_seabed`, `depth_seabed` | biome definition fields, mechanism in [mapgen.md](mapgen.md) |
 
 ## In this directory
 
 | Addition | Environment | Document |
 |---|---|---|
+| `core.get_biome_terrain(pos)` | server, emerge | [mapgen.md](mapgen.md#coreget_biome_terrainpos) |
 | `core.get_platform_state(topic)` | menu | [platform.md](platform.md) |
 | `core.platform_action(topic, action[, arg])` | menu | [platform.md](platform.md) |
 | `core.is_content_pack_mounted(id)` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |

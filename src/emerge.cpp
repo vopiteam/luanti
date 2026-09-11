@@ -17,6 +17,9 @@
 #include "servermap.h"
 #include "mapblock.h"
 #include "mapgen/mg_biome.h"
+#if IS_VOPI_ENGINE
+#include "mapgen/mapgen_valleys.h"
+#endif
 #include "mapgen/mg_ore.h"
 #include "mapgen/mg_decoration.h"
 #include "mapgen/mg_schematic.h"
@@ -189,6 +192,13 @@ void EmergeManager::initMapgens(MapgenParams *params)
 
 	v3s16 csize = params->chunksize * MAP_BLOCKSIZE;
 	biomegen = biomemgr->createBiomeGen(BIOMEGEN_ORIGINAL, params->bparams, csize);
+#if IS_VOPI_ENGINE
+	if (params->mgtype == MAPGEN_VALLEYS) {
+		auto original = static_cast<BiomeGenOriginal *>(biomegen);
+		original->setTerrainSampler(createValleysBiomeTerrainSampler(
+			*static_cast<MapgenValleysParams *>(params)));
+	}
+#endif
 
 	for (u32 i = 0; i != m_threads.size(); i++) {
 		EmergeParams *p = new EmergeParams(this, biomegen,
