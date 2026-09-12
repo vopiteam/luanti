@@ -584,13 +584,20 @@ int ModApiMapgen::l_get_biome_name(lua_State *L)
 {
 	NO_MAP_LOCK_REQUIRED;
 
-	int biome_id = luaL_checkinteger(L, 1);
+	lua_Integer biome_id = luaL_checkinteger(L, 1);
 
 	const BiomeManager *bmgr = getEmergeManager(L)->getBiomeManager();
 	if (!bmgr)
 		return 0;
 
-	const Biome *b = (Biome *)bmgr->getRaw(biome_id);
+	// An id outside the registry is the documented failure, not a read past
+	// the end of the biome list.
+	if (biome_id < 0 ||
+			static_cast<size_t>(biome_id) >= bmgr->getNumObjects())
+		return 0;
+	const Biome *b = (Biome *)bmgr->getRaw(static_cast<u32>(biome_id));
+	if (!b)
+		return 0;
 	lua_pushstring(L, b->name.c_str());
 
 	return 1;
