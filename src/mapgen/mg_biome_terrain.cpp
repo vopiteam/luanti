@@ -22,6 +22,8 @@ constexpr size_t HEIGHT_CACHE_LIMIT = 4096;
 constexpr size_t METRIC_CACHE_LIMIT = 2048;
 constexpr size_t COLUMN_CACHE_LIMIT = 32768;
 constexpr size_t CAP_CACHE_LIMIT = 4096;
+constexpr size_t CAP_ROW_CACHE_LIMIT = 32768;
+constexpr size_t CLIMATE_CACHE_LIMIT = 32768;
 constexpr size_t VOXEL_CACHE_LIMIT = 262144;
 constexpr size_t TOP_CACHE_LIMIT = 16384;
 constexpr size_t COMPONENT_LIMIT = 65536;
@@ -183,11 +185,31 @@ public:
 		return std::unique_ptr<BiomeTerrainSampler>(new ValleysBiomeTerrainSampler(m_params));
 	}
 
+	bool sampleClimate(v2s16 pos, BiomeClimateContext &out) const override;
+
+	void beginChunk() override
+	{
+		// Evict between chunks rather than in the middle of one: a mapchunk
+		// with its halo needs well under half of each budget, so a cache
+		// that is at most half full keeps the whole chunk from the terrain
+		// pass through biome selection.
+		if (m_climates.size() > CLIMATE_CACHE_LIMIT / 2)
+			m_climates.clear();
+		if (m_columns.size() > COLUMN_CACHE_LIMIT / 2)
+			m_columns.clear();
+		if (m_cap_rows.size() > CAP_ROW_CACHE_LIMIT / 2)
+			m_cap_rows.clear();
+		if (m_caps.size() > CAP_CACHE_LIMIT / 2)
+			m_caps.clear();
+	}
+
 	void resetCache() override
 	{
 		HeightmapBiomeTerrainSampler::resetCache();
 		m_columns.clear();
 		m_caps.clear();
+		m_cap_rows.clear();
+		m_climates.clear();
 		m_carves.clear();
 		m_voxels.clear();
 		m_tops.clear();
@@ -209,6 +231,7 @@ private:
 		float mountain_gate;
 		float mountain_height;
 		float foot;
+		BiomeTerrainForm form;
 	};
 	struct Carve {
 		float foot;
@@ -221,18 +244,24 @@ private:
 	Column columnAt(s32 x, s32 z) const;
 	Carve carveAt(s32 x, s32 z) const;
 	TerrainChunk chunkAt(const TerrainPoint &point) const;
+	float densityUpperAt(const Column &column) const;
 	s32 upperAt(const Column &column) const;
+	float densityAt(const TerrainPoint &point, const Column &column) const;
 	bool naturalSolid(const TerrainPoint &point) const;
 	float floaterFloor(const TerrainPoint &point, const TerrainChunk &chunk) const;
 	s32 initialTop(s32 x, s32 z, const TerrainChunk &chunk) const;
 	bool retained(const TerrainPoint &point) const;
 	bool seedsRemoval(const TerrainPoint &top, const TerrainChunk &chunk) const;
 	void markVoxel(const TerrainPoint &point, Voxel mark) const;
+	void trimColumnCaches() const;
 	void trimSurfaceCaches() const;
+	float capRowAt(s32 x, s32 z) const;
 	float capAt(s32 x, s32 z) const;
 	const ValleysTerrainParams m_params;
 	mutable std::unordered_map<u64, Column> m_columns;
 	mutable std::unordered_map<u64, float> m_caps;
+	mutable std::unordered_map<u64, float> m_cap_rows;
+	mutable std::unordered_map<u64, BiomeClimateContext> m_climates;
 	mutable std::unordered_map<u64, Carve> m_carves;
 	mutable std::unordered_map<TerrainPoint, Voxel, TerrainPointHash> m_voxels;
 	mutable std::unordered_map<TerrainPoint, s32, TerrainPointHash> m_tops;
@@ -255,10 +284,15 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 	float base = n_terrain + valley_d;
 	float river = std::fabs(n_rivers) - p.river_size_factor;
 	float tv = std::fmax(river / n_profile, 0.0f);
-	float valley_h = valley_d * (1.0f - std::exp(-tv * tv));
+	float valley_pos = 1.0f - std::exp(-tv * tv);
+	float valley_h = valley_d * valley_pos;
 	float surface = base + valley_h;
 	float slope = n_slope * valley_h;
 	bool river_water = false;
+	// The form keeps the region level before the bank clamp below: that
+	// clamp shapes the surface, the region level says how high the land
+	// between the valleys would rise.
+	BiomeTerrainForm form{base, valley_d, valley_pos, 0.0f};
 
 	// Keep this terrain shape calculation in step with terrainColumn(). No
 	// node data, climate adjustments or existing mapgen noise buffers change.
@@ -281,12 +315,13 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 			surface = std::fmin(base - depth, surface);
 	}
 
-	Column c{surface, base, slope, 0.0f, 0.0f, 0.0f};
+	Column c{surface, base, slope, 0.0f, 0.0f, 0.0f, form};
 	if (p.mountains) {
 		c.mountain_height = NoiseFractal2D(&p.mountain_height, x, z, p.seed);
 		if (c.mountain_height > 0.0f) {
 			float tm = std::fmax(river / (n_profile * p.mountain_river_width), 0.0f);
 			c.mountain_gate = 1.0f - std::exp(-tm * tm);
+			c.form.mountain = c.mountain_height * c.mountain_gate;
 			if (c.mountain_gate > 0.0f) {
 				float ys = std::floor(surface + 0.5f);
 				c.foot = std::fmax(NoiseFractal3D(&p.mountain, x, ys, z, p.seed) *
@@ -297,6 +332,24 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 	if (m_columns.size() < COLUMN_CACHE_LIMIT)
 		m_columns.emplace(key, c);
 	return c;
+}
+
+float ValleysBiomeTerrainSampler::capRowAt(s32 x, s32 z) const
+{
+	u64 key = columnKey(x, z);
+	auto found = m_cap_rows.find(key);
+	if (found != m_cap_rows.end())
+		return found->second;
+
+	const s32 reach = m_params.mountain_cap_reach;
+	float taper = 1.0f / static_cast<float>(reach + 1);
+	float row = 0.0f;
+	for (s32 dx = -reach; dx <= reach; ++dx)
+		row = std::fmax(row, columnAt(x + dx, z).foot *
+			(1.0f - static_cast<float>(std::abs(dx)) * taper));
+	if (m_cap_rows.size() < CAP_ROW_CACHE_LIMIT)
+		m_cap_rows.emplace(key, row);
+	return row;
 }
 
 float ValleysBiomeTerrainSampler::capAt(s32 x, s32 z) const
@@ -310,10 +363,7 @@ float ValleysBiomeTerrainSampler::capAt(s32 x, s32 z) const
 	float taper = 1.0f / static_cast<float>(reach + 1);
 	float foot = 0.0f;
 	for (s32 dz = -reach; dz <= reach; ++dz) {
-		float row = 0.0f;
-		for (s32 dx = -reach; dx <= reach; ++dx)
-			row = std::fmax(row, columnAt(x + dx, z + dz).foot *
-				(1.0f - static_cast<float>(std::abs(dx)) * taper));
+		float row = capRowAt(x, z + dz);
 		foot = std::fmax(foot, row * (1.0f - static_cast<float>(std::abs(dz)) * taper));
 	}
 	if (m_caps.size() < CAP_CACHE_LIMIT)
@@ -321,14 +371,21 @@ float ValleysBiomeTerrainSampler::capAt(s32 x, s32 z) const
 	return foot;
 }
 
-void ValleysBiomeTerrainSampler::trimSurfaceCaches() const
+void ValleysBiomeTerrainSampler::trimColumnCaches() const
 {
-	// Never evict while exploring a connected component. Insertion budgets
-	// also bound memory for a single unusually expensive height query.
 	if (m_columns.size() >= COLUMN_CACHE_LIMIT)
 		m_columns.clear();
 	if (m_caps.size() >= CAP_CACHE_LIMIT)
 		m_caps.clear();
+	if (m_cap_rows.size() >= CAP_ROW_CACHE_LIMIT)
+		m_cap_rows.clear();
+}
+
+void ValleysBiomeTerrainSampler::trimSurfaceCaches() const
+{
+	// Never evict while exploring a connected component. Insertion budgets
+	// also bound memory for a single unusually expensive height query.
+	trimColumnCaches();
 	if (m_carves.size() >= CAP_CACHE_LIMIT)
 		m_carves.clear();
 	if (m_voxels.size() >= VOXEL_CACHE_LIMIT)
@@ -384,17 +441,49 @@ ValleysBiomeTerrainSampler::Carve ValleysBiomeTerrainSampler::carveAt(s32 x, s32
 	return carve;
 }
 
-s32 ValleysBiomeTerrainSampler::upperAt(const Column &c) const
+float ValleysBiomeTerrainSampler::densityUpperAt(const Column &c) const
 {
 	const auto &p = m_params;
 	float upper = c.surface + std::fabs(c.slope) * p.fill_noise_magnitude;
 	if (c.mountain_gate > 0.0f && c.mountain_height > 0.0f)
 		upper = std::fmax(upper, c.surface + std::fmax(p.mountain_cap_height,
 			p.mountain_noise_magnitude * c.mountain_gate * c.mountain_height));
+	return upper;
+}
+
+s32 ValleysBiomeTerrainSampler::upperAt(const Column &c) const
+{
+	const auto &p = m_params;
+	float upper = densityUpperAt(c);
 	const s32 floor = std::clamp(p.floor_y, -MAX_MAP_GENERATION_LIMIT, MAX_MAP_GENERATION_LIMIT);
 	upper = std::fmin(std::fmax(upper, static_cast<float>(floor)),
 		static_cast<float>(MAX_MAP_GENERATION_LIMIT));
 	return static_cast<s32>(std::ceil(upper));
+}
+
+float ValleysBiomeTerrainSampler::densityAt(const TerrainPoint &point,
+		const Column &c) const
+{
+	const auto &p = m_params;
+	const auto [x, y, z] = point;
+	float delta = static_cast<float>(y) - c.surface;
+	float extent = std::fabs(c.slope) * p.fill_noise_magnitude;
+	float density = -1.0f;
+	if (delta < -extent)
+		density = 1.0f;
+	else if (delta <= extent)
+		density = c.slope * NoiseFractal3D(&p.fill, x, y, z, p.seed) - delta;
+	if (density <= 0.0f && c.mountain_gate > 0.0f && c.mountain_height > 0.0f &&
+			static_cast<float>(y) > c.surface - 1.5f * std::fabs(c.slope)) {
+		float cap = 0.0f;
+		if (delta > 0.0f && delta < p.mountain_cap_height && p.mountain_cap != 0.0f) {
+			float t = delta / p.mountain_cap_height;
+			cap = p.mountain_cap * capAt(x, z) * 4.0f * t * (1.0f - t);
+		}
+		density = (NoiseFractal3D(&p.mountain, x, y, z, p.seed) + cap) *
+			c.mountain_gate - delta / c.mountain_height;
+	}
+	return density;
 }
 
 bool ValleysBiomeTerrainSampler::naturalSolid(const TerrainPoint &point) const
@@ -407,24 +496,7 @@ bool ValleysBiomeTerrainSampler::naturalSolid(const TerrainPoint &point) const
 	bool solid = y <= p.floor_y;
 	if (!solid) {
 		Column c = columnAt(x, z);
-		float delta = static_cast<float>(y) - c.surface;
-		float extent = std::fabs(c.slope) * p.fill_noise_magnitude;
-		float density = -1.0f;
-		if (delta < -extent)
-			density = 1.0f;
-		else if (delta <= extent)
-			density = c.slope * NoiseFractal3D(&p.fill, x, y, z, p.seed) - delta;
-		if (density <= 0.0f && c.mountain_gate > 0.0f && c.mountain_height > 0.0f &&
-				static_cast<float>(y) > c.surface - 1.5f * std::fabs(c.slope)) {
-			float cap = 0.0f;
-			if (delta > 0.0f && delta < p.mountain_cap_height && p.mountain_cap != 0.0f) {
-				float t = delta / p.mountain_cap_height;
-				cap = p.mountain_cap * capAt(x, z) * 4.0f * t * (1.0f - t);
-			}
-			density = (NoiseFractal3D(&p.mountain, x, y, z, p.seed) + cap) *
-				c.mountain_gate - delta / c.mountain_height;
-		}
-		solid = density > 0.0f;
+		solid = densityAt(point, c) > 0.0f;
 		if (solid && p.carve_cliffs) {
 			Carve carve = carveAt(x, z);
 			if (carve.height >= 2.0f && carve.gate > 0.0f &&
@@ -589,6 +661,39 @@ void ValleysBiomeTerrainSampler::markVoxel(const TerrainPoint &point, Voxel mark
 		found->second = mark;
 	else if (m_voxels.size() < VOXEL_CACHE_LIMIT)
 		m_voxels.emplace(point, mark);
+}
+
+bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
+		BiomeClimateContext &out) const
+{
+	u64 key = columnKey(pos.X, pos.Y);
+	auto found = m_climates.find(key);
+	if (found != m_climates.end()) {
+		out = found->second;
+		return true;
+	}
+
+	trimColumnCaches();
+	const Column c = columnAt(pos.X, pos.Y);
+	if (!std::isfinite(c.surface) || !std::isfinite(c.bank) ||
+			!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
+			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
+		return false;
+
+	// Clamp before conversion, preserving truncation toward zero even for
+	// negative fractional surfaces. The 2D surface is the climate height:
+	// 3D relief and mountain bodies above it do not cool the column, and
+	// the form fields carry where the column sits instead.
+	const float low = -MAX_MAP_GENERATION_LIMIT;
+	const float high = MAX_MAP_GENERATION_LIMIT;
+	BiomeClimateContext context{c.bank,
+		static_cast<s16>(std::clamp(c.surface, low, high)), c.form};
+
+	if (m_climates.size() >= CLIMATE_CACHE_LIMIT)
+		m_climates.clear();
+	m_climates.emplace(key, context);
+	out = context;
+	return true;
 }
 
 float ValleysBiomeTerrainSampler::sampleHeight(s32 x, s32 z) const

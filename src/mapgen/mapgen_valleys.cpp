@@ -31,6 +31,7 @@ Licensing changed by permission of Gael de Sailly.
 #include <cmath>
 #if IS_VOPI_ENGINE
 #include <algorithm>
+#include "exceptions.h"
 #endif
 
 
@@ -48,6 +49,54 @@ const FlagDesc flagdesc_mapgen_valleys[] = {
 	{NULL,               0}
 };
 
+#if IS_VOPI_ENGINE
+namespace {
+float clampAltitudeChill(float value)
+{
+	// This distance is a divisor in both climate and river-depth calculations.
+	return std::fmax(value, 1.0f);
+}
+}
+
+ValleysClimate calcValleysClimate(float heat, float humidity,
+		float base, s16 column_max_y, int water_level, float altitude_chill, u32 flags)
+{
+	altitude_chill = clampAltitudeChill(altitude_chill);
+
+	// Optionally increase humidity around rivers
+	if (flags & MGVALLEYS_HUMID_RIVERS) {
+		// Compensate to avoid increasing average humidity
+		humidity *= 0.8f;
+		// Ground height ignoring riverbeds
+		float t_alt = std::fmax(base, (float)column_max_y);
+		float water_depth = (t_alt - base) / 4.0f;
+		humidity *= 1.0f + std::pow(0.5f, std::fmax(water_depth, 1.0f));
+	}
+
+	// Optionally decrease humidity with altitude
+	if (flags & MGVALLEYS_ALT_DRY) {
+		// Ground height ignoring riverbeds
+		float t_alt = std::fmax(base, (float)column_max_y);
+		// Only decrease above water_level
+		if (t_alt > water_level)
+			humidity -= (t_alt - water_level) * 10.0f / altitude_chill;
+	}
+
+	// Optionally decrease heat with altitude
+	if (flags & MGVALLEYS_ALT_CHILL) {
+		// Compensate to avoid reducing the average heat
+		heat += 5.0f;
+		// Ground height ignoring riverbeds
+		float t_alt = std::fmax(base, (float)column_max_y);
+		// Only decrease above water_level
+		if (t_alt > water_level)
+			heat -= (t_alt - water_level) * 20.0f / altitude_chill;
+	}
+
+	return {heat, humidity};
+}
+#endif
+
 
 MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	: MapgenBasic(MAPGEN_VALLEYS, params, emerge)
@@ -57,7 +106,12 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	m_bgen = (BiomeGenOriginal *)biomegen;
 
 	spflags            = params->spflags;
+#if IS_VOPI_ENGINE
+	altitude_chill     = clampAltitudeChill(params->altitude_chill);
+	m_bgen->setValleysClimate(*params);
+#else
 	altitude_chill     = params->altitude_chill;
+#endif
 	river_depth_bed    = params->river_depth + 1.0f;
 	river_size_factor  = params->river_size / 100.0f;
 #if IS_VOPI_ENGINE
@@ -179,6 +233,9 @@ void MapgenValleysParams::readParams(const Settings *settings)
 {
 	settings->getFlagStrNoEx("mgvalleys_spflags", spflags, flagdesc_mapgen_valleys);
 	settings->getU16NoEx("mgvalleys_altitude_chill",       altitude_chill);
+#if IS_VOPI_ENGINE
+	altitude_chill = clampAltitudeChill(altitude_chill);
+#endif
 	settings->getS16NoEx("mgvalleys_large_cave_depth",     large_cave_depth);
 	settings->getU16NoEx("mgvalleys_small_cave_num_min",   small_cave_num_min);
 	settings->getU16NoEx("mgvalleys_small_cave_num_max",   small_cave_num_max);
@@ -229,7 +286,11 @@ void MapgenValleysParams::readParams(const Settings *settings)
 void MapgenValleysParams::writeParams(Settings *settings) const
 {
 	settings->setFlagStr("mgvalleys_spflags", spflags, flagdesc_mapgen_valleys);
+#if IS_VOPI_ENGINE
+	settings->setU16("mgvalleys_altitude_chill", clampAltitudeChill(altitude_chill));
+#else
 	settings->setU16("mgvalleys_altitude_chill",       altitude_chill);
+#endif
 	settings->setS16("mgvalleys_large_cave_depth",     large_cave_depth);
 	settings->setU16("mgvalleys_small_cave_num_min",   small_cave_num_min);
 	settings->setU16("mgvalleys_small_cave_num_max",   small_cave_num_max);
@@ -1014,7 +1075,9 @@ int MapgenValleys::generateTerrain()
 		}
 
 		// Highest solid node in column
+#if !IS_VOPI_ENGINE
 		s16 column_max_y = surface_y;
+#endif
 		u32 index_3d = (z - node_min.Z) * zstride_1u1d + (x - node_min.X);
 		u32 index_data = vm->m_area.index(x, node_min.Y - 1, z);
 
@@ -1042,8 +1105,10 @@ int MapgenValleys::generateTerrain()
 					vm->m_data[index_data] = n_stone; // Stone
 					if (y > surface_max_y)
 						surface_max_y = y;
+#if !IS_VOPI_ENGINE
 					if (y > column_max_y)
 						column_max_y = y;
+#endif
 				}
 				else if (y <= water_level) {
 					vm->m_data[index_data] = n_water; // Water
@@ -1062,6 +1127,14 @@ int MapgenValleys::generateTerrain()
 			index_3d += ystride;
 		}
 
+#if IS_VOPI_ENGINE
+		ValleysClimate climate;
+		if (!m_bgen->getEffectiveClimate(v2s16(x, z), climate))
+			throw InvalidNoiseParamsException("Cannot sample effective biome climate at (" +
+				std::to_string(x) + ", " + std::to_string(z) + ")");
+		m_bgen->heatmap[index_2d] = climate.heat;
+		m_bgen->humidmap[index_2d] = climate.humidity;
+#else
 		// Optionally increase humidity around rivers
 		if (spflags & MGVALLEYS_HUMID_RIVERS) {
 			// Compensate to avoid increasing average humidity
@@ -1094,6 +1167,7 @@ int MapgenValleys::generateTerrain()
 				m_bgen->heatmap[index_2d] -=
 					(t_alt - water_level) * 20.0f / altitude_chill;
 		}
+#endif
 	}
 
 	return surface_max_y;

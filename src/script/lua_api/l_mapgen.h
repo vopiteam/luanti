@@ -39,6 +39,7 @@ private:
 	static int l_get_biome_data(lua_State *L);
 #if IS_VOPI_ENGINE
 	static int l_get_biome_terrain(lua_State *L);
+	static int l_get_effective_biome_data(lua_State *L);
 #endif
 
 	// get_mapgen_object(objectname)

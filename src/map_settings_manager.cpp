@@ -8,6 +8,9 @@
 #include "settings.h"
 
 #include "map_settings_manager.h"
+#if IS_VOPI_ENGINE
+#include <memory>
+#endif
 
 MapSettingsManager::MapSettingsManager(const std::string &map_meta_path):
 	m_map_meta_path(map_meta_path),
@@ -150,7 +153,11 @@ MapgenParams *MapSettingsManager::makeMapgenParamsCopy() const
 	}
 
 	// Create our MapgenParams
+#if IS_VOPI_ENGINE
+	std::unique_ptr<MapgenParams> params(Mapgen::createMapgenParams(mgtype));
+#else
 	MapgenParams *params = Mapgen::createMapgenParams(mgtype);
+#endif
 	if (!params)
 		return nullptr;
 
@@ -160,5 +167,9 @@ MapgenParams *MapSettingsManager::makeMapgenParamsCopy() const
 	params->MapgenParams::readParams(m_map_settings.get());
 	params->readParams(m_map_settings.get());
 
+#if IS_VOPI_ENGINE
+	return params.release();
+#else
 	return params;
+#endif
 }

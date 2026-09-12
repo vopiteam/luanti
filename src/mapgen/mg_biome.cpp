@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #if IS_VOPI_ENGINE
+#include "mapgen_valleys.h"
 #include <cmath>
 #endif
 
@@ -167,6 +168,10 @@ BiomeGen *BiomeGenOriginal::clone(BiomeManager *biomemgr) const
 #if IS_VOPI_ENGINE
 	if (m_terrain_sampler)
 		copy->setTerrainSampler(m_terrain_sampler->clone());
+	copy->m_valleys_climate = m_valleys_climate;
+	copy->m_climate_water_level = m_climate_water_level;
+	copy->m_climate_altitude_chill = m_climate_altitude_chill;
+	copy->m_climate_flags = m_climate_flags;
 #endif
 	return copy;
 }
@@ -192,6 +197,10 @@ Biome *BiomeGenOriginal::calcBiomeAtPoint(v3s16 pos) const
 void BiomeGenOriginal::calcBiomeNoise(v3s16 pmin)
 {
 	m_pmin = pmin;
+#if IS_VOPI_ENGINE
+	if (m_terrain_sampler)
+		m_terrain_sampler->beginChunk();
+#endif
 
 	noise_heat->noiseMap2D(pmin.X, pmin.Z);
 	noise_humidity->noiseMap2D(pmin.X, pmin.Z);
@@ -239,16 +248,31 @@ Biome *BiomeGenOriginal::getBiomeAtIndex(size_t index, v3s16 pos) const
 }
 
 
+#if IS_VOPI_ENGINE
+Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 pos,
+		const BiomeTerrainForm *form) const
+#else
 Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 pos) const
+#endif
 {
 	Biome *biome_closest = nullptr;
 	Biome *biome_closest_blend = nullptr;
+#if IS_VOPI_ENGINE
+	double dist_min = std::numeric_limits<double>::max();
+	double dist_min_blend = std::numeric_limits<double>::max();
+#else
 	float dist_min = FLT_MAX;
 	float dist_min_blend = FLT_MAX;
+#endif
 #if IS_VOPI_ENGINE
 	BiomeTerrain terrain;
 	bool terrain_sampled = false;
 	bool terrain_available = false;
+	BiomeTerrainForm sampled_form;
+	bool form_sampled = form != nullptr;
+	bool form_available = form != nullptr;
+	if (form)
+		sampled_form = *form;
 #endif
 
 	for (size_t i = 1; i < m_bmgr->getNumObjects(); i++) {
@@ -260,6 +284,16 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 			continue;
 
 #if IS_VOPI_ENGINE
+		if (b->hasClimateBounds() && !b->matchesClimate(heat, humidity))
+			continue;
+		if (b->hasFormConstraints()) {
+			if (!form_sampled) {
+				form_available = getBiomeForm(v2s16(pos.X, pos.Z), sampled_form);
+				form_sampled = true;
+			}
+			if (!form_available || !b->matchesForm(sampled_form))
+				continue;
+		}
 		if (b->hasTerrainConstraints()) {
 			if (!terrain_sampled) {
 				terrain_available = getBiomeTerrain(v2s16(pos.X, pos.Z), terrain);
@@ -275,13 +309,29 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		if (b->weight > 0.f)
 		       dist /= b->weight;
 
+#if IS_VOPI_ENGINE
+		// Preserve ordinary float distances and their registration-order ties.
+		// Finite float32 inputs can overflow in the squares or weight division,
+		// but their weighted distance always fits in double precision.
+		double selection_dist = dist;
+		if (!std::isfinite(dist) && std::isfinite(b->weight)) {
+			double heat_delta = static_cast<double>(heat) - b->heat_point;
+			double humidity_delta = static_cast<double>(humidity) - b->humidity_point;
+			selection_dist = heat_delta * heat_delta + humidity_delta * humidity_delta;
+			if (b->weight > 0.f)
+				selection_dist /= b->weight;
+		}
+#else
+		const float selection_dist = dist;
+#endif
+
 		if (pos.Y <= b->max_pos.Y) { // Within y limits of biome b
-			if (dist < dist_min) {
-				dist_min = dist;
+			if (selection_dist < dist_min) {
+				dist_min = selection_dist;
 				biome_closest = b;
 			}
-		} else if (dist < dist_min_blend) { // Blend area above biome b
-			dist_min_blend = dist;
+		} else if (selection_dist < dist_min_blend) { // Blend area above biome b
+			dist_min_blend = selection_dist;
 			biome_closest_blend = b;
 		}
 	}
@@ -346,6 +396,18 @@ ObjDef *Biome::clone() const
 	obj->slope_max = slope_max;
 	obj->relief_min = relief_min;
 	obj->relief_max = relief_max;
+	obj->heat_min = heat_min;
+	obj->heat_max = heat_max;
+	obj->humidity_min = humidity_min;
+	obj->humidity_max = humidity_max;
+	obj->base_min = base_min;
+	obj->base_max = base_max;
+	obj->valley_depth_min = valley_depth_min;
+	obj->valley_depth_max = valley_depth_max;
+	obj->valley_pos_min = valley_pos_min;
+	obj->valley_pos_max = valley_pos_max;
+	obj->mountain_min = mountain_min;
+	obj->mountain_max = mountain_max;
 #endif
 
 	return obj;
@@ -364,9 +426,132 @@ bool Biome::matchesTerrain(const BiomeTerrain &terrain) const
 		terrain.relief >= relief_min && terrain.relief <= relief_max;
 }
 
+bool Biome::hasClimateBounds() const
+{
+	return std::isfinite(heat_min) || std::isfinite(heat_max) ||
+		std::isfinite(humidity_min) || std::isfinite(humidity_max);
+}
+
+bool Biome::matchesClimate(float heat, float humidity) const
+{
+	return heat >= heat_min && heat <= heat_max &&
+		humidity >= humidity_min && humidity <= humidity_max;
+}
+
+bool Biome::hasFormConstraints() const
+{
+	return std::isfinite(base_min) || std::isfinite(base_max) ||
+		valley_depth_min > 0.0f || std::isfinite(valley_depth_max) ||
+		valley_pos_min > 0.0f || valley_pos_max < 1.0f ||
+		mountain_min > 0.0f || std::isfinite(mountain_max);
+}
+
+bool Biome::matchesForm(const BiomeTerrainForm &form) const
+{
+	return form.base >= base_min && form.base <= base_max &&
+		form.valley_depth >= valley_depth_min &&
+		form.valley_depth <= valley_depth_max &&
+		form.valley_pos >= valley_pos_min && form.valley_pos <= valley_pos_max &&
+		form.mountain >= mountain_min && form.mountain <= mountain_max;
+}
+
 void BiomeGenOriginal::setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler)
 {
 	m_terrain_sampler = std::move(sampler);
+}
+
+void BiomeGenOriginal::setValleysClimate(const MapgenValleysParams &params)
+{
+	// Reconfiguration must never keep a context from different terrain params.
+	setTerrainSampler(createValleysBiomeTerrainSampler(params));
+	m_valleys_climate = true;
+	m_climate_water_level = params.water_level;
+	m_climate_altitude_chill = std::fmax(params.altitude_chill, 1.0f);
+	m_climate_flags = params.spflags & (MGVALLEYS_ALT_CHILL |
+		MGVALLEYS_ALT_DRY | MGVALLEYS_HUMID_RIVERS);
+}
+
+// The selector converts this float expression to s64. Check its range for
+// every query Y before either the generation maps or the API can use it.
+// Compare in double: float(s64::max) rounds up to the excluded upper bound.
+static bool hasSafeBiomeSeed(float heat, float humidity)
+{
+	const float low = S16_MIN + (heat + humidity) * 0.9f;
+	const float high = S16_MAX + (heat + humidity) * 0.9f;
+	return std::isfinite(low) && std::isfinite(high) &&
+		static_cast<double>(low) >= -0x1p63 &&
+		static_cast<double>(high) < 0x1p63;
+}
+
+bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out,
+		bool include_context) const
+{
+	if (!hasEffectiveClimate() || !m_terrain_sampler)
+		return false;
+	// Both generation and queries use scalar noise at the exact same X/Z.
+	// Bulk noise has different rounding; it remains the legacy/river-depth input.
+	const v3s16 point(pos.X, 0, pos.Y);
+	EffectiveBiomeClimate result{};
+	result.raw_heat = calcHeatAtPoint(point);
+	result.raw_humidity = calcHumidityAtPoint(point);
+	if (!std::isfinite(result.raw_heat) || !std::isfinite(result.raw_humidity))
+		return false;
+	BiomeClimateContext context{};
+	if ((include_context || m_climate_flags) &&
+			!m_terrain_sampler->sampleClimate(pos, context))
+		return false;
+	result.river_bank_height = context.river_bank_height;
+	result.climate_reference_height = std::fmax(context.river_bank_height,
+		static_cast<float>(context.column_max_y));
+	result.form = context.form;
+	const auto climate = calcValleysClimate(result.raw_heat, result.raw_humidity,
+		context.river_bank_height, context.column_max_y, m_climate_water_level,
+		m_climate_altitude_chill, m_climate_flags);
+	result.heat = climate.heat;
+	result.humidity = climate.humidity;
+	if (!std::isfinite(result.heat) || !std::isfinite(result.humidity) ||
+			!std::isfinite(result.river_bank_height) ||
+			!std::isfinite(result.climate_reference_height) ||
+			!hasSafeBiomeSeed(result.heat, result.humidity))
+		return false;
+	out = result;
+	return true;
+}
+
+bool BiomeGenOriginal::getEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out) const
+{
+	return sampleEffectiveClimate(pos, out, true);
+}
+
+bool BiomeGenOriginal::getEffectiveClimate(v2s16 pos, ValleysClimate &out) const
+{
+	EffectiveBiomeClimate climate;
+	if (!sampleEffectiveClimate(pos, climate, false))
+		return false;
+	out = {climate.heat, climate.humidity};
+	return true;
+}
+
+bool BiomeGenOriginal::getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out) const
+{
+	if (!getEffectiveClimate(v2s16(pos.X, pos.Z), out))
+		return false;
+	Biome *biome = calcBiomeFromNoise(out.heat, out.humidity, pos, &out.form);
+	if (!biome || biome->index == OBJDEF_INVALID_INDEX)
+		return false;
+	out.biome = biome->index;
+	return true;
+}
+
+bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
+{
+	if (!m_terrain_sampler)
+		return false;
+	BiomeClimateContext context;
+	if (!m_terrain_sampler->sampleClimate(pos, context))
+		return false;
+	form = context.form;
+	return true;
 }
 
 bool BiomeGenOriginal::getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const

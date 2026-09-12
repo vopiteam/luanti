@@ -25,6 +25,27 @@ class BiomeManager;
 
 typedef u16 biome_t;
 
+#if IS_VOPI_ENGINE
+struct ValleysClimate;
+
+// Deterministic climate and form of a world column. The reference height is
+// independent of query Y, generated voxels and the interpolated
+// natural-surface metrics.
+struct EffectiveBiomeClimate {
+	float heat;
+	float humidity;
+	float raw_heat;
+	float raw_humidity;
+	float climate_reference_height;
+	float river_bank_height;
+	BiomeTerrainForm form;
+};
+
+struct EffectiveBiomeData : EffectiveBiomeClimate {
+	biome_t biome;
+};
+#endif
+
 constexpr v3s16 MAX_MAP_GENERATION_LIMIT_V3(
 	MAX_MAP_GENERATION_LIMIT,
 	MAX_MAP_GENERATION_LIMIT,
@@ -85,6 +106,28 @@ public:
 
 	bool hasTerrainConstraints() const;
 	bool matchesTerrain(const BiomeTerrain &terrain) const;
+
+	// Inclusive bounds on the climate the selector receives and on the
+	// column's terrain form. Defaults are unrestricted. Climate bounds work
+	// on every mapgen; form bounds need a mapgen with a column model and
+	// make the biome ineligible elsewhere, like the terrain bounds above.
+	float heat_min = -std::numeric_limits<float>::infinity();
+	float heat_max = std::numeric_limits<float>::infinity();
+	float humidity_min = -std::numeric_limits<float>::infinity();
+	float humidity_max = std::numeric_limits<float>::infinity();
+	float base_min = -std::numeric_limits<float>::infinity();
+	float base_max = std::numeric_limits<float>::infinity();
+	float valley_depth_min = 0.0f;
+	float valley_depth_max = std::numeric_limits<float>::infinity();
+	float valley_pos_min = 0.0f;
+	float valley_pos_max = 1.0f;
+	float mountain_min = 0.0f;
+	float mountain_max = std::numeric_limits<float>::infinity();
+
+	bool hasClimateBounds() const;
+	bool matchesClimate(float heat, float humidity) const;
+	bool hasFormConstraints() const;
+	bool matchesForm(const BiomeTerrainForm &form) const;
 #endif
 
 	virtual void resolveNodeNames();
@@ -208,12 +251,27 @@ public:
 	Biome *getBiomeAtPoint(v3s16 pos) const;
 	Biome *getBiomeAtIndex(size_t index, v3s16 pos) const;
 
+#if IS_VOPI_ENGINE
+	// A known column form skips sampling it again; without one, a candidate
+	// with form bounds samples the column model, or is ineligible when the
+	// mapgen has none.
+	Biome *calcBiomeFromNoise(float heat, float humidity, v3s16 pos,
+		const BiomeTerrainForm *form = nullptr) const;
+#else
 	Biome *calcBiomeFromNoise(float heat, float humidity, v3s16 pos) const;
+#endif
 	s16 getNextTransitionY(s16 y) const;
 
 #if IS_VOPI_ENGINE
 	void setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler);
 	bool getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const;
+	bool getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const;
+	void setValleysClimate(const MapgenValleysParams &params);
+	bool hasEffectiveClimate() const { return m_valleys_climate; }
+	bool getEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out) const;
+	// Climate-only consumers do not need column heights when corrections are off.
+	bool getEffectiveClimate(v2s16 pos, ValleysClimate &out) const;
+	bool getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out) const;
 #endif
 
 	float *heatmap;
@@ -223,6 +281,12 @@ private:
 	const BiomeParamsOriginal *m_params;
 #if IS_VOPI_ENGINE
 	std::unique_ptr<BiomeTerrainSampler> m_terrain_sampler;
+	bool sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out,
+		bool include_context) const;
+	bool m_valleys_climate = false;
+	int m_climate_water_level = 0;
+	float m_climate_altitude_chill = 1.0f;
+	u32 m_climate_flags = 0;
 #endif
 
 	Noise *noise_heat;

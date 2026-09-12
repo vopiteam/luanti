@@ -12,6 +12,10 @@
 #include "irrlicht_changes/printing.h"
 #include "map_settings_manager.h"
 
+#if IS_VOPI_ENGINE
+#include "mapgen/mapgen_valleys.h"
+#endif
+
 class TestMapSettingsManager : public TestBase {
 public:
 	TestMapSettingsManager() { TestManager::registerTestModule(this); }
@@ -26,6 +30,10 @@ public:
 	void testMapMetaSaveLoad();
 	void testMapMetaFailures();
 	void testChunks();
+#if IS_VOPI_ENGINE
+	void testValleysObsoleteClimateSetting();
+	void testSavedV7WithValleysDefault();
+#endif
 };
 
 static TestMapSettingsManager g_test_instance;
@@ -36,6 +44,10 @@ void TestMapSettingsManager::runTests(IGameDef *gamedef)
 	TEST(testMapMetaSaveLoad);
 	TEST(testMapMetaFailures);
 	TEST(testChunks);
+#if IS_VOPI_ENGINE
+	TEST(testValleysObsoleteClimateSetting);
+	TEST(testSavedV7WithValleysDefault);
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -276,3 +288,108 @@ void TestMapSettingsManager::testChunks()
 
 #undef GET
 }
+
+
+#if IS_VOPI_ENGINE
+void TestMapSettingsManager::testValleysObsoleteClimateSetting()
+{
+	constexpr const char *obsolete_setting = "mgvalleys_biome_climate_version";
+	makeUserConfig();
+	Settings &conf = *Settings::getLayer(SL_GLOBAL);
+	conf.set("mg_name", "valleys");
+
+	// Fresh parameter serialization never introduces the removed setting.
+	MapgenValleysParams direct;
+	Settings canonical;
+	direct.writeParams(&canonical);
+	UASSERT(!canonical.existsLocal(obsolete_setting));
+	std::ostringstream expected;
+	canonical.writeLines(expected);
+	for (const char *value : {"0", "1", "2", "65536", "-1", "unknown", ""}) {
+		Settings raw;
+		raw.set(obsolete_setting, value);
+		MapgenValleysParams parsed;
+		parsed.readParams(&raw);
+		Settings written;
+		parsed.writeParams(&written);
+		UASSERT(!written.existsLocal(obsolete_setting));
+		std::ostringstream actual;
+		written.writeLines(actual);
+		UASSERTEQ(std::string, actual.str(), expected.str());
+	}
+
+	const char *stored_values[] = {nullptr, "0", "1", "unknown"};
+	for (const char *stored : stored_values) {
+		for (const char *inherited : {"0", "1", "unknown"}) {
+			conf.set(obsolete_setting, inherited);
+			std::ostringstream original_conf;
+			conf.writeLines(original_conf);
+			const std::string path = getTestTempFile();
+			Settings meta("[end_of_params]");
+			meta.set("mg_name", "valleys");
+			meta.set("seed", "1234");
+			meta.set("mgvalleys_altitude_chill", "37");
+			if (stored)
+				meta.set(obsolete_setting, stored);
+			UASSERT(meta.updateConfigFile(path.c_str()));
+			for (int pass = 0; pass < 2; ++pass) {
+				MapSettingsManager mgr(path);
+				UASSERT(mgr.loadMapMeta());
+				UASSERT(mgr.setMapSetting(obsolete_setting, inherited));
+				std::unique_ptr<MapgenParams> copy(mgr.makeMapgenParamsCopy());
+				UASSERT(copy && copy->mgtype == MAPGEN_VALLEYS);
+				UASSERTEQ(u64, copy->seed, 1234);
+				UASSERTEQ(u16, static_cast<MapgenValleysParams *>(copy.get())->altitude_chill, 37);
+				UASSERT(!mgr.mapgen_params);
+				auto *params = mgr.makeMapgenParams();
+				UASSERT(params && params->mgtype == MAPGEN_VALLEYS);
+				UASSERTEQ(u64, params->seed, 1234);
+				UASSERTEQ(u16, static_cast<MapgenValleysParams *>(params)->altitude_chill, 37);
+				UASSERT(mgr.saveMapMeta());
+			}
+			Settings saved("[end_of_params]");
+			UASSERT(saved.readConfigFile(path.c_str()));
+			UASSERTEQ(std::string, saved.get("mg_name"), "valleys");
+			if (!stored)
+				UASSERT(!saved.existsLocal(obsolete_setting));
+			std::ostringstream current_conf;
+			conf.writeLines(current_conf);
+			UASSERTEQ(std::string, current_conf.str(), original_conf.str());
+		}
+	}
+}
+
+void TestMapSettingsManager::testSavedV7WithValleysDefault()
+{
+	makeUserConfig();
+	Settings &conf = *Settings::getLayer(SL_GLOBAL);
+	conf.set("mg_name", "valleys");
+	conf.set("seed", "9876");
+	const std::string path = getTestTempFile();
+	Settings meta("[end_of_params]");
+	meta.set("mg_name", "v7");
+	meta.set("seed", "1234");
+	meta.set("water_level", "7");
+	meta.set("mgvalleys_biome_climate_version", "unknown");
+	UASSERT(meta.updateConfigFile(path.c_str()));
+	for (int pass = 0; pass < 2; ++pass) {
+		MapSettingsManager mgr(path);
+		UASSERT(mgr.loadMapMeta());
+		UASSERT(mgr.setMapSetting("mg_name", "valleys"));
+		std::unique_ptr<MapgenParams> copy(mgr.makeMapgenParamsCopy());
+		UASSERT(copy && copy->mgtype == MAPGEN_V7);
+		UASSERTEQ(u64, copy->seed, 1234);
+		UASSERTEQ(s16, copy->water_level, 7);
+		auto *params = mgr.makeMapgenParams();
+		UASSERT(params && params->mgtype == MAPGEN_V7);
+		UASSERTEQ(u64, params->seed, 1234);
+		UASSERTEQ(s16, params->water_level, 7);
+		UASSERT(mgr.saveMapMeta());
+	}
+	Settings saved("[end_of_params]");
+	UASSERT(saved.readConfigFile(path.c_str()));
+	UASSERTEQ(std::string, saved.get("mg_name"), "v7");
+	UASSERTEQ(std::string, conf.get("mg_name"), "valleys");
+	UASSERTEQ(std::string, conf.get("seed"), "9876");
+}
+#endif

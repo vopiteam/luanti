@@ -6,6 +6,31 @@ Four flags extend Mapgen Valleys. `sea_level_rivers`, `mountains` and
 a build without the option, which generates the upstream terrain unchanged.
 The code lives in `src/mapgen/mapgen_valleys.cpp`.
 
+## Climate corrections
+
+Valleys uses `calcValleysClimate` for river humidity, altitude drying and
+altitude cooling. Its height context is the river-bank level and the
+integer-truncated 2D terrain surface of the column, computed from the same
+column model in every generation pass and in point queries. Stone generated in
+the pass, 3D relief and mountain bodies above the 2D surface do not change
+the climate; where a column sits in the landscape is described by the biome
+form bounds below instead. If all three correction flags are disabled, the
+final correction call and climate-map writes are skipped; `vary_river_depth`
+still runs independently.
+
+With `IS_VOPI_ENGINE` enabled, `mgvalleys_altitude_chill` has an effective
+minimum of **1**. A zero setting is normalized when mapgen parameters are read,
+written or used to construct a generator. The shared climate helper enforces
+the same minimum. This prevents division by zero in both altitude corrections
+and the separate river-depth calculation. Use the `altitude_chill` and
+`altitude_dry` flags to disable their effects.
+
+Positive integer values keep their previous behavior. Worlds configured with
+zero will generate new terrain using 1 instead of the previous nonfinite
+calculation; already generated nodes are not regenerated. Raw settings may
+still contain zero until normalized mapgen parameters are serialized.
+Builds with `IS_VOPI_ENGINE` disabled retain upstream behavior.
+
 ## `sea_level_rivers`
 
 Upstream Valleys puts the surface of river water one node below the river
@@ -147,6 +172,14 @@ cannot enter through `vertical_blend`. Keep an unconstrained fallback biome
 for any climate/height that the constrained biomes do not cover; if no candidate
 passes, the existing default biome is returned.
 
+With `IS_VOPI_ENGINE`, a nonfinite weighted climate distance is recomputed in
+double precision from the original float inputs. This keeps finite climate
+centers and small positive finite weights selectable when float subtraction,
+squaring or division overflows. Ordinary finite float distances retain their
+rounding, registration-order ties and vertical blending rules. A distance
+equal to `FLT_MAX` is also a valid candidate, rather than the no-candidate
+sentinel. Builds without `IS_VOPI_ENGINE` retain the upstream selection path.
+
 Only Valleys supplies terrain metrics. On other mapgens, a biome with an
 operative terrain restriction is ineligible. Bounds equal to the unrestricted
 defaults (`slope_min = 0`, `slope_max = 90`, `relief_min = 0`) do not impose a
@@ -166,6 +199,50 @@ For example, the following fields may be added to a complete biome definition:
 These are illustrative thresholds, not universal values for a biome type.
 Y remains the position being classified, while slope and relief describe the
 natural surface above that X/Z, including for an underground biome query.
+
+## Biome climate and form bounds
+
+With `IS_VOPI_ENGINE`, `core.register_biome` also accepts inclusive bounds on
+the climate the selector receives and on the terrain form of the column. Like
+the terrain constraints, they select among the existing terrain and change
+neither noise nor generation order. All are optional; an omitted bound is
+unrestricted.
+
+| Field | Meaning | Accepted explicit values |
+|---|---|---|
+| `heat_min`, `heat_max` | heat as the selector sees it (effective in Valleys) | finite float |
+| `humidity_min`, `humidity_max` | humidity as the selector sees it | finite float |
+| `base_min`, `base_max` | region level: `terrain_height + valley_depth²` before the river-bank clamp, in nodes | finite float |
+| `valley_depth_min`, `valley_depth_max` | valley depth amplitude `valley_depth²`, in nodes | finite float ≥ 0 |
+| `valley_pos_min`, `valley_pos_max` | position in the valley profile, 0 at the river edge, 1 on the ridge | 0 to 1 |
+| `mountain_min`, `mountain_max` | mountain mask `max(mountain_height, 0) · gate`, 0 where no body can rise | finite float ≥ 0 |
+
+An inverted range, nonnumeric value, NaN, infinity, a value outside the float
+range or a nonzero value rounding to float zero is a registration error.
+
+Selection order: Y and position bounds, climate bounds, form bounds, terrain
+constraints, then weighted heat/humidity distance among the survivors, with
+the usual registration-order ties and vertical blending. Several biomes may
+share one climate point when their bounds keep them apart. Climate bounds
+work on every mapgen. Form bounds need a mapgen with a column model, which is
+Valleys; elsewhere a biome with an operative form bound is ineligible, so keep
+an unbounded fallback for every climate a bounded set does not cover. The
+form is the modeled 2D column, independent of chunks, generated nodes and
+player edits; it is sampled at most once per selection and cached per column.
+
+The form values describe the same column model as
+`get_effective_biome_data`, so a query and generation agree on them.
+Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
+
+```lua
+    valley_pos_max = 0.05,        -- valley floor beside the river
+    valley_depth_max = 3,         -- in flat country
+    heat_min = 28, heat_max = 47, -- temperate
+```
+
+```lua
+    mountain_min = 40, y_min = 40, -- a mountain body high enough to be a peak
+```
 
 ## `core.get_biome_terrain(pos)`
 
@@ -215,3 +292,80 @@ no heights are sampled.
 raw heat/humidity semantics. Valleys adjusts the climate during generation;
 this API therefore still does not promise the same biome ID as the generated
 biomemap. The new terrain query does not change that older climate distinction.
+
+## `core.get_effective_biome_data(pos)`
+
+Available only in VOPI builds, in the server and mapgen Lua environments.
+Check for the function before calling it. It returns `nil` before mapgen
+initialization, for unsupported mapgens, or when the modeled climate cannot
+be safely used by the biome selector. A returned biome ID of 0 is a valid
+fallback, not an unavailable result.
+
+`pos` must contain numeric, finite `x`, `y` and `z`. Coordinates are rounded to
+the nearest node, using the existing position APIs' signed half-node addition
+followed by truncation. Exact halfway values round away from zero; floating-point
+addition at adjacent representable values follows the same `doubleToInt` behavior.
+Rounded values
+must be within the engine generation bound, -31007 through 31007.
+Invalid inputs raise an error. This global coordinate bound is independent of
+the world's possibly smaller configured `mapgen_limit`; accepting a query is
+not permission to generate a chunk there.
+
+For Valleys, the result contains:
+
+| Field | Meaning |
+|---|---|
+| `biome` | Native biome selector's ID at the rounded query position. |
+| `heat`, `humidity` | Effective climate after the configured Valleys corrections. |
+| `raw_heat`, `raw_humidity` | Scalar climate noise before those corrections. |
+| `climate_reference_height` | Canonical height used by the climate corrections. |
+| `river_bank_height` | Modeled river-bank level, in absolute node coordinates. |
+| `base` | Region level before the river-bank clamp, in nodes. |
+| `valley_depth` | Valley depth amplitude, in nodes. |
+| `valley_pos` | Position in the valley profile, 0 at the river edge, 1 on the ridge. |
+| `mountain` | Mountain mask, 0 where no mountain body can rise. |
+
+The climate context and the form depend on exact X/Z and the world's frozen
+mapgen parameters, independently of query Y, generated chunks, player edits
+and generation order. The column height is the integer-truncated 2D surface,
+clamped to the engine's global generation limits; the climate reference is
+the maximum of that height and the river-bank level. 3D relief, mountain
+bodies, cliff carving, floater removal, the solid floor and caves do not enter
+the climate. This is a separate model from the smoothed, post-carving
+`get_biome_terrain().height`. The four form fields are the values the biome
+form bounds are compared with.
+
+Query Y selects the vertical biome band; it does not replace the climate
+reference height. Selection uses the native weights, position and terrain
+restrictions, registration-order tie breaking and vertical blending. This is
+a model classification, not a lookup of the historical material of a node.
+In particular, a chunk's 2D biomemap can record a selection made at another Y,
+or reuse a selection from a water surface. Arbitrary-Y biome IDs therefore
+need not equal that biomemap. Check actual nodes separately when ground,
+water or occupancy matters.
+
+The existing `get_heat`, `get_humidity` and `get_biome_data` APIs retain their
+raw-climate semantics. This function does not silently substitute their
+answers when the effective model is unavailable.
+
+### Generation and availability
+
+VOPI Valleys uses this deterministic climate for both generation and queries.
+No climate-version setting or separate activation is required. Other mapgens
+keep their existing climate path; a world's saved `mg_name` selects its mapgen.
+
+When all three climate corrections are disabled, generation only computes
+the scalar raw climate; a biome with form bounds still samples the column
+model once per selection. A full API query always returns the modeled heights
+and the form.
+
+Effective climate must be finite and permit the selector's signed integer
+seed conversion throughout the supported Y range. An invalid climate makes
+this query return `nil`. If encountered during generation, it causes a
+reported mapgen error and the incomplete chunk is cancelled; it is not
+replaced with another climate. The existing raw APIs retain their semantics.
+
+The deterministic model can differ from older Valleys generation. Continuing
+an older Valleys world may produce biome transitions at newly generated
+regions; existing nodes are not regenerated. This does not change V7 into
+Valleys or migrate worlds.

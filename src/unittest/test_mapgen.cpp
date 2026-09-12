@@ -14,6 +14,7 @@
 #include "mapgen/mapgen_valleys.h"
 #include "mapgen/mg_biome_terrain.h"
 #include "script/common/c_types.h"
+#include "settings.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -36,14 +37,27 @@ public:
 #if IS_VOPI_ENGINE
 	void testBiomeTerrainRanges();
 	void testBiomeTerrainParsing();
+	void testBiomeFormRanges();
+	void testBiomeFormParsing();
+	void testBiomeFormSelection();
 	void testBiomeTerrainSelection(IGameDef *gamedef);
 	void testBiomeTerrainBlending(IGameDef *gamedef);
+	void testBiomeNumericDistances(IGameDef *gamedef);
+	void testBiomeNumericBlending(IGameDef *gamedef);
 	void testBiomeTerrainClone(IGameDef *gamedef);
 	void testBiomeTerrainMetrics();
 	void testBiomeTerrainFolds();
 	void testBiomeTerrainValleys();
 	void testBiomeTerrainProfile();
 	void testBiomeTerrainFloaterSeeds();
+	void testValleysClimateParams();
+	void testValleysClimateCorrections();
+	void testValleysClimateContext();
+	void testEffectiveBiomeSelection();
+	void testEffectiveClimateSafety();
+	void testEffectiveClimateContextDemand();
+	void testValleysEffectiveClimate(IGameDef *gamedef);
+	void testValleysFormGeneration(IGameDef *gamedef);
 #endif
 };
 
@@ -68,14 +82,27 @@ void TestMapgen::runTests(IGameDef *gamedef)
 #if IS_VOPI_ENGINE
 	TEST(testBiomeTerrainRanges);
 	TEST(testBiomeTerrainParsing);
+	TEST(testBiomeFormRanges);
+	TEST(testBiomeFormParsing);
+	TEST(testBiomeFormSelection);
 	TEST(testBiomeTerrainSelection, gamedef);
 	TEST(testBiomeTerrainBlending, gamedef);
+	TEST(testBiomeNumericDistances, gamedef);
+	TEST(testBiomeNumericBlending, gamedef);
 	TEST(testBiomeTerrainClone, gamedef);
 	TEST(testBiomeTerrainMetrics);
 	TEST(testBiomeTerrainFolds);
 	TEST(testBiomeTerrainValleys);
 	TEST(testBiomeTerrainProfile);
 	TEST(testBiomeTerrainFloaterSeeds);
+	TEST(testValleysClimateParams);
+	TEST(testValleysClimateCorrections);
+	TEST(testValleysClimateContext);
+	TEST(testEffectiveBiomeSelection);
+	TEST(testEffectiveClimateSafety);
+	TEST(testEffectiveClimateContextDemand);
+	TEST(testValleysEffectiveClimate, gamedef);
+	TEST(testValleysFormGeneration, gamedef);
 #endif
 }
 
@@ -202,6 +229,32 @@ public:
 	mutable v2s16 last_pos;
 };
 
+class CountingClimateSampler final : public BiomeTerrainSampler {
+public:
+	explicit CountingClimateSampler(std::unique_ptr<BiomeTerrainSampler> sampler) :
+		m_sampler(std::move(sampler)) {}
+
+	std::unique_ptr<BiomeTerrainSampler> clone() const override
+	{
+		return std::make_unique<CountingClimateSampler>(m_sampler->clone());
+	}
+
+	BiomeTerrain sample(v2s16 pos) const override { return m_sampler->sample(pos); }
+
+	bool sampleClimate(v2s16 pos, BiomeClimateContext &out) const override
+	{
+		++climate_calls;
+		return m_sampler->sampleClimate(pos, out);
+	}
+
+	void resetCache() override { m_sampler->resetCache(); }
+
+	mutable unsigned int climate_calls = 0;
+
+private:
+	std::unique_ptr<BiomeTerrainSampler> m_sampler;
+};
+
 class PlaneTerrainSampler final : public HeightmapBiomeTerrainSampler {
 public:
 	PlaneTerrainSampler(float dx, float dz, float offset) :
@@ -287,6 +340,1144 @@ void assertTerrainEqual(const BiomeTerrain &actual, const BiomeTerrain &expected
 	UASSERTEQ(float, actual.slope, expected.slope);
 	UASSERTEQ(float, actual.relief, expected.relief);
 }
+
+class MapgenTestVManip final : public MMVManip {
+public:
+	explicit MapgenTestVManip(const VoxelArea &area)
+	{
+		addArea(area);
+		std::fill(m_data, m_data + m_area.getVolume(), MapNode(CONTENT_IGNORE));
+		std::fill(m_flags, m_flags + m_area.getVolume(), 0);
+	}
+};
+}
+
+void TestMapgen::testValleysClimateParams()
+{
+	const struct { u16 input, expected; } cases[] = {
+		{0, 1}, {1, 1}, {90, 90}, {100, 100}, {65535, 65535},
+	};
+	for (const auto &test : cases) {
+		Settings raw;
+		raw.setU16("mgvalleys_altitude_chill", test.input);
+		MapgenValleysParams parsed;
+		parsed.readParams(&raw);
+		UASSERTEQ(u16, parsed.altitude_chill, test.expected);
+		UASSERTEQ(u16, raw.getU16("mgvalleys_altitude_chill"), test.input);
+
+		Settings saved;
+		parsed.writeParams(&saved);
+		UASSERTEQ(u16, saved.getU16("mgvalleys_altitude_chill"), test.expected);
+		MapgenValleysParams restored;
+		restored.readParams(&saved);
+		UASSERTEQ(u16, restored.altitude_chill, test.expected);
+
+		// Direct parameter construction can bypass readParams.
+		MapgenValleysParams direct;
+		direct.altitude_chill = test.input;
+		direct.writeParams(&saved);
+		UASSERTEQ(u16, saved.getU16("mgvalleys_altitude_chill"), test.expected);
+		UASSERTEQ(u16, direct.altitude_chill, test.input);
+	}
+}
+
+void TestMapgen::testValleysClimateCorrections()
+{
+	constexpr u32 all_climate = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
+		MGVALLEYS_ALT_DRY;
+	constexpr u32 other_flags = MGVALLEYS_VARY_RIVER_DEPTH | MGVALLEYS_SEA_LEVEL_RIVERS |
+		MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS | MGVALLEYS_MOUNTAINS;
+	const struct {
+		const char *name;
+		float raw_heat;
+		float raw_humidity;
+		float base;
+		s16 column_max_y;
+		int water_level;
+		float altitude_chill;
+		u32 flags;
+		float heat;
+		float humidity;
+	} cases[] = {
+		{"disabled", 30, 40, 10, 18, 10, 0, 0, 30, 40},
+		{"unrelated flags", 30, 40, 10, 18, 10, 0, other_flags, 30, 40},
+		{"below sea level", 30, 40, 8, 8, 10, 20, all_climate, 35, 48},
+		{"at sea level", 30, 40, 10, 10, 10, 20, all_climate, 35, 48},
+		{"relative altitude", 30, 40, 10, 18, 10, 20, all_climate, 27, 36},
+		{"fractional bank", 30, 40, 10.5f, 10, 10, 20, all_climate, 34.5f, 47.75f},
+		{"negative sea level", 30, 40, -10, -2, -10, 20, all_climate, 27, 36},
+		{"below negative sea level", 30, 40, -14, -14, -10, 20, all_climate, 35, 48},
+		{"river minimum depth", 30, 40, 10, 12, 10, 20, MGVALLEYS_HUMID_RIVERS, 30, 48},
+		{"river depth boundary", 30, 40, 10, 14, 10, 20, MGVALLEYS_HUMID_RIVERS, 30, 48},
+		{"river depth falloff", 30, 40, 10, 18, 10, 20, MGVALLEYS_HUMID_RIVERS, 30, 40},
+		{"chill only", 30, 40, 10, 18, 10, 20, MGVALLEYS_ALT_CHILL, 27, 40},
+		{"dryness only", 30, 40, 10, 18, 10, 20, MGVALLEYS_ALT_DRY, 30, 36},
+		{"unclamped heat", 150, -10, 10, 18, 10, 20, all_climate, 147, -14},
+		{"unclamped humidity", -30, 140, 10, 18, 10, 20, all_climate, -33, 136},
+		{"zero divisor", 30, 40, 10, 18, 10, 0, all_climate, -125, -40},
+		{"minimum divisor", 30, 40, 10, 18, 10, 1, all_climate, -125, -40},
+		{"zero chill only", 30, 40, 10, 18, 10, 0, MGVALLEYS_ALT_CHILL, -125, 40},
+		{"zero dryness only", 30, 40, 10, 18, 10, 0, MGVALLEYS_ALT_DRY, 30, -40},
+		{"zero river only", 30, 40, 10, 18, 10, 0, MGVALLEYS_HUMID_RIVERS, 30, 40},
+		{"zero below sea level", 30, 40, 8, 8, 10, 0, all_climate, 35, 48},
+		{"zero at sea level", 30, 40, 10, 10, 10, 0, all_climate, 35, 48},
+	};
+	for (const auto &test : cases) {
+		infostream << "Valleys climate correction: " << test.name << std::endl;
+		const ValleysClimate climate = calcValleysClimate(test.raw_heat,
+			test.raw_humidity, test.base, test.column_max_y, test.water_level,
+			test.altitude_chill, test.flags);
+		UASSERTEQ(float, climate.heat, test.heat);
+		UASSERTEQ(float, climate.humidity, test.humidity);
+	}
+}
+
+void TestMapgen::testValleysClimateContext()
+{
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	auto check = [](const BiomeTerrainSampler &sampler, v2s16 pos,
+			float bank, s16 height) {
+		BiomeClimateContext context;
+		UASSERT(sampler.sampleClimate(pos, context));
+		UASSERTEQ(float, context.river_bank_height, bank);
+		UASSERTEQ(s16, context.column_max_y, height);
+	};
+	TestTerrainSampler unsupported({17, 0, 0});
+	BiomeClimateContext unavailable{8, 9, {}};
+	UASSERT(!unsupported.sampleClimate(v2s16(0), unavailable));
+	UASSERTEQ(float, unavailable.river_bank_height, 8.0f);
+	UASSERTEQ(s16, unavailable.column_max_y, 9);
+
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.water_level = 0;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	const v2s16 positions[] = {
+		{-81, 79}, {-80, 80}, {-17, 31}, {-1, 0}, {0, -1}, {79, -80},
+		{-MAX_MAP_GENERATION_LIMIT, MAX_MAP_GENERATION_LIMIT},
+		{MAX_MAP_GENERATION_LIMIT, -MAX_MAP_GENERATION_LIMIT},
+	};
+	// These later terrain operations and chunk boundaries do not belong to
+	// climate. The column has bank 16 and a 2D surface at 32; the density
+	// relief reaching 52 above it is not the climate height, and the form
+	// records a full-depth valley column on its ridge.
+	for (u32 flags : {0U, u32(MGVALLEYS_CARVE_CLIFFS),
+			u32(MGVALLEYS_REMOVE_FLOATERS),
+			u32(MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS)}) {
+		params.spflags = flags;
+		for (s16 floor : {s16(-MAX_MAP_GENERATION_LIMIT), s16(100)}) {
+			params.floor_y = floor;
+			params.chunksize = floor == 100 ? v3s16(9) : v3s16(1);
+			params.mapgen_limit = floor == 100 ? 32 : MAX_MAP_GENERATION_LIMIT;
+			auto sampler = createValleysBiomeTerrainSampler(params);
+			for (auto pos : positions) {
+				check(*sampler, pos, 16.0f, 32);
+				BiomeClimateContext context;
+				UASSERT(sampler->sampleClimate(pos, context));
+				UASSERTEQ(float, context.form.base, 16.0f);
+				UASSERTEQ(float, context.form.valley_depth, 16.0f);
+				UASSERTEQ(float, context.form.valley_pos, 1.0f);
+				UASSERTEQ(float, context.form.mountain, 0.0f);
+			}
+			if (floor == 100)
+				UASSERTEQ(float, sampler->sample(v2s16(0)).height, 100.0f);
+		}
+	}
+
+	params.spflags = 0;
+	params.floor_y = -MAX_MAP_GENERATION_LIMIT;
+	params.mapgen_limit = MAX_MAP_GENERATION_LIMIT;
+	params.np_valley_depth = constant_noise(0.0f);
+	params.np_inter_valley_slope = constant_noise(0.0f);
+	// Initial height uses truncation, not floor or rounding. Extreme finite
+	// surfaces are bounded before conversion to the node-coordinate type.
+	const struct { float surface; s16 height; } flat_cases[] = {
+		{-1.25f, -1}, {-0.75f, 0}, {0.75f, 0}, {1.25f, 1},
+		{-1.0e9f, -MAX_MAP_GENERATION_LIMIT}, {1.0e9f, MAX_MAP_GENERATION_LIMIT},
+	};
+	for (const auto &test : flat_cases) {
+		params.np_terrain_height = constant_noise(test.surface);
+		check(*createValleysBiomeTerrainSampler(params), v2s16(-1, 1),
+			test.surface, test.height);
+	}
+	// The finite 2D surface already reaches the ceiling. Its upper bound
+	// would overflow (3e38 + 16e37), but no density search is necessary.
+	params.np_terrain_height = constant_noise(3.0e38f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_inter_valley_slope = constant_noise(1.0e37f);
+	params.np_inter_valley_fill = constant_noise(1.0f);
+	auto ceiling = createValleysBiomeTerrainSampler(params);
+	check(*ceiling, v2s16(-1, 1), 3.0e38f, MAX_MAP_GENERATION_LIMIT);
+	check(*ceiling, v2s16(-1, 1), 3.0e38f, MAX_MAP_GENERATION_LIMIT);
+	ceiling->resetCache();
+	check(*ceiling->clone(), v2s16(-1, 1), 3.0e38f, MAX_MAP_GENERATION_LIMIT);
+	params.np_valley_depth = constant_noise(0.0f);
+	params.np_inter_valley_slope = constant_noise(0.0f);
+	params.np_terrain_height = constant_noise(std::numeric_limits<float>::infinity());
+	auto invalid = createValleysBiomeTerrainSampler(params);
+	UASSERT(!invalid->sampleClimate(v2s16(0), unavailable));
+	UASSERTEQ(float, unavailable.river_bank_height, 8.0f);
+	UASSERTEQ(s16, unavailable.column_max_y, 9);
+
+	// Mountain bodies no longer raise the climate height; the form's mask
+	// records that a body can rise in this column.
+	params.np_terrain_height = constant_noise(0.0f);
+	params.spflags = MGVALLEYS_MOUNTAINS;
+	params.np_mountain = constant_noise(1.0f);
+	params.np_mountain_height = constant_noise(20.0f);
+	for (float cap : {0.0f, 10.0f}) {
+		params.mountain_cap = cap;
+		auto mountains = createValleysBiomeTerrainSampler(params);
+		check(*mountains, v2s16(-17, 31), 0.0f, 0);
+		BiomeClimateContext context;
+		UASSERT(mountains->sampleClimate(v2s16(-17, 31), context));
+		UASSERTEQ(float, context.form.mountain, 20.0f);
+		UASSERTEQ(float, context.form.valley_depth, 0.0f);
+		UASSERTEQ(float, context.form.base, 0.0f);
+	}
+	params.spflags = 0;
+	auto no_mountains = createValleysBiomeTerrainSampler(params);
+	BiomeClimateContext flat_context;
+	UASSERT(no_mountains->sampleClimate(v2s16(-17, 31), flat_context));
+	UASSERTEQ(float, flat_context.form.mountain, 0.0f);
+
+	MapgenValleysParams varied_params;
+	varied_params.seed = 54321;
+	varied_params.spflags = MGVALLEYS_MOUNTAINS;
+	auto varied = createValleysBiomeTerrainSampler(varied_params);
+	auto clone = varied->clone();
+	std::vector<BiomeClimateContext> expected;
+	for (auto pos : positions) {
+		BiomeClimateContext context;
+		UASSERT(varied->sampleClimate(pos, context));
+		UASSERT(std::isfinite(context.river_bank_height));
+		UASSERT(context.column_max_y >= -MAX_MAP_GENERATION_LIMIT &&
+			context.column_max_y <= MAX_MAP_GENERATION_LIMIT);
+		expected.push_back(context);
+	}
+	UASSERT(expected.front().river_bank_height != expected.back().river_bank_height);
+	varied->resetCache();
+	varied_params.chunksize = v3s16(9);
+	varied_params.mapgen_limit = 32;
+	varied_params.floor_y = 1000;
+	varied_params.spflags |= MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS;
+	auto later_operations = createValleysBiomeTerrainSampler(varied_params);
+	for (size_t i = expected.size(); i-- > 0;) {
+		for (const BiomeTerrainSampler *sampler :
+				{varied.get(), clone.get(), later_operations.get()})
+			check(*sampler, positions[i], expected[i].river_bank_height,
+				expected[i].column_max_y);
+	}
+
+	// Exercise eviction cheaply with varying 2D height and no 3D search.
+	params.spflags = 0;
+	params.np_terrain_height = {20, 5, v3f(32), 901, 1, 0.5f, 2};
+	auto evicted = createValleysBiomeTerrainSampler(params);
+	expected.clear();
+	for (auto pos : positions) {
+		BiomeClimateContext context;
+		UASSERT(evicted->sampleClimate(pos, context));
+		expected.push_back(context);
+	}
+	for (s16 z = 200; z < 382; ++z)
+	for (s16 x = 200; x < 382; ++x) {
+		BiomeClimateContext context;
+		UASSERT(evicted->sampleClimate(v2s16(x, z), context));
+	}
+	for (size_t i = expected.size(); i-- > 0;)
+		check(*evicted, positions[i], expected[i].river_bank_height,
+			expected[i].column_max_y);
+}
+
+void TestMapgen::testEffectiveBiomeSelection()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	// Effective climate of the fixture column: bank 16, 2D surface 32, all
+	// three corrections with altitude_chill 100.
+	const ValleysClimate effective = calcValleysClimate(50.0f, 50.0f, 16.0f, 32, 0,
+		100.0f, MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS | MGVALLEYS_ALT_DRY);
+	auto blocked = addTerrainTestBiome(manager, "steep", effective.heat, effective.humidity);
+	blocked->slope_min = 1.0f;
+	auto lower = addTerrainTestBiome(manager, "lower_cold", effective.heat, effective.humidity);
+	lower->max_pos.Y = 0;
+	lower->vertical_blend = 8;
+	lower->slope_max = 0.0f;
+	lower->relief_max = 0.0f;
+	auto upper = addTerrainTestBiome(manager, "upper", 50.0f, 50.0f);
+	upper->min_pos.Y = 1;
+	auto raw_lower = addTerrainTestBiome(manager, "lower_warm", 50.0f, 50.0f);
+	raw_lower->max_pos.Y = 0;
+	for (Biome *biome : {blocked, lower, upper, raw_lower}) {
+		biome->min_pos.X = biome->min_pos.Z = -10;
+		biome->max_pos.X = biome->max_pos.Z = 10;
+		biome->min_pos.Y = std::max<s16>(biome->min_pos.Y, -100);
+		biome->max_pos.Y = std::min<s16>(biome->max_pos.Y, 100);
+	}
+	// Resolve definitions before cloning into an independent worker registry.
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	auto ndef = const_cast<NodeDefManager *>(server.getNodeDefManager());
+	for (Biome *biome : {blocked, lower, upper, raw_lower}) {
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		ndef->pendNodeResolve(biome);
+	}
+	ndef->setNodeRegistrationStatus(true);
+	ndef->runNodeResolveCallbacks();
+	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.spflags = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS | MGVALLEYS_ALT_DRY;
+	params.water_level = 0;
+	params.altitude_chill = 100;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+	EffectiveBiomeData result;
+	UASSERT(!generator.getEffectiveBiomeData(v3s16(0), result));
+	generator.setValleysClimate(params);
+	std::unique_ptr<BiomeGen> worker_base(generator.clone(copied_manager.get()));
+	auto worker = static_cast<BiomeGenOriginal *>(worker_base.get());
+	// A point query must not read the last generation pass's mutable maps.
+	generator.calcBiomeNoise(v3s16(-8));
+	std::fill(generator.heatmap, generator.heatmap + 256, -900.0f);
+	std::fill(generator.humidmap, generator.humidmap + 256, 900.0f);
+	unsigned int lower_blends = 0;
+	unsigned int upper_blends = 0;
+	for (s16 y : {s16(-101), s16(-100), s16(-1), s16(0), s16(1), s16(2),
+			s16(3), s16(4), s16(5), s16(6), s16(7), s16(8), s16(9), s16(100), s16(101)}) {
+		const v3s16 pos(-1, y, 0);
+		UASSERT(generator.getEffectiveBiomeData(pos, result));
+		UASSERTEQ(float, result.heat, effective.heat);
+		UASSERTEQ(float, result.humidity, effective.humidity);
+		UASSERTEQ(float, result.raw_heat, 50.0f);
+		UASSERTEQ(float, result.raw_humidity, 50.0f);
+		UASSERTEQ(float, result.climate_reference_height, 32.0f);
+		UASSERTEQ(float, result.river_bank_height, 16.0f);
+		UASSERTEQ(float, result.form.base, 16.0f);
+		UASSERTEQ(float, result.form.valley_depth, 16.0f);
+		UASSERTEQ(float, result.form.valley_pos, 1.0f);
+		UASSERTEQ(float, result.form.mountain, 0.0f);
+		UASSERTEQ(biome_t, result.biome,
+			generator.calcBiomeFromNoise(effective.heat, effective.humidity, pos)->index);
+		UASSERTEQ(float, generator.calcHeatAtPoint(pos), 50.0f);
+		UASSERTEQ(float, generator.calcHumidityAtPoint(pos), 50.0f);
+		if (y < -100 || y > 100) {
+			UASSERTEQ(biome_t, result.biome, BIOME_NONE);
+		} else if (y <= 0) {
+			UASSERTEQ(biome_t, result.biome, lower->index);
+			UASSERTEQ(biome_t, generator.calcBiomeAtPoint(pos)->index, raw_lower->index);
+		} else if (y <= 8) {
+			UASSERT(result.biome == lower->index || result.biome == upper->index);
+			lower_blends += result.biome == lower->index;
+			upper_blends += result.biome == upper->index;
+		} else {
+			UASSERTEQ(biome_t, result.biome, upper->index);
+		}
+		EffectiveBiomeData copied;
+		UASSERT(worker->getEffectiveBiomeData(pos, copied));
+		UASSERTEQ(biome_t, copied.biome, result.biome);
+		UASSERTEQ(float, copied.heat, result.heat);
+		UASSERTEQ(float, copied.humidity, result.humidity);
+		UASSERTEQ(float, copied.climate_reference_height, result.climate_reference_height);
+	}
+	UASSERT(lower_blends > 0 && upper_blends > 0);
+	UASSERT(generator.getEffectiveBiomeData(v3s16(11, 0, 0), result));
+	UASSERTEQ(biome_t, result.biome, BIOME_NONE);
+
+	params.np_terrain_height.offset = 100.0f;
+	generator.setValleysClimate(params);
+	UASSERT(generator.getEffectiveBiomeData(v3s16(0), result));
+	UASSERTEQ(float, result.climate_reference_height, 132.0f);
+	UASSERTEQ(float, result.form.base, 116.0f);
+	UASSERT(worker->getEffectiveBiomeData(v3s16(0), result));
+	UASSERTEQ(float, result.climate_reference_height, 32.0f);
+	UASSERTEQ(float, result.form.base, 16.0f);
+}
+
+void TestMapgen::testEffectiveClimateSafety()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.spflags = 0;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(0.0f);
+	params.np_inter_valley_slope = constant_noise(0.0f);
+	const float largest = std::numeric_limits<float>::max();
+	const struct { float heat, humidity; bool valid; } cases[] = {
+		{50, 50, true},
+		{1.0e30f, 1.0e30f, false},
+		{-1.0e30f, -1.0e30f, false},
+		{largest, largest, false}, // Finite inputs, overflowing float sum.
+		{-largest, -largest, false},
+		{largest, -largest, true}, // Cancellation leaves a valid selector seed.
+		// Adjacent floats around the selector's signed 64-bit seed boundary.
+		{0x1.1c71c6p63f, 0, true},
+		{0x1.1c71c8p63f, 0, false}, // Scaled sum is exactly +2^63.
+		{-0x1.1c71c8p63f, 0, true}, // Exactly -2^63 is representable.
+		{-0x1.1c71cap63f, 0, false},
+		{std::numeric_limits<float>::infinity(), 0, false},
+		{std::numeric_limits<float>::quiet_NaN(), 0, false},
+	};
+	for (const auto &test : cases) {
+		BiomeParamsOriginal climate;
+		climate.np_heat = constant_noise(test.heat);
+		climate.np_humidity = constant_noise(test.humidity);
+		climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+		BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+		generator.setValleysClimate(params);
+		ValleysClimate generated;
+		EffectiveBiomeClimate full;
+		UASSERTEQ(bool, generator.getEffectiveClimate(v2s16(0), generated), test.valid);
+		UASSERTEQ(bool, generator.getEffectiveClimate(v2s16(0), full), test.valid);
+		for (s16 y : {s16(-MAX_MAP_GENERATION_LIMIT), s16(0),
+				s16(MAX_MAP_GENERATION_LIMIT)}) {
+			EffectiveBiomeData query;
+			UASSERTEQ(bool, generator.getEffectiveBiomeData(v3s16(0, y, 0), query),
+				test.valid);
+			if (test.valid) {
+				UASSERTEQ(float, query.heat, generated.heat);
+				UASSERTEQ(float, query.humidity, generated.humidity);
+			}
+		}
+	}
+
+	// Moderate raw climate can become unsafe through a finite terrain bank.
+	params.spflags = MGVALLEYS_ALT_CHILL | MGVALLEYS_ALT_DRY;
+	params.altitude_chill = 1;
+	params.np_terrain_height = constant_noise(1.0e20f);
+	BiomeParamsOriginal climate;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+	generator.setValleysClimate(params);
+	ValleysClimate generated;
+	EffectiveBiomeClimate full;
+	EffectiveBiomeData query;
+	UASSERT(!generator.getEffectiveClimate(v2s16(0), generated));
+	UASSERT(!generator.getEffectiveClimate(v2s16(0), full));
+	UASSERT(!generator.getEffectiveBiomeData(v3s16(0), query));
+}
+
+void TestMapgen::testEffectiveClimateContextDemand()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	BiomeParamsOriginal climate;
+	constexpr u32 corrections = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
+		MGVALLEYS_ALT_DRY;
+	for (u32 flags : {0U, u32(MGVALLEYS_VARY_RIVER_DEPTH),
+			u32(MGVALLEYS_ALT_CHILL), u32(MGVALLEYS_HUMID_RIVERS),
+			u32(MGVALLEYS_ALT_DRY), corrections}) {
+		MapgenValleysParams params;
+		params.spflags = flags;
+		BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+		generator.setValleysClimate(params);
+		auto sampler = std::make_unique<CountingClimateSampler>(
+			createValleysBiomeTerrainSampler(params));
+		auto *counted = sampler.get();
+		generator.setTerrainSampler(std::move(sampler));
+		ValleysClimate generated;
+		UASSERT(generator.getEffectiveClimate(v2s16(0), generated));
+		const unsigned int generation_calls = flags & corrections ? 1 : 0;
+		UASSERTEQ(unsigned int, counted->climate_calls, generation_calls);
+		EffectiveBiomeClimate full;
+		UASSERT(generator.getEffectiveClimate(v2s16(0), full));
+		UASSERTEQ(unsigned int, counted->climate_calls, generation_calls + 1);
+		UASSERTEQ(float, full.heat, generated.heat);
+		UASSERTEQ(float, full.humidity, generated.humidity);
+		UASSERT(std::isfinite(full.climate_reference_height));
+		UASSERT(std::isfinite(full.river_bank_height));
+		EffectiveBiomeData query;
+		UASSERT(generator.getEffectiveBiomeData(v3s16(0), query));
+		UASSERTEQ(unsigned int, counted->climate_calls, generation_calls + 2);
+		UASSERTEQ(float, query.climate_reference_height, full.climate_reference_height);
+	}
+}
+
+void TestMapgen::testValleysEffectiveClimate(IGameDef *gamedef)
+{
+	MockServer server(getTestTempDirectory());
+	NodeDefManager ndef;
+	auto add_node = [&](const char *name, content_t source) {
+		ContentFeatures def = gamedef->ndef()->get(source);
+		def.name = name;
+		return ndef.set(name, def);
+	};
+	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE);
+	const content_t water = add_node("mapgen_water_source", t_CONTENT_WATER);
+	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER);
+	struct Materials { content_t top, filler, stone; };
+	const Materials warm = {
+		add_node("test:warm_top", t_CONTENT_GRASS),
+		add_node("test:warm_filler", t_CONTENT_BRICK),
+		add_node("test:warm_stone", t_CONTENT_STONE),
+	};
+	const Materials cold = {
+		add_node("test:cold_top", t_CONTENT_GRASS),
+		add_node("test:cold_filler", t_CONTENT_BRICK),
+		add_node("test:cold_stone", t_CONTENT_STONE),
+	};
+	MockBiomeManager manager(&server);
+	manager.setNodeDefManager(&ndef);
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	// The default initially waits on the mock server's registry. Resolve all
+	// fixture biomes through the local registry before cloning emerge data.
+	server.ndef()->cancelNodeResolveCallback(default_biome);
+	ndef.pendNodeResolve(default_biome);
+	auto add_biome = [&](const char *name, float heat, const Materials &nodes) {
+		auto biome = addTerrainTestBiome(manager, name, heat, 40.0f);
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		biome->m_nodenames[0] = ndef.get(nodes.top).name;
+		biome->m_nodenames[1] = ndef.get(nodes.filler).name;
+		biome->m_nodenames[2] = ndef.get(nodes.stone).name;
+		ndef.pendNodeResolve(biome);
+		biome->c_top = nodes.top;
+		biome->depth_top = 1;
+		biome->c_filler = nodes.filler;
+		biome->depth_filler = 2;
+		biome->c_stone = nodes.stone;
+		biome->c_water = biome->c_water_top = water;
+		biome->c_river_water = river;
+		biome->c_riverbed = stone;
+		return biome->index;
+	};
+	// The fixture column has bank 16 and a 2D surface at 32; chill with
+	// altitude_chill 100 moves heat 50 to 48.6, and heat alone separates the
+	// two biomes.
+	const float chilled_heat = calcValleysClimate(50.0f, 50.0f, 16.0f, 32, 0,
+		100.0f, MGVALLEYS_ALT_CHILL).heat;
+	const biome_t warm_id = add_biome("warm", 50.0f, warm);
+	const biome_t cold_id = add_biome("cold", chilled_heat, cold);
+	ndef.setNodeRegistrationStatus(true);
+	ndef.runNodeResolveCallbacks();
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.chunksize = v3s16(1);
+	params.flags = MG_BIOMES;
+	params.water_level = 0;
+	params.altitude_chill = 100;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	params.np_filler_depth = constant_noise(0.0f);
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+	MetricsBackend metrics;
+	EmergeManager emerge(&server, &metrics);
+	emerge.ndef = &ndef;
+
+	// The bank is at 16, the 2D surface at 32 and the density surface at 52.
+	// Every generation pass uses the 2D surface as the climate height,
+	// including empty upper chunks and existing stone; the density relief
+	// only shapes the materials. Point queries use the same climate.
+	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sample(v2s16(0)).height,
+		52.0f);
+	constexpr u32 all_climate = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
+		MGVALLEYS_ALT_DRY;
+	const struct {
+		const char *name;
+		s16 block_y;
+		u32 spflags;
+		bool existing_stone;
+	} cases[] = {
+		{"raw", 3, 0, false},
+		{"chill", 3, MGVALLEYS_ALT_CHILL, false},
+		{"river humidity", 3, MGVALLEYS_HUMID_RIVERS, false},
+		{"altitude dryness", 3, MGVALLEYS_ALT_DRY, false},
+		{"below surface", 0, all_climate, false},
+		{"clipped surface", 2, all_climate, false},
+		{"surface", 3, all_climate, false},
+		{"above surface", 4, all_climate, false},
+		{"existing surface", 3, all_climate, true},
+	};
+	for (const auto &test : cases) {
+		infostream << "Valleys climate fixture: " << test.name << std::endl;
+		params.spflags = test.spflags;
+		source.setValleysClimate(params);
+		const ValleysClimate expected = calcValleysClimate(50.0f, 50.0f, 16.0f, 32,
+			0, 100.0f, test.spflags & all_climate);
+		const float expected_heat = expected.heat;
+		const float expected_humidity = expected.humidity;
+		const biome_t expected_biome = test.spflags & MGVALLEYS_ALT_CHILL ?
+			cold_id : warm_id;
+		const v3s16 node_min(-16, test.block_y * MAP_BLOCKSIZE, 16);
+		const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+		EffectiveBiomeData before;
+		UASSERT(source.getEffectiveBiomeData(node_min, before));
+		UASSERTEQ(float, before.climate_reference_height, 32.0f);
+		UASSERTEQ(float, before.river_bank_height, 16.0f);
+		UASSERTEQ(float, before.heat, expected_heat);
+		UASSERTEQ(float, before.humidity, expected_humidity);
+		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		auto generated = static_cast<BiomeGenOriginal *>(mapgen.biomegen);
+		auto sampler = std::make_unique<CountingClimateSampler>(
+			createValleysBiomeTerrainSampler(params));
+		auto *counted = sampler.get();
+		generated->setTerrainSampler(std::move(sampler));
+		BlockMakeData data;
+		data.blockpos_min = data.blockpos_max = v3s16(-1, test.block_y, 1);
+		data.seed = params.seed;
+		data.nodedef = &ndef;
+		data.vmanip = new MapgenTestVManip(VoxelArea(
+			node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
+		if (test.existing_stone) {
+			for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+			for (s16 x = node_min.X; x <= node_max.X; ++x)
+			for (s16 y = node_min.Y - 1; y <= 52; ++y)
+				data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)] = MapNode(stone);
+		}
+		mapgen.makeChunk(&data);
+		UASSERTEQ(unsigned int, counted->climate_calls,
+			test.spflags & all_climate ? MAP_BLOCKSIZE * MAP_BLOCKSIZE : 0);
+		const auto &materials = expected_biome == cold_id ? cold : warm;
+		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+		for (s16 x = node_min.X; x <= node_max.X; ++x) {
+			const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+			UASSERTEQ(float, generated->heatmap[index], expected_heat);
+			UASSERTEQ(float, generated->humidmap[index], expected_humidity);
+			UASSERTEQ(biome_t, mapgen.biomemap[index],
+				node_min.Y > 52 ? BIOME_NONE : expected_biome);
+			for (s16 y : {s16(-100), std::min<s16>(52, node_max.Y), s16(100)}) {
+				const v3s16 pos(x, y, z);
+				EffectiveBiomeData query, parent;
+				UASSERT(generated->getEffectiveBiomeData(pos, query));
+				UASSERT(source.getEffectiveBiomeData(pos, parent));
+				UASSERTEQ(float, query.heat, expected_heat);
+				UASSERTEQ(float, query.humidity, expected_humidity);
+				UASSERTEQ(float, query.raw_heat, 50.0f);
+				UASSERTEQ(float, query.raw_humidity, 50.0f);
+				UASSERTEQ(float, parent.heat, query.heat);
+				UASSERTEQ(float, parent.humidity, query.humidity);
+				UASSERTEQ(biome_t, query.biome, expected_biome);
+				UASSERTEQ(biome_t, query.biome, generated->getBiomeAtIndex(index, pos)->index);
+				UASSERTEQ(biome_t, source.calcBiomeAtPoint(pos)->index, warm_id);
+			}
+			for (s16 y = node_min.Y; y <= node_max.Y; ++y) {
+				content_t expected = CONTENT_AIR;
+				if (y <= 52)
+					expected = y == 52 ? materials.top :
+						(y >= 50 ? materials.filler : materials.stone);
+				const MapNode &node = data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)];
+				UASSERTEQ(content_t, node.getContent(), expected);
+				UASSERTEQ(u8, node.param1, 0);
+				UASSERTEQ(u8, node.param2, 0);
+			}
+		}
+	}
+
+	// The channel has a bank at 16, stone through 10 and unmodified river
+	// water through 15. Dry climate changes the water surface before the
+	// final climate correction, including when that correction is disabled.
+	params.flags = 0;
+	params.np_rivers = constant_noise(0.0f);
+	constexpr u32 chill_river = MGVALLEYS_ALT_CHILL | MGVALLEYS_VARY_RIVER_DEPTH;
+	const struct {
+		const char *name;
+		u16 altitude_chill;
+		u32 spflags;
+		float raw_heat;
+		float heat;
+		float humidity;
+		s16 water_top;
+	} river_cases[] = {
+		{"zero divisor river", 0, chill_river, 400, 85, 40, 13},
+		{"minimum divisor river", 1, chill_river, 400, 85, 40, 13},
+		{"river depth without corrections", 0, MGVALLEYS_VARY_RIVER_DEPTH, 100, 100, 40, 12},
+		{"all flags disabled", 0, 0, 100, 100, 40, 15},
+		{"river humidity only", 0, MGVALLEYS_VARY_RIVER_DEPTH | MGVALLEYS_HUMID_RIVERS,
+			100, 100, 48, 12},
+	};
+	for (const auto &test : river_cases) {
+		infostream << "Valleys river climate fixture: " << test.name << std::endl;
+		params.altitude_chill = test.altitude_chill;
+		params.spflags = test.spflags;
+		BiomeParamsOriginal river_climate = climate;
+		river_climate.np_heat = constant_noise(test.raw_heat);
+		river_climate.np_humidity = constant_noise(40.0f);
+		BiomeGenOriginal river_source(&manager, &river_climate, v3s16(MAP_BLOCKSIZE));
+		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &river_source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		auto generated = static_cast<BiomeGenOriginal *>(mapgen.biomegen);
+		auto sampler = std::make_unique<CountingClimateSampler>(
+			createValleysBiomeTerrainSampler(params));
+		auto *counted = sampler.get();
+		generated->setTerrainSampler(std::move(sampler));
+		UASSERTEQ(u16, params.altitude_chill, test.altitude_chill);
+		BlockMakeData data;
+		data.blockpos_min = data.blockpos_max = v3s16(0);
+		data.seed = params.seed;
+		data.nodedef = &ndef;
+		data.vmanip = new MapgenTestVManip(VoxelArea(v3s16(-MAP_BLOCKSIZE),
+			v3s16(2 * MAP_BLOCKSIZE - 1)));
+		mapgen.makeChunk(&data);
+		UASSERTEQ(unsigned int, counted->climate_calls,
+			test.spflags & all_climate ? MAP_BLOCKSIZE * MAP_BLOCKSIZE : 0);
+		for (s16 z = 0; z < MAP_BLOCKSIZE; ++z)
+		for (s16 x = 0; x < MAP_BLOCKSIZE; ++x) {
+			const size_t index = z * MAP_BLOCKSIZE + x;
+			UASSERT(std::isfinite(generated->heatmap[index]));
+			UASSERT(std::isfinite(generated->humidmap[index]));
+			UASSERTEQ(float, generated->heatmap[index], test.heat);
+			UASSERTEQ(float, generated->humidmap[index], test.humidity);
+			UASSERTEQ(biome_t, mapgen.biomemap[index], BIOME_NONE);
+			for (s16 y = 0; y < MAP_BLOCKSIZE; ++y) {
+				const content_t expected = y <= 10 ? stone :
+					(y <= test.water_top ? river : CONTENT_AIR);
+				const MapNode &node = data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)];
+				UASSERTEQ(content_t, node.getContent(), expected);
+				UASSERTEQ(u8, node.param1, 0);
+				UASSERTEQ(u8, node.param2, 0);
+			}
+		}
+	}
+}
+
+void TestMapgen::testValleysFormGeneration(IGameDef *gamedef)
+{
+	// Three biomes on one climate point, told apart only by the column form,
+	// through the real generation path: terrain pass, sampler cache, bulk
+	// biome selection and the materials it places. Every column of a fixture
+	// chunk has the same form, so the whole biomemap must agree.
+	MockServer server(getTestTempDirectory());
+	NodeDefManager ndef;
+	auto add_node = [&](const char *name, content_t source) {
+		ContentFeatures def = gamedef->ndef()->get(source);
+		def.name = name;
+		return ndef.set(name, def);
+	};
+	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE);
+	const content_t water = add_node("mapgen_water_source", t_CONTENT_WATER);
+	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER);
+	MockBiomeManager manager(&server);
+	manager.setNodeDefManager(&ndef);
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	server.ndef()->cancelNodeResolveCallback(default_biome);
+	ndef.pendNodeResolve(default_biome);
+	auto add_biome = [&](const char *name) {
+		std::string top_name = std::string("test:") + name + "_top";
+		const content_t top = add_node(top_name.c_str(), t_CONTENT_GRASS);
+		auto biome = addTerrainTestBiome(manager, name, 50.0f, 50.0f);
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		biome->m_nodenames[0] = top_name;
+		ndef.pendNodeResolve(biome);
+		biome->c_top = top;
+		biome->depth_top = 1;
+		biome->c_filler = biome->c_stone = stone;
+		biome->depth_filler = 0;
+		biome->c_water = biome->c_water_top = water;
+		biome->c_river_water = river;
+		biome->c_riverbed = stone;
+		return biome;
+	};
+	// Registration order breaks ties: the peak must precede the ridge.
+	auto peak = add_biome("peak");
+	peak->mountain_min = 10.0f;
+	auto ridge = add_biome("ridge");
+	ridge->valley_pos_min = 0.5f;
+	ridge->mountain_max = 5.0f;
+	auto floor = add_biome("floor");
+	floor->valley_pos_max = 0.5f;
+	ndef.setNodeRegistrationStatus(true);
+	ndef.runNodeResolveCallbacks();
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.chunksize = v3s16(1);
+	params.flags = MG_BIOMES;
+	params.water_level = 0;
+	params.altitude_chill = 100;
+	params.mountain_cap = 0.0f;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	params.np_filler_depth = constant_noise(0.0f);
+	params.np_mountain = constant_noise(1.0f);
+	params.np_mountain_height = constant_noise(20.0f);
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	MetricsBackend metrics;
+	EmergeManager emerge(&server, &metrics);
+	emerge.ndef = &ndef;
+
+	constexpr u32 all_climate = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
+		MGVALLEYS_ALT_DRY;
+	const struct {
+		const char *name;
+		float rivers;      // constant river noise: 100 puts the column on the ridge
+		u32 spflags;
+		s16 block_y;       // the block holding the density surface
+		Biome *expected;
+	} cases[] = {
+		{"ridge", 100.0f, 0, 3, ridge},
+		{"ridge with corrections", 100.0f, all_climate, 3, ridge},
+		{"valley floor", 0.06f, 0, 1, floor},
+		{"valley floor with corrections", 0.06f, all_climate, 1, floor},
+		{"mountain mask", 100.0f, MGVALLEYS_MOUNTAINS, 3, peak},
+		{"mountain mask with corrections", 100.0f, MGVALLEYS_MOUNTAINS | all_climate, 3, peak},
+	};
+	for (const auto &test : cases) {
+		infostream << "Valleys form fixture: " << test.name << std::endl;
+		params.spflags = test.spflags;
+		params.np_rivers = constant_noise(test.rivers);
+		BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+		source.setValleysClimate(params);
+		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		auto generated = static_cast<BiomeGenOriginal *>(mapgen.biomegen);
+		const v3s16 node_min(-16, test.block_y * MAP_BLOCKSIZE, 16);
+		const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+		BlockMakeData data;
+		data.blockpos_min = data.blockpos_max = v3s16(-1, test.block_y, 1);
+		data.seed = params.seed;
+		data.nodedef = &ndef;
+		data.vmanip = new MapgenTestVManip(VoxelArea(
+			node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
+		mapgen.makeChunk(&data);
+		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+		for (s16 x = node_min.X; x <= node_max.X; ++x) {
+			const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+			UASSERTEQ(biome_t, mapgen.biomemap[index], test.expected->index);
+			// The top solid node of the column wears the expected biome.
+			s16 top = node_max.Y;
+			while (top >= node_min.Y && data.vmanip->m_data[
+					data.vmanip->m_area.index(x, top, z)].getContent() == CONTENT_AIR)
+				--top;
+			UASSERT(top >= node_min.Y);
+			UASSERTEQ(content_t, data.vmanip->m_data[
+				data.vmanip->m_area.index(x, top, z)].getContent(), test.expected->c_top);
+			EffectiveBiomeData query;
+			UASSERT(generated->getEffectiveBiomeData(v3s16(x, top, z), query));
+			UASSERTEQ(biome_t, query.biome, test.expected->index);
+			UASSERT(source.getEffectiveBiomeData(v3s16(x, top, z), query));
+			UASSERTEQ(biome_t, query.biome, test.expected->index);
+		}
+	}
+}
+
+void TestMapgen::testBiomeFormRanges()
+{
+	Biome biome;
+	UASSERT(!biome.hasClimateBounds());
+	UASSERT(!biome.hasFormConstraints());
+	UASSERT(biome.matchesClimate(-1.0e30f, 1.0e30f));
+	UASSERT(biome.matchesForm({-1000.0f, 0.0f, 0.0f, 0.0f}));
+	UASSERT(biome.matchesForm({1000.0f, 1000.0f, 1.0f, 1000.0f}));
+
+	biome.heat_min = 14.0f;
+	biome.heat_max = 28.0f;
+	UASSERT(biome.hasClimateBounds() && !biome.hasFormConstraints());
+	UASSERT(biome.matchesClimate(14.0f, -50.0f));
+	UASSERT(biome.matchesClimate(28.0f, 200.0f));
+	UASSERT(!biome.matchesClimate(13.99f, 50.0f));
+	UASSERT(!biome.matchesClimate(28.01f, 50.0f));
+	biome.humidity_min = 19.0f;
+	UASSERT(biome.matchesClimate(20.0f, 19.0f));
+	UASSERT(!biome.matchesClimate(20.0f, 18.99f));
+
+	// Exercise each form bound by itself, then a clone with all of them.
+	Biome form;
+	form.valley_pos_max = 0.05f;
+	UASSERT(form.hasFormConstraints() && !form.hasClimateBounds());
+	UASSERT(form.matchesForm({0.0f, 0.0f, 0.05f, 0.0f}));
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0501f, 0.0f}));
+	form.valley_pos_max = 1.0f;
+	UASSERT(!form.hasFormConstraints());
+	form.valley_pos_min = 0.15f;
+	UASSERT(form.hasFormConstraints());
+	UASSERT(form.matchesForm({0.0f, 0.0f, 0.15f, 0.0f}));
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.1499f, 0.0f}));
+	form.valley_pos_min = 0.0f;
+	form.base_min = 10.0f;
+	form.valley_depth_max = 9.0f;
+	UASSERT(form.matchesForm({10.0f, 9.0f, 0.5f, 0.0f}));
+	UASSERT(!form.matchesForm({9.99f, 9.0f, 0.5f, 0.0f}));
+	UASSERT(!form.matchesForm({10.0f, 9.01f, 0.5f, 0.0f}));
+	form.base_min = -std::numeric_limits<float>::infinity();
+	form.valley_depth_max = std::numeric_limits<float>::infinity();
+	form.valley_depth_min = 9.0f;
+	UASSERT(form.hasFormConstraints());
+	UASSERT(!form.matchesForm({0.0f, 8.99f, 0.0f, 0.0f}));
+	form.valley_depth_min = 0.0f;
+	form.mountain_min = 40.0f;
+	UASSERT(form.hasFormConstraints());
+	UASSERT(form.matchesForm({0.0f, 0.0f, 0.0f, 40.0f}));
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0f, 39.99f}));
+	form.mountain_min = 0.0f;
+	form.mountain_max = 10.0f;
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0f, 10.01f}));
+	form.mountain_max = std::numeric_limits<float>::infinity();
+	form.base_max = -5.0f;
+	UASSERT(form.hasFormConstraints());
+	UASSERT(form.matchesForm({-5.0f, 0.0f, 0.0f, 0.0f}));
+	UASSERT(!form.matchesForm({-4.99f, 0.0f, 0.0f, 0.0f}));
+
+	form.heat_max = 63.0f;
+	UASSERT(form.hasClimateBounds() && form.hasFormConstraints());
+	UASSERT(form.matchesClimate(63.0f, 0.0f) && !form.matchesClimate(63.01f, 0.0f));
+}
+
+void TestMapgen::testBiomeFormParsing()
+{
+	std::unique_ptr<lua_State, decltype(&lua_close)> state(luaL_newstate(), lua_close);
+	UASSERT(state);
+	lua_State *L = state.get();
+	std::unique_ptr<NodeDefManager> ndef(createNodeDefManager());
+	auto number = [L](const char *name, lua_Number value) {
+		lua_pushnumber(L, value);
+		lua_setfield(L, -2, name);
+	};
+	auto reject = [&]() {
+		bool rejected = false;
+		try {
+			std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		} catch (const LuaError &) {
+			rejected = true;
+		}
+		lua_settop(L, 0);
+		UASSERT(rejected);
+	};
+
+	lua_newtable(L);
+	{
+		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		UASSERT(parsed && !parsed->hasClimateBounds() && !parsed->hasFormConstraints());
+		UASSERT(std::isinf(parsed->heat_min) && parsed->heat_min < 0.0f);
+		UASSERT(std::isinf(parsed->mountain_max) && parsed->mountain_max > 0.0f);
+		UASSERTEQ(float, parsed->valley_pos_max, 1.0f);
+	}
+	lua_settop(L, 0);
+	lua_newtable(L);
+	number("heat_min", -14.0);
+	number("heat_max", 28.0);
+	number("humidity_max", 51.0);
+	number("base_min", -3.0);
+	number("base_max", 10.0);
+	number("valley_depth_min", 3.0);
+	number("valley_depth_max", 9.0);
+	number("valley_pos_min", 0.05);
+	number("valley_pos_max", 0.15);
+	number("mountain_min", 10.0);
+	number("mountain_max", 40.0);
+	{
+		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		UASSERT(parsed && parsed->hasClimateBounds() && parsed->hasFormConstraints());
+		UASSERTEQ(float, parsed->heat_min, -14.0f);
+		UASSERTEQ(float, parsed->heat_max, 28.0f);
+		UASSERT(std::isinf(parsed->humidity_min) && parsed->humidity_min < 0.0f);
+		UASSERTEQ(float, parsed->humidity_max, 51.0f);
+		UASSERTEQ(float, parsed->base_min, -3.0f);
+		UASSERTEQ(float, parsed->base_max, 10.0f);
+		UASSERTEQ(float, parsed->valley_depth_min, 3.0f);
+		UASSERTEQ(float, parsed->valley_depth_max, 9.0f);
+		UASSERTEQ(float, parsed->valley_pos_min, 0.05f);
+		UASSERTEQ(float, parsed->valley_pos_max, 0.15f);
+		UASSERTEQ(float, parsed->mountain_min, 10.0f);
+		UASSERTEQ(float, parsed->mountain_max, 40.0f);
+	}
+	lua_settop(L, 0);
+
+	const lua_Number inf = std::numeric_limits<lua_Number>::infinity();
+	const lua_Number nan = std::numeric_limits<lua_Number>::quiet_NaN();
+	const lua_Number beyond_float = static_cast<lua_Number>(
+		std::numeric_limits<float>::max()) * 2.0;
+	for (const char *name : {"heat_min", "heat_max", "humidity_min",
+			"humidity_max", "base_min", "base_max"}) {
+		for (lua_Number invalid : {inf, -inf, nan, 1.0e-300, -1.0e-300,
+				beyond_float, -beyond_float}) {
+			lua_newtable(L);
+			number(name, invalid);
+			reject();
+		}
+		lua_newtable(L);
+		lua_pushstring(L, "10");
+		lua_setfield(L, -2, name);
+		reject();
+	}
+	for (const char *name : {"valley_depth_min", "valley_depth_max",
+			"valley_pos_min", "valley_pos_max", "mountain_min", "mountain_max"}) {
+		for (lua_Number invalid : {-1.0, inf, nan, 1.0e-300}) {
+			lua_newtable(L);
+			number(name, invalid);
+			reject();
+		}
+	}
+	for (const char *name : {"valley_pos_min", "valley_pos_max"}) {
+		lua_newtable(L);
+		number(name, 1.0001);
+		reject();
+	}
+	lua_newtable(L);
+	number("heat_min", 30.0);
+	number("heat_max", 20.0);
+	reject();
+	lua_newtable(L);
+	number("valley_pos_min", 0.5);
+	number("valley_pos_max", 0.25);
+	reject();
+
+	// Negative signed bounds, zero and a single unbounded side are accepted.
+	lua_newtable(L);
+	number("base_max", -5.0);
+	number("heat_min", -30.0);
+	number("mountain_min", 0.0);
+	{
+		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		UASSERT(parsed);
+		UASSERTEQ(float, parsed->base_max, -5.0f);
+		UASSERT(std::isinf(parsed->base_min) && parsed->base_min < 0.0f);
+		UASSERTEQ(float, parsed->heat_min, -30.0f);
+		UASSERTEQ(float, parsed->mountain_min, 0.0f);
+	}
+	lua_settop(L, 0);
+}
+
+void TestMapgen::testBiomeFormSelection()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	// Two biomes share one climate point and differ by valley position; a
+	// peak needs a mountain mask; a hot cell needs heat the point lacks; the
+	// last biome has no bounds and stands in when nothing else can.
+	auto floor = addTerrainTestBiome(manager, "floor", 50.0f, 50.0f);
+	floor->valley_pos_max = 0.5f;
+	auto ridge = addTerrainTestBiome(manager, "ridge", 50.0f, 50.0f);
+	ridge->valley_pos_min = 0.5f;
+	ridge->valley_pos_max = 0.8f;
+	auto peak = addTerrainTestBiome(manager, "peak", 50.0f, 50.0f);
+	peak->mountain_min = 1.0f;
+	auto hot = addTerrainTestBiome(manager, "hot", 65.0f, 50.0f);
+	hot->heat_min = 60.0f;
+	auto anywhere = addTerrainTestBiome(manager, "anywhere", 80.0f, 80.0f);
+	// Resolve definitions before cloning into an independent worker registry.
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	auto ndef = const_cast<NodeDefManager *>(server.getNodeDefManager());
+	for (Biome *biome : {floor, ridge, peak, hot, anywhere}) {
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		ndef->pendNodeResolve(biome);
+	}
+	ndef->setNodeRegistrationStatus(true);
+	ndef->runNodeResolveCallbacks();
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.spflags = 0;
+	params.water_level = 0;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+	const v3s16 pos(-1, 0, 0);
+
+	// Without a column model every form-bound biome is ineligible.
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos)->index,
+		anywhere->index);
+	generator.setTerrainSampler(std::make_unique<TestTerrainSampler>(BiomeTerrain{}));
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos)->index,
+		anywhere->index);
+
+	// The fixture column sits on its ridge with no mountain: the ridge is
+	// rejected by its own upper bound, so the peak cannot win either.
+	generator.setValleysClimate(params);
+	EffectiveBiomeData result;
+	UASSERT(generator.getEffectiveBiomeData(pos, result));
+	UASSERTEQ(float, result.form.valley_pos, 1.0f);
+	UASSERTEQ(float, result.form.mountain, 0.0f);
+	UASSERTEQ(biome_t, result.biome, anywhere->index);
+	UASSERTEQ(biome_t, generator.calcBiomeAtPoint(pos)->index, anywhere->index);
+
+	// A supplied form replaces sampling; climate bounds apply before distance.
+	BiomeTerrainForm supplied{0.0f, 16.0f, 0.25f, 0.0f};
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		floor->index);
+	supplied.valley_pos = 0.6f;
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		ridge->index);
+	supplied.valley_pos = 0.9f;
+	supplied.mountain = 5.0f;
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		peak->index);
+	supplied.mountain = 0.0f;
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		anywhere->index);
+	supplied.valley_pos = 0.6f;
+	// Heat 58 is nearer the hot cell than the ridge, but below the cell's bound.
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(58.0f, 50.0f, pos, &supplied)->index,
+		ridge->index);
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(62.0f, 50.0f, pos, &supplied)->index,
+		hot->index);
+
+	// A clone carries the bounds and its own column model.
+	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
+	auto copied_ridge = static_cast<Biome *>(copied_manager->getRaw(ridge->index));
+	UASSERTEQ(float, copied_ridge->valley_pos_min, 0.5f);
+	UASSERTEQ(float, copied_ridge->valley_pos_max, 0.8f);
+	auto copied_hot = static_cast<Biome *>(copied_manager->getRaw(hot->index));
+	UASSERTEQ(float, copied_hot->heat_min, 60.0f);
+	UASSERT(std::isinf(copied_hot->heat_max));
+	std::unique_ptr<BiomeGen> worker_base(generator.clone(copied_manager.get()));
+	auto worker = static_cast<BiomeGenOriginal *>(worker_base.get());
+	UASSERT(worker->getEffectiveBiomeData(pos, result));
+	UASSERTEQ(biome_t, result.biome, anywhere->index);
+	UASSERTEQ(biome_t, worker->calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		ridge->index);
 }
 
 void TestMapgen::testBiomeTerrainRanges()
@@ -530,6 +1721,135 @@ void TestMapgen::testBiomeTerrainBlending(IGameDef *gamedef)
 	}
 	UASSERT(blended > 0);
 	UASSERT(generator.calcBiomeFromNoise(50.0f, 50.0f, v3s16(0, 9, 0)) == upper);
+}
+
+void TestMapgen::testBiomeNumericDistances(IGameDef *gamedef)
+{
+	MockServer server(getTestTempDirectory());
+	BiomeParamsOriginal params;
+	const float tiny_weight = std::numeric_limits<float>::denorm_min();
+	const float max_float = std::numeric_limits<float>::max();
+	{
+		MockBiomeManager manager(&server);
+		manager.setNodeDefManager(gamedef->getNodeDefManager());
+		auto restricted = addTerrainTestBiome(manager, "restricted", 50.0f, 50.0f);
+		restricted->slope_min = 1.0f;
+		auto reserve = addTerrainTestBiome(manager, "reserve", 52.0f, 50.0f);
+		reserve->weight = tiny_weight;
+		BiomeGenOriginal generator(&manager, &params, v3s16(16));
+		generator.setTerrainSampler(std::make_unique<TestTerrainSampler>(
+			BiomeTerrain{20, 0, 0}));
+
+		// A terrain filter must leave this registered, unrestricted reserve
+		// selectable even when the weighted float distance overflows.
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == reserve);
+		reserve->heat_point = 1.0e20f;
+		reserve->weight = 1.0f;
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == reserve);
+		reserve->heat_point = max_float;
+		reserve->humidity_point = -max_float;
+		reserve->weight = tiny_weight;
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == reserve);
+
+		// Two overflowing distances still have an ordering, independent of
+		// registration order. The larger weight can compensate a huge center.
+		reserve->heat_point = 52.0f;
+		reserve->humidity_point = 50.0f;
+		auto nearer = addTerrainTestBiome(manager, "nearer", 51.0f, 50.0f);
+		nearer->weight = tiny_weight;
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == nearer);
+		reserve->heat_point = 1.0e20f;
+		reserve->weight = 1.0f;
+		nearer->heat_point = 2.0e20f;
+		nearer->weight = 1.0f;
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == reserve);
+		reserve->weight = max_float;
+		nearer->heat_point = 0.0f; // finite float distance 2500
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == reserve);
+		nearer->heat_point = 51.0f; // finite float distance 1
+		UASSERT(generator.calcBiomeFromNoise(50, 50, v3s16(0)) == nearer);
+
+		// Filtering remains authoritative even when all distances overflow.
+		nearer->heat_point = 2.0e20f;
+		reserve->slope_min = nearer->slope_min = 1.0f;
+		UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50, 50,
+			v3s16(0))->index, BIOME_NONE);
+	}
+	{
+		MockBiomeManager manager(&server);
+		manager.setNodeDefManager(gamedef->getNodeDefManager());
+		// This float distance is exactly FLT_MAX, which used to equal the
+		// initial minimum and leave an otherwise eligible biome unselected.
+		auto boundary = addTerrainTestBiome(manager, "boundary", 0x1.fffffep63f, 0x1p52f);
+		BiomeGenOriginal generator(&manager, &params, v3s16(16));
+		UASSERT(generator.calcBiomeFromNoise(0, 0, v3s16(0)) == boundary);
+	}
+	{
+		MockBiomeManager manager(&server);
+		manager.setNodeDefManager(gamedef->getNodeDefManager());
+		// Both ordinary distances round to 1 in float, though the second is
+		// closer in double. Keep the original first-registration tie break.
+		auto first = addTerrainTestBiome(manager, "first", 1.0f, 0x1p-13f);
+		addTerrainTestBiome(manager, "second", 1.0f, 0.0f);
+		BiomeGenOriginal generator(&manager, &params, v3s16(16));
+		UASSERT(generator.calcBiomeFromNoise(0, 0, v3s16(0)) == first);
+	}
+}
+
+void TestMapgen::testBiomeNumericBlending(IGameDef *gamedef)
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager control_manager(&server), exceptional_manager(&server);
+	control_manager.setNodeDefManager(gamedef->getNodeDefManager());
+	exceptional_manager.setNodeDefManager(gamedef->getNodeDefManager());
+	auto lower = addTerrainTestBiome(control_manager, "lower", 52.0f, 50.0f);
+	lower->max_pos.Y = 0;
+	lower->vertical_blend = 8;
+	auto upper = addTerrainTestBiome(control_manager, "upper", 53.0f, 50.0f);
+	upper->min_pos.Y = 1;
+	auto wide_lower = addTerrainTestBiome(exceptional_manager, "lower", 52.0f, 50.0f);
+	wide_lower->max_pos.Y = 0;
+	wide_lower->vertical_blend = 8;
+	auto wide_upper = addTerrainTestBiome(exceptional_manager, "upper", 53.0f, 50.0f);
+	wide_upper->min_pos.Y = 1;
+	BiomeParamsOriginal params;
+	BiomeGenOriginal control(&control_manager, &params, v3s16(16));
+	BiomeGenOriginal exceptional(&exceptional_manager, &params, v3s16(16));
+
+	for (bool huge_centers : {false, true}) {
+		wide_lower->heat_point = huge_centers ? 1.0e20f : 52.0f;
+		wide_upper->heat_point = huge_centers ? 2.0e20f : 53.0f;
+		wide_lower->weight = wide_upper->weight = huge_centers ? 1.0f :
+			std::numeric_limits<float>::denorm_min();
+		unsigned int blended = 0, unblended = 0;
+		for (s16 y = 0; y <= 9; ++y) {
+			auto expected = control.calcBiomeFromNoise(50, 50, v3s16(0, y, 0));
+			auto actual = exceptional.calcBiomeFromNoise(50, 50, v3s16(0, y, 0));
+			UASSERTEQ(std::string, actual->name, expected->name);
+			if (y > 0 && y <= 8) {
+				blended += actual == wide_lower;
+				unblended += actual == wide_upper;
+			}
+		}
+		UASSERT(blended > 0 && unblended > 0);
+	}
+
+	// The blend candidate can overflow internally yet have a smaller
+	// weighted distance than an ordinary main-band candidate (about 29 < 400).
+	wide_lower->weight = std::numeric_limits<float>::max();
+	wide_upper->heat_point = upper->heat_point = 70.0f;
+	for (s16 y = 1; y <= 8; ++y)
+		UASSERTEQ(std::string,
+			exceptional.calcBiomeFromNoise(50, 50, v3s16(0, y, 0))->name,
+			control.calcBiomeFromNoise(50, 50, v3s16(0, y, 0))->name);
+
+	// With no eligible main-band biome, the same blend roll must still
+	// choose the lower biome or the default, rather than always defaulting.
+	upper->min_pos.Y = wide_upper->min_pos.Y = 10;
+	for (s16 y = 1; y <= 8; ++y)
+		UASSERTEQ(std::string,
+			exceptional.calcBiomeFromNoise(50, 50, v3s16(0, y, 0))->name,
+			control.calcBiomeFromNoise(50, 50, v3s16(0, y, 0))->name);
 }
 
 void TestMapgen::testBiomeTerrainClone(IGameDef *gamedef)

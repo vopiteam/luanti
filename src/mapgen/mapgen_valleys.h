@@ -32,6 +32,21 @@ class BiomeGenOriginal;
 
 extern const FlagDesc flagdesc_mapgen_valleys[];
 
+#if IS_VOPI_ENGINE
+struct ValleysClimate {
+	float heat;
+	float humidity;
+};
+
+// Apply the climate corrections to one column's raw climate. The caller supplies
+// the river-bank level and column_max_y of the deterministic modeled column.
+// Neither is an arbitrary query Y. Results are not clamped to 0..100.
+// altitude_chill is an integer distance in engine settings; values below 1
+// are treated as 1, including zero from older configurations.
+ValleysClimate calcValleysClimate(float heat, float humidity,
+	float base, s16 column_max_y, int water_level, float altitude_chill, u32 flags);
+#endif
+
 
 struct MapgenValleysParams : public MapgenParams {
 	u16 altitude_chill = 90;

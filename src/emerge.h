@@ -83,6 +83,9 @@ struct BlockEmergeData {
 
 class EmergeParams {
 	friend class EmergeManager;
+#if IS_VOPI_ENGINE && BUILD_UNITTESTS
+	friend class TestMapgen;
+#endif
 public:
 	EmergeParams() = delete;
 	~EmergeParams();

@@ -18,6 +18,7 @@
 #include "mapblock.h"
 #include "mapgen/mg_biome.h"
 #if IS_VOPI_ENGINE
+#include "exceptions.h"
 #include "mapgen/mapgen_valleys.h"
 #endif
 #include "mapgen/mg_ore.h"
@@ -195,8 +196,7 @@ void EmergeManager::initMapgens(MapgenParams *params)
 #if IS_VOPI_ENGINE
 	if (params->mgtype == MAPGEN_VALLEYS) {
 		auto original = static_cast<BiomeGenOriginal *>(biomegen);
-		original->setTerrainSampler(createValleysBiomeTerrainSampler(
-			*static_cast<MapgenValleysParams *>(params)));
+		original->setValleysClimate(*static_cast<MapgenValleysParams *>(params));
 	}
 #endif
 
@@ -738,15 +738,35 @@ void *EmergeThread::run()
 		/* Generate it */
 		if (action == EMERGE_GENERATED) {
 			bool error = false;
+#if IS_VOPI_ENGINE
+			bool native_error = false;
+#endif
 			m_trans_liquid = &bmdata.transforming_liquid;
 
 			{
 				ScopeProfiler sp(g_profiler,
 					"EmergeThread: Mapgen::makeChunk", SPT_AVG);
 
+#if IS_VOPI_ENGINE
+				try {
+					m_mapgen->makeChunk(&bmdata);
+				} catch (const InvalidNoiseParamsException &e) {
+					std::ostringstream message;
+					message << "Invalid mapgen parameters while generating MapBlock "
+						<< pos << ": " << e.what();
+					m_server->setAsyncFatalError(message.str());
+					error = native_error = true;
+					// Complete this item's error callback, then cancel queued work.
+					stop();
+				}
+#else
 				m_mapgen->makeChunk(&bmdata);
+#endif
 			}
 
+#if IS_VOPI_ENGINE
+			if (!error)
+#endif
 			{
 				ScopeProfiler sp(g_profiler,
 					"EmergeThread: Lua on_generated", SPT_AVG);
@@ -761,6 +781,18 @@ void *EmergeThread::run()
 
 			if (!error)
 				block = finishGen(pos, &bmdata, &modified_blocks);
+#if IS_VOPI_ENGINE
+			else if (native_error) {
+				Server::EnvAutoLock envlock(m_server);
+				m_map->cancelBlockMake(&bmdata);
+				// makeChunk did not reach its normal state cleanup. Do not
+				// expose its incomplete VM or report a pre-existing block as changed.
+				m_mapgen->generating = false;
+				m_mapgen->gennotify.clearEvents();
+				m_mapgen->vm = nullptr;
+				block = nullptr;
+			}
+#endif
 			else
 				m_map->cancelBlockMake(&bmdata);
 			if (!block || error)

@@ -375,6 +375,26 @@ static lua_Number read_terrain_bound(lua_State *L, int index, const char *name,
 			"' must be a finite nonnegative number within its allowed range");
 	return value;
 }
+
+// A climate or form bound: finite, inside [lower, upper], and not a nonzero
+// value that rounds to float zero. An absent field keeps the fallback.
+static lua_Number read_biome_bound(lua_State *L, int index, const char *name,
+		lua_Number fallback, lua_Number lower, lua_Number upper)
+{
+	lua_getfield(L, index, name);
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 1);
+		return fallback;
+	}
+	bool is_number = lua_type(L, -1) == LUA_TNUMBER;
+	lua_Number value = lua_tonumber(L, -1);
+	lua_pop(L, 1);
+	if (!is_number || !std::isfinite(value) || value < lower || value > upper ||
+			(value != 0 && static_cast<float>(value) == 0))
+		throw LuaError(std::string("Biome field '") + name +
+			"' must be a finite number within its allowed range");
+	return value;
+}
 #endif
 
 Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
@@ -392,6 +412,30 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 		std::numeric_limits<float>::infinity(), std::numeric_limits<float>::max());
 	if (slope_min > slope_max || relief_min > relief_max)
 		throw LuaError("Biome terrain minimum must not exceed its maximum");
+	const lua_Number inf = std::numeric_limits<lua_Number>::infinity();
+	const lua_Number largest = std::numeric_limits<float>::max();
+	const struct {
+		const char *min_name, *max_name;
+		lua_Number min_fallback, max_fallback, lower, upper;
+	} bound_fields[] = {
+		{"heat_min", "heat_max", -inf, inf, -largest, largest},
+		{"humidity_min", "humidity_max", -inf, inf, -largest, largest},
+		{"base_min", "base_max", -inf, inf, -largest, largest},
+		{"valley_depth_min", "valley_depth_max", 0.0, inf, 0.0, largest},
+		{"valley_pos_min", "valley_pos_max", 0.0, 1.0, 0.0, 1.0},
+		{"mountain_min", "mountain_max", 0.0, inf, 0.0, largest},
+	};
+	lua_Number bounds[6][2];
+	for (size_t i = 0; i < 6; ++i) {
+		const auto &field = bound_fields[i];
+		bounds[i][0] = read_biome_bound(L, index, field.min_name,
+			field.min_fallback, field.lower, field.upper);
+		bounds[i][1] = read_biome_bound(L, index, field.max_name,
+			field.max_fallback, field.lower, field.upper);
+		if (bounds[i][0] > bounds[i][1])
+			throw LuaError(std::string("Biome field '") + field.min_name +
+				"' must not exceed '" + field.max_name + "'");
+	}
 #endif
 	Biome *b = BiomeManager::create(biometype);
 #if IS_VOPI_ENGINE
@@ -399,6 +443,18 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	b->slope_max = static_cast<float>(slope_max);
 	b->relief_min = static_cast<float>(relief_min);
 	b->relief_max = static_cast<float>(relief_max);
+	b->heat_min = static_cast<float>(bounds[0][0]);
+	b->heat_max = static_cast<float>(bounds[0][1]);
+	b->humidity_min = static_cast<float>(bounds[1][0]);
+	b->humidity_max = static_cast<float>(bounds[1][1]);
+	b->base_min = static_cast<float>(bounds[2][0]);
+	b->base_max = static_cast<float>(bounds[2][1]);
+	b->valley_depth_min = static_cast<float>(bounds[3][0]);
+	b->valley_depth_max = static_cast<float>(bounds[3][1]);
+	b->valley_pos_min = static_cast<float>(bounds[4][0]);
+	b->valley_pos_max = static_cast<float>(bounds[4][1]);
+	b->mountain_min = static_cast<float>(bounds[5][0]);
+	b->mountain_max = static_cast<float>(bounds[5][1]);
 #endif
 
 	getstringfield(L, index, "name", b->name);
@@ -601,6 +657,63 @@ int ModApiMapgen::l_get_biome_terrain(lua_State *L)
 	lua_setfield(L, -2, "slope");
 	lua_pushnumber(L, terrain.relief);
 	lua_setfield(L, -2, "relief");
+	return 1;
+}
+
+int ModApiMapgen::l_get_effective_biome_data(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+	luaL_checktype(L, 1, LUA_TTABLE);
+	v3s16 pos;
+	const char *names[] = {"x", "y", "z"};
+	for (int axis = 0; axis < 3; ++axis) {
+		lua_getfield(L, 1, names[axis]);
+		if (lua_type(L, -1) != LUA_TNUMBER) {
+			lua_pop(L, 1);
+			throw LuaError("get_effective_biome_data: coordinates must be numbers");
+		}
+		double value = lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		if (!std::isfinite(value))
+			throw LuaError("get_effective_biome_data: coordinates must be finite");
+		// Preserve doubleToInt's arithmetic, including rounding just below a
+		// half-node boundary, while rejecting values before narrowing.
+		value = std::trunc(value + (value > 0 ? 0.5 : -0.5));
+		if (value < -MAX_MAP_GENERATION_LIMIT || value > MAX_MAP_GENERATION_LIMIT)
+			throw LuaError("get_effective_biome_data: rounded coordinates are out of range");
+		pos[axis] = static_cast<s16>(value);
+	}
+
+	const BiomeGen *biomegen = getBiomeGen(L);
+	if (!biomegen || biomegen->getType() != BIOMEGEN_ORIGINAL)
+		return 0;
+	EffectiveBiomeData data;
+	if (!static_cast<const BiomeGenOriginal *>(biomegen)->getEffectiveBiomeData(pos, data))
+		return 0;
+
+	lua_createtable(L, 0, 11);
+	lua_pushinteger(L, data.biome);
+	lua_setfield(L, -2, "biome");
+	lua_pushnumber(L, data.form.base);
+	lua_setfield(L, -2, "base");
+	lua_pushnumber(L, data.form.valley_depth);
+	lua_setfield(L, -2, "valley_depth");
+	lua_pushnumber(L, data.form.valley_pos);
+	lua_setfield(L, -2, "valley_pos");
+	lua_pushnumber(L, data.form.mountain);
+	lua_setfield(L, -2, "mountain");
+	lua_pushnumber(L, data.heat);
+	lua_setfield(L, -2, "heat");
+	lua_pushnumber(L, data.humidity);
+	lua_setfield(L, -2, "humidity");
+	lua_pushnumber(L, data.raw_heat);
+	lua_setfield(L, -2, "raw_heat");
+	lua_pushnumber(L, data.raw_humidity);
+	lua_setfield(L, -2, "raw_humidity");
+	lua_pushnumber(L, data.climate_reference_height);
+	lua_setfield(L, -2, "climate_reference_height");
+	lua_pushnumber(L, data.river_bank_height);
+	lua_setfield(L, -2, "river_bank_height");
 	return 1;
 }
 #endif
@@ -2141,6 +2254,7 @@ void ModApiMapgen::Initialize(lua_State *L, int top)
 	API_FCT(get_biome_data);
 #if IS_VOPI_ENGINE
 	API_FCT(get_biome_terrain);
+	API_FCT(get_effective_biome_data);
 #endif
 	API_FCT(get_mapgen_object);
 	API_FCT(get_spawn_level);
@@ -2188,6 +2302,7 @@ void ModApiMapgen::InitializeEmerge(lua_State *L, int top)
 	API_FCT(get_biome_data);
 #if IS_VOPI_ENGINE
 	API_FCT(get_biome_terrain);
+	API_FCT(get_effective_biome_data);
 #endif
 	API_FCT(get_mapgen_object);
 
