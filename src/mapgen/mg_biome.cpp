@@ -260,6 +260,15 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 #if IS_VOPI_ENGINE
 	double dist_min = std::numeric_limits<double>::max();
 	double dist_min_blend = std::numeric_limits<double>::max();
+	// Priority outranks distance: a candidate replaces the current best when
+	// its priority is higher, or equal with a smaller distance.
+	s16 priority_closest = std::numeric_limits<s16>::min();
+	s16 priority_blend = std::numeric_limits<s16>::min();
+	auto outranks = [](const Biome *candidate, s16 best_priority,
+			double dist, double best_dist) {
+		return candidate->priority > best_priority ||
+			(candidate->priority == best_priority && dist < best_dist);
+	};
 #else
 	float dist_min = FLT_MAX;
 	float dist_min_blend = FLT_MAX;
@@ -325,6 +334,20 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		const float selection_dist = dist;
 #endif
 
+#if IS_VOPI_ENGINE
+		if (pos.Y <= b->max_pos.Y) { // Within y limits of biome b
+			if (outranks(b, priority_closest, selection_dist, dist_min)) {
+				priority_closest = b->priority;
+				dist_min = selection_dist;
+				biome_closest = b;
+			}
+		} else if (outranks(b, priority_blend, selection_dist, dist_min_blend)) {
+			// Blend area above biome b
+			priority_blend = b->priority;
+			dist_min_blend = selection_dist;
+			biome_closest_blend = b;
+		}
+#else
 		if (pos.Y <= b->max_pos.Y) { // Within y limits of biome b
 			if (selection_dist < dist_min) {
 				dist_min = selection_dist;
@@ -334,6 +357,7 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 			dist_min_blend = selection_dist;
 			biome_closest_blend = b;
 		}
+#endif
 	}
 
 	// Carefully tune pseudorandom seed variation to avoid single node dither
@@ -346,7 +370,16 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 	const u64 seed = static_cast<s64>(pos.Y + (heat + humidity) * 0.9f);
 	PcgRandom rng(seed);
 
-	if (biome_closest_blend && dist_min_blend <= dist_min &&
+#if IS_VOPI_ENGINE
+	// The blend candidate must outrank the in-range one, or tie it in
+	// priority and be at least as close, before the dither is consulted.
+	const bool blend_eligible = biome_closest_blend &&
+		(priority_blend > priority_closest ||
+		(priority_blend == priority_closest && dist_min_blend <= dist_min));
+#else
+	const bool blend_eligible = biome_closest_blend && dist_min_blend <= dist_min;
+#endif
+	if (blend_eligible &&
 			rng.range(0, biome_closest_blend->vertical_blend) >=
 			pos.Y - biome_closest_blend->max_pos.Y)
 		return biome_closest_blend;
@@ -408,6 +441,7 @@ ObjDef *Biome::clone() const
 	obj->valley_pos_max = valley_pos_max;
 	obj->mountain_min = mountain_min;
 	obj->mountain_max = mountain_max;
+	obj->priority = priority;
 #endif
 
 	return obj;

@@ -436,6 +436,22 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 			throw LuaError(std::string("Biome field '") + field.min_name +
 				"' must not exceed '" + field.max_name + "'");
 	}
+	// Selection priority: a whole number in the s16 range, default 0.
+	lua_Number priority = 0.0;
+	lua_getfield(L, index, "priority");
+	if (!lua_isnil(L, -1)) {
+		bool is_number = lua_type(L, -1) == LUA_TNUMBER;
+		priority = lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		if (!is_number || !std::isfinite(priority) ||
+				priority != std::floor(priority) ||
+				priority < std::numeric_limits<s16>::min() ||
+				priority > std::numeric_limits<s16>::max())
+			throw LuaError("Biome field 'priority' must be a whole number "
+				"within its allowed range");
+	} else {
+		lua_pop(L, 1);
+	}
 #endif
 	Biome *b = BiomeManager::create(biometype);
 #if IS_VOPI_ENGINE
@@ -455,6 +471,7 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	b->valley_pos_max = static_cast<float>(bounds[4][1]);
 	b->mountain_min = static_cast<float>(bounds[5][0]);
 	b->mountain_max = static_cast<float>(bounds[5][1]);
+	b->priority = static_cast<s16>(priority);
 #endif
 
 	getstringfield(L, index, "name", b->name);

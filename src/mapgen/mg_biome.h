@@ -128,6 +128,14 @@ public:
 	bool matchesClimate(float heat, float humidity) const;
 	bool hasFormConstraints() const;
 	bool matchesForm(const BiomeTerrainForm &form) const;
+
+	// Among the biomes that pass every bound at a position, only those of
+	// the highest priority compete by climate distance. This says "this
+	// biome, else the others" without spelling out the complement of its
+	// bounds in every other biome, which one box per biome cannot express.
+	// A blend candidate above its y_max dithers into the biome in range
+	// only when its priority is at least as high.
+	s16 priority = 0;
 #endif
 
 	virtual void resolveNodeNames();

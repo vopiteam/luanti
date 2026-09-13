@@ -216,14 +216,24 @@ unrestricted.
 | `valley_depth_min`, `valley_depth_max` | valley depth amplitude `valley_depth²`, in nodes | finite float ≥ 0 |
 | `valley_pos_min`, `valley_pos_max` | position in the valley profile, 0 at the river edge, 1 on the ridge | 0 to 1 |
 | `mountain_min`, `mountain_max` | mountain mask `max(mountain_height, 0) · gate`, 0 where no body can rise | finite float ≥ 0 |
+| `priority` | among the biomes passing every bound, only the highest priority competes by distance | whole number in the s16 range, default 0 |
 
 An inverted range, nonnumeric value, NaN, infinity, a value outside the float
-range or a nonzero value rounding to float zero is a registration error.
+range or a nonzero value rounding to float zero is a registration error, and
+so is a priority that is not a whole number in range.
 
 Selection order: Y and position bounds, climate bounds, form bounds, terrain
-constraints, then weighted heat/humidity distance among the survivors, with
-the usual registration-order ties and vertical blending. Several biomes may
-share one climate point when their bounds keep them apart. Climate bounds
+constraints, then priority, then weighted heat/humidity distance among the
+survivors, with the usual registration-order ties and vertical blending.
+Several biomes may share one climate point when their bounds keep them
+apart. Priority is for a region that one box cannot carve out of the others:
+a mountain body is `mountain_min = 10` between `y_min = 20` and `y_max = 59`,
+and without priority every other biome would need the three-part complement
+of that box in its own bounds. With `priority = 1` on the mountain biome the
+others keep their bounds and lose only where the mountain is eligible. A
+biome above its `y_max`, inside its `vertical_blend`, dithers into the biome
+in range only when its priority is at least as high; disjoint biomes of
+equal priority blend exactly as before. Climate bounds
 work on every mapgen. Form bounds need a mapgen with a column model, which is
 Valleys; elsewhere a biome with an operative form bound is ineligible, so keep
 an unbounded fallback for every climate a bounded set does not cover. The
@@ -241,7 +251,7 @@ Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
 ```
 
 ```lua
-    mountain_min = 40, y_min = 40, -- a mountain body high enough to be a peak
+    mountain_min = 10, y_min = 20, y_max = 59, priority = 1, -- a mountain body, ahead of the biomes it overlaps
 ```
 
 ## `core.get_biome_terrain(pos)`

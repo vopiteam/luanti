@@ -40,6 +40,7 @@ public:
 	void testBiomeFormRanges();
 	void testBiomeFormParsing();
 	void testBiomeFormSelection();
+	void testBiomePriority();
 	void testBiomeTerrainSelection(IGameDef *gamedef);
 	void testBiomeTerrainBlending(IGameDef *gamedef);
 	void testBiomeNumericDistances(IGameDef *gamedef);
@@ -85,6 +86,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testBiomeFormRanges);
 	TEST(testBiomeFormParsing);
 	TEST(testBiomeFormSelection);
+	TEST(testBiomePriority);
 	TEST(testBiomeTerrainSelection, gamedef);
 	TEST(testBiomeTerrainBlending, gamedef);
 	TEST(testBiomeNumericDistances, gamedef);
@@ -1291,9 +1293,11 @@ void TestMapgen::testBiomeFormParsing()
 		UASSERT(std::isinf(parsed->heat_min) && parsed->heat_min < 0.0f);
 		UASSERT(std::isinf(parsed->mountain_max) && parsed->mountain_max > 0.0f);
 		UASSERTEQ(float, parsed->valley_pos_max, 1.0f);
+		UASSERTEQ(int, parsed->priority, 0);
 	}
 	lua_settop(L, 0);
 	lua_newtable(L);
+	number("priority", 2.0);
 	number("heat_min", -14.0);
 	number("heat_max", 28.0);
 	number("humidity_max", 51.0);
@@ -1320,6 +1324,28 @@ void TestMapgen::testBiomeFormParsing()
 		UASSERTEQ(float, parsed->valley_pos_max, 0.15f);
 		UASSERTEQ(float, parsed->mountain_min, 10.0f);
 		UASSERTEQ(float, parsed->mountain_max, 40.0f);
+		UASSERTEQ(int, parsed->priority, 2);
+	}
+	lua_settop(L, 0);
+
+	// A priority is a whole number in the s16 range; anything else is rejected.
+	for (lua_Number invalid : {1.5, 40000.0, -40000.0,
+			std::numeric_limits<lua_Number>::infinity(),
+			std::numeric_limits<lua_Number>::quiet_NaN()}) {
+		lua_newtable(L);
+		number("priority", invalid);
+		reject();
+	}
+	lua_newtable(L);
+	lua_pushstring(L, "1");
+	lua_setfield(L, -2, "priority");
+	reject();
+	lua_newtable(L);
+	number("priority", -3.0);
+	{
+		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		UASSERT(parsed);
+		UASSERTEQ(int, parsed->priority, -3);
 	}
 	lua_settop(L, 0);
 
@@ -1478,6 +1504,99 @@ void TestMapgen::testBiomeFormSelection()
 	UASSERTEQ(biome_t, result.biome, anywhere->index);
 	UASSERTEQ(biome_t, worker->calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
 		ridge->index);
+}
+
+void TestMapgen::testBiomePriority()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	// Four biomes on one climate point: a plain up to 40 with a long blend
+	// above it, an upland from 20 to 59 blending two nodes up, a summit
+	// from 60, and a hot cell nearer to warm climates. Upland and summit
+	// outrank the other two.
+	auto plain = addTerrainTestBiome(manager, "plain", 50.0f, 50.0f);
+	plain->max_pos.Y = 40;
+	plain->vertical_blend = 100;
+	auto upland = addTerrainTestBiome(manager, "upland", 50.0f, 50.0f);
+	upland->min_pos.Y = 20;
+	upland->max_pos.Y = 59;
+	upland->vertical_blend = 2;
+	upland->priority = 1;
+	auto summit = addTerrainTestBiome(manager, "summit", 50.0f, 50.0f);
+	summit->min_pos.Y = 60;
+	summit->priority = 1;
+	auto hot = addTerrainTestBiome(manager, "hot", 65.0f, 50.0f);
+	hot->heat_min = 60.0f;
+	// Resolve definitions before cloning into an independent worker registry.
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	auto ndef = const_cast<NodeDefManager *>(server.getNodeDefManager());
+	for (Biome *biome : {plain, upland, summit, hot}) {
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		ndef->pendNodeResolve(biome);
+	}
+	ndef->setNodeRegistrationStatus(true);
+	ndef->runNodeResolveCallbacks();
+	BiomeParamsOriginal climate;
+	climate.np_heat = climate.np_humidity =
+		NoiseParams(50.0f, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	climate.np_heat_blend = climate.np_humidity_blend =
+		NoiseParams(0.0f, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	BiomeGenOriginal generator(&manager, &climate, v3s16(16));
+	auto at = [&](float heat, s16 y) {
+		return generator.calcBiomeFromNoise(heat, 50.0f, v3s16(0, y, 0))->index;
+	};
+	auto seen = [&](s16 y_min, s16 y_max, bool &upland_seen, bool &summit_seen) {
+		upland_seen = summit_seen = false;
+		for (s16 y = y_min; y <= y_max; ++y) {
+			for (float heat = 0.0f; heat <= 100.0f; heat += 1.0f) {
+				biome_t chosen = at(heat, y);
+				upland_seen |= chosen == upland->index;
+				summit_seen |= chosen == summit->index;
+			}
+		}
+	};
+
+	// Below the upland the plain and the hot cell compete by distance alone.
+	UASSERTEQ(biome_t, at(50.0f, 10), plain->index);
+	UASSERTEQ(biome_t, at(62.0f, 10), hot->index);
+	// Priority beats distance: the hot cell is nearer, the upland outranks it.
+	UASSERTEQ(biome_t, at(62.0f, 30), upland->index);
+	// A lower-priority blend candidate never dithers into a higher one: the
+	// plain's blend zone reaches 140, yet the upland holds 41..59 everywhere.
+	for (s16 y = 41; y <= 59; ++y)
+		for (float heat : {30.0f, 50.0f, 62.0f})
+			UASSERTEQ(biome_t, at(heat, y), upland->index);
+	// Equal priorities blend as before: the upland's two nodes above 59
+	// dither against the summit, and from 62 the summit stands alone.
+	bool upland_seen, summit_seen;
+	seen(60, 61, upland_seen, summit_seen);
+	UASSERT(upland_seen && summit_seen);
+	for (s16 y = 60; y <= 61; ++y)
+		for (float heat = 0.0f; heat <= 100.0f; heat += 1.0f) {
+			biome_t chosen = at(heat, y);
+			UASSERT(chosen == upland->index || chosen == summit->index);
+		}
+	UASSERTEQ(biome_t, at(50.0f, 62), summit->index);
+	UASSERTEQ(biome_t, at(70.0f, 62), summit->index);
+
+	// A higher-priority blend candidate still dithers into a lower one in range.
+	summit->priority = 0;
+	seen(60, 61, upland_seen, summit_seen);
+	UASSERT(upland_seen && summit_seen);
+	summit->priority = 1;
+
+	// Without the priority the nearer hot cell takes the upland's range.
+	upland->priority = 0;
+	UASSERTEQ(biome_t, at(62.0f, 30), hot->index);
+	upland->priority = 1;
+
+	// A clone carries the priority.
+	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
+	auto copied_upland = static_cast<Biome *>(copied_manager->getRaw(upland->index));
+	UASSERTEQ(int, copied_upland->priority, 1);
+	auto copied_hot = static_cast<Biome *>(copied_manager->getRaw(hot->index));
+	UASSERTEQ(int, copied_hot->priority, 0);
 }
 
 void TestMapgen::testBiomeTerrainRanges()
