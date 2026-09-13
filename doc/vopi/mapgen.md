@@ -114,6 +114,21 @@ is removed, whatever its size; everything standing on the ground, overhangs
 included, is kept. The pass runs before ores and decorations, so nothing is
 placed in or on a removed piece.
 
+The biome pass runs earlier still: the caves need the biomemap for the
+floors of their entrances, and the removal needs the caves. That pass
+records, per column, the biome selected at the first stone surface met from
+the top, so where that surface went since, eaten by a cave or removed as a
+piece, the record would name the biome of a height the column no longer
+has, while the ground under it was laid with the biome selected at its own
+surface, which can be another one when the surface that went stood in a
+higher Y band. After the removal the heightmap is rebuilt, and every column
+whose top moved since the biome pass has its biomemap entry selected again
+at the surface it has now, as that pass selects it: at the ground, under
+the lids the pass lays on water, such as ice, or, with no ground left in
+the mapchunk, at the liquid surface, or none. The nodes stay as laid;
+decorations and dust, which go by the biomemap, follow the surface that is
+there.
+
 ## `mgvalleys_floor_y`
 
 A setting rather than a flag. After the caves are carved, every void and
@@ -350,9 +365,11 @@ reference height. Selection uses the native weights, position and terrain
 restrictions, registration-order tie breaking and vertical blending. This is
 a model classification, not a lookup of the historical material of a node.
 In particular, a chunk's 2D biomemap can record a selection made at another Y,
-or reuse a selection from a water surface. Arbitrary-Y biome IDs therefore
-need not equal that biomemap. Check actual nodes separately when ground,
-water or occupancy matters.
+or reuse a selection from a water surface; where the caves or the floating
+piece removal moved the surface it is selected again at the one left, see
+`remove_floaters`. Arbitrary-Y biome IDs therefore need not equal that
+biomemap. Check actual nodes separately when ground, water or occupancy
+matters.
 
 The existing `get_heat`, `get_humidity` and `get_biome_data` APIs retain their
 raw-climate semantics. This function does not silently substitute their

@@ -59,6 +59,7 @@ public:
 	void testEffectiveClimateContextDemand();
 	void testValleysEffectiveClimate(IGameDef *gamedef);
 	void testValleysFormGeneration(IGameDef *gamedef);
+	void testValleysFloaterBiomes(IGameDef *gamedef);
 #endif
 };
 
@@ -105,6 +106,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testEffectiveClimateContextDemand);
 	TEST(testValleysEffectiveClimate, gamedef);
 	TEST(testValleysFormGeneration, gamedef);
+	TEST(testValleysFloaterBiomes, gamedef);
 #endif
 }
 
@@ -2338,6 +2340,186 @@ void TestMapgen::testBiomeTerrainFloaterSeeds()
 		params.spflags = 0;
 		UASSERT(createValleysBiomeTerrainSampler(params)->sample(
 				column.pos).height >= column.height);
+	}
+}
+
+void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
+{
+	// Two biomes on one climate point, told apart by their Y bands, and a
+	// block of stone set in the vmanip before generation, which the terrain
+	// pass leaves in place, hanging over the ground or the sea. The biome
+	// pass records the biome of the block's top for its columns; after the
+	// floating piece removal the biomemap must name the biome of the
+	// surface each column has left, selected as the pass selects it, and
+	// the nodes stay as laid.
+	MockServer server(getTestTempDirectory());
+	NodeDefManager ndef;
+	auto add_node = [&](const char *name, content_t source, bool walkable) {
+		ContentFeatures def = gamedef->ndef()->get(source);
+		def.name = name;
+		def.walkable = walkable;
+		return ndef.set(name, def);
+	};
+	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE, true);
+	const content_t water = add_node("mapgen_water_source", t_CONTENT_WATER, false);
+	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER, false);
+	// A walkable lid the biome pass lays on the water of a frozen sea
+	const content_t ice = add_node("test:ice", t_CONTENT_STONE, true);
+	MockBiomeManager manager(&server);
+	manager.setNodeDefManager(&ndef);
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	server.ndef()->cancelNodeResolveCallback(default_biome);
+	ndef.pendNodeResolve(default_biome);
+	auto add_biome = [&](const char *name) {
+		std::string top_name = std::string("test:") + name + "_top";
+		const content_t top = add_node(top_name.c_str(), t_CONTENT_GRASS, true);
+		auto biome = addTerrainTestBiome(manager, name, 50.0f, 50.0f);
+		biome->m_nodenames = default_biome->m_nodenames;
+		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+		biome->m_nodenames[0] = top_name;
+		ndef.pendNodeResolve(biome);
+		biome->c_top = top;
+		biome->depth_top = 1;
+		biome->c_filler = biome->c_stone = stone;
+		biome->depth_filler = 0;
+		biome->c_water = biome->c_water_top = water;
+		biome->depth_water_top = 1;
+		biome->c_river_water = river;
+		biome->c_riverbed = stone;
+		return biome;
+	};
+	auto ground = add_biome("ground");
+	auto high = add_biome("high");
+	ndef.setNodeRegistrationStatus(true);
+	ndef.runNodeResolveCallbacks();
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	// The ridge column of the form fixture: surface 32 and slope 16, so
+	// stone up to Y 52 and a floater floor at 8
+	MapgenValleysParams params;
+	params.seed = 12345;
+	params.chunksize = v3s16(1);
+	params.flags = MG_BIOMES;
+	params.spflags = MGVALLEYS_REMOVE_FLOATERS;
+	params.altitude_chill = 100;
+	params.mountain_cap = 0.0f;
+	params.np_terrain_height = constant_noise(0.0f);
+	params.np_valley_depth = constant_noise(4.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(1.0f);
+	params.np_inter_valley_fill = constant_noise(1.3125f);
+	params.np_filler_depth = constant_noise(0.0f);
+	params.np_mountain = constant_noise(1.0f);
+	params.np_mountain_height = constant_noise(20.0f);
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	MetricsBackend metrics;
+	EmergeManager emerge(&server, &metrics);
+	emerge.ndef = &ndef;
+
+	const s16 none = -MAX_MAP_GENERATION_LIMIT;
+	const biome_t ground_id = ground->index;
+	const biome_t high_id = high->index;
+	const struct {
+		const char *name;
+		s16 block_y;
+		s16 water_level;
+		bool frozen;        // the water top is the ice lid
+		s16 ground_max_y;   // 'ground' ends here, 'high' starts above it
+		v3s16 piece_min;    // the block of stone, relative to node_min
+		v3s16 piece_max;
+		bool removed;
+		biome_t under;      // biomemap of the piece's columns afterwards
+		s16 under_top;      // their heightmap afterwards, absolute
+		biome_t outside;    // biomemap of every other column
+		s16 outside_top;
+	} cases[] = {
+		// The piece over the ground goes; the ground wears its own biome
+		{"removed over the ground", 3, 0, false, 55,
+			v3s16(2, 10, 2), v3s16(5, 11, 5), true, ground_id, 52, ground_id, 52},
+		// A piece on the mapchunk edge is grounded and stays, biome and all
+		{"kept at the edge", 3, 0, false, 55,
+			v3s16(0, 10, 2), v3s16(3, 11, 5), false, high_id, 59, ground_id, 52},
+		// Nothing solid left in the mapchunk: no biome
+		{"removed over nothing", 4, 0, false, 55,
+			v3s16(2, 6, 2), v3s16(5, 7, 5), true, BIOME_NONE, none, BIOME_NONE, none},
+		// Over the sea the column falls back to the biome of the water
+		// surface, as the biome pass gives open water
+		{"removed over the sea", 4, 70, false, 72,
+			v3s16(2, 10, 2), v3s16(5, 11, 5), true, ground_id, none, ground_id, none},
+		// The ice lid tops the column but is not its ground: with the bed
+		// below the mapchunk the lid is the liquid surface
+		{"removed over a frozen sea", 4, 70, true, 72,
+			v3s16(2, 10, 2), v3s16(5, 11, 5), true, ground_id, 70, ground_id, 70},
+		// ... and with the bed in the mapchunk the biome is the bed's, as the
+		// biome pass selects it, not the lid's
+		{"removed over a frozen bed", 3, 60, true, 55,
+			v3s16(2, 14, 2), v3s16(5, 14, 5), true, ground_id, 60, ground_id, 60},
+	};
+	for (const auto &test : cases) {
+		infostream << "Valleys floater fixture: " << test.name << std::endl;
+		params.water_level = test.water_level;
+		ground->max_pos.Y = test.ground_max_y;
+		high->min_pos.Y = test.ground_max_y + 1;
+		ground->c_water_top = high->c_water_top = test.frozen ? ice : water;
+		BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+		source.setValleysClimate(params);
+		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		const v3s16 node_min(-16, test.block_y * MAP_BLOCKSIZE, 16);
+		const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+		const v3s16 piece_min = node_min + test.piece_min;
+		const v3s16 piece_max = node_min + test.piece_max;
+		BlockMakeData data;
+		data.blockpos_min = data.blockpos_max = v3s16(-1, test.block_y, 1);
+		data.seed = params.seed;
+		data.nodedef = &ndef;
+		data.vmanip = new MapgenTestVManip(VoxelArea(
+			node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
+		auto node_at = [&](s16 x, s16 y, s16 z) -> MapNode & {
+			return data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)];
+		};
+		for (s16 z = piece_min.Z; z <= piece_max.Z; ++z)
+		for (s16 y = piece_min.Y; y <= piece_max.Y; ++y)
+		for (s16 x = piece_min.X; x <= piece_max.X; ++x)
+			node_at(x, y, z) = MapNode(stone);
+		mapgen.makeChunk(&data);
+
+		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+		for (s16 x = node_min.X; x <= node_max.X; ++x) {
+			const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+			const bool under = x >= piece_min.X && x <= piece_max.X &&
+				z >= piece_min.Z && z <= piece_max.Z;
+			const s16 top = under ? test.under_top : test.outside_top;
+			UASSERTEQ(s16, mapgen.heightmap[index], top);
+			UASSERTEQ(biome_t, mapgen.biomemap[index], under ? test.under : test.outside);
+			if (top == none)
+				continue;
+			// The top node is the lid, or wears the biome the biomemap names
+			auto biome = static_cast<Biome *>(manager.getRaw(mapgen.biomemap[index]));
+			const content_t top_node = node_at(x, top, z).getContent();
+			if (test.frozen && top == test.water_level) {
+				UASSERTEQ(content_t, top_node, ice);
+			} else {
+				UASSERTEQ(content_t, top_node, biome->c_top);
+			}
+		}
+		for (s16 z = piece_min.Z; z <= piece_max.Z; ++z)
+		for (s16 y = piece_min.Y; y <= piece_max.Y; ++y)
+		for (s16 x = piece_min.X; x <= piece_max.X; ++x) {
+			const content_t c = node_at(x, y, z).getContent();
+			if (test.removed) {
+				UASSERTEQ(content_t, c, CONTENT_AIR);
+			} else {
+				UASSERT(c == high->c_top || c == stone);
+			}
+		}
 	}
 }
 

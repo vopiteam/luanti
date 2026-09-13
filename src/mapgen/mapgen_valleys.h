@@ -190,6 +190,13 @@ private:
 	// the 3D noise does, so any piece reaching it stands on the ground
 	std::vector<float> floater_floor;
 	void removeFloaters();
+	// The top of every column as the biome pass left it, to find the
+	// columns whose surface the caves or the removal moved since; and the
+	// walkable nodes the pass lays on water, ice for one, which top a
+	// column without being its ground
+	std::vector<s16> biome_heightmap;
+	std::vector<content_t> water_lids;
+	void reselectBiomes();
 #endif
 
 	virtual int generateTerrain();

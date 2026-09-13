@@ -129,6 +129,16 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	mountain_noise_max  = 0.0f;
 	if (spflags & MGVALLEYS_MOUNTAINS)
 		column_reach = mountain_cap_reach;
+	for (size_t i = 0; i < m_bmgr->getNumObjects(); i++) {
+		const Biome *b = (const Biome *)m_bmgr->getRaw(i);
+		if (!b)
+			continue;
+		for (content_t c : {b->c_water_top, b->c_water, b->c_river_water}) {
+			if (c != CONTENT_IGNORE && ndef->get(c).walkable &&
+					!CONTAINS(water_lids, c))
+				water_lids.push_back(c);
+		}
+	}
 #endif
 
 	cave_width         = params->cave_width;
@@ -396,6 +406,19 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	// Place biome-specific nodes and build biomemap
 	if (flags & MG_BIOMES) {
 		generateBiomes();
+#if IS_VOPI_ENGINE
+		if (spflags & MGVALLEYS_REMOVE_FLOATERS) {
+			// The top of every column as the biome pass leaves it, lids
+			// on water included: the biomemap is selected again where the
+			// caves or the floating piece removal move it
+			biome_heightmap.resize((size_t)csize.X * csize.Z);
+			u32 index = 0;
+			for (s16 z = node_min.Z; z <= node_max.Z; z++)
+			for (s16 x = node_min.X; x <= node_max.X; x++, index++)
+				biome_heightmap[index] = findGroundLevel(v2s16(x, z),
+					node_min.Y, node_max.Y);
+		}
+#endif
 	}
 
 	// Generate tunnels, caverns and large randomwalk caves
@@ -446,6 +469,10 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 		updateHeightmap(node_min, node_max);
 		removeFloaters();
 		updateHeightmap(node_min, node_max);
+		// The caves and the removal moved surfaces the biomemap was
+		// selected at
+		if (flags & MG_BIOMES)
+			reselectBiomes();
 	}
 #endif
 
@@ -901,6 +928,51 @@ void MapgenValleys::removeFloaters()
 		for (const v3s16 &p : piece)
 			vm->m_data[vm->m_area.index(p.X, p.Y, p.Z)] =
 				(p.Y <= water_level) ? n_water : n_air;
+	}
+}
+
+
+// The biome pass records, per column, the biome selected at the first
+// stone surface met on the way down, and it runs before the caves, whose
+// entrance floors need that record, so before the floating piece removal
+// as well. Where that surface went since, eaten by a cave or removed as a
+// piece, the record names the biome of a height the column no longer has,
+// while the ground under it was laid with the biome selected at its own
+// surface: the decorations and the dust, which go by the record, would
+// follow the surface that is gone. Every column whose top moved since the
+// biome pass gets the biome selected at its surface now, as the pass
+// selects it: at the ground under the lids the pass lays on water, or,
+// with no ground left in the mapchunk, at the liquid surface, or none.
+// The nodes stay as laid.
+void MapgenValleys::reselectBiomes()
+{
+	const v3s32 &em = vm->m_area.getExtent();
+	u32 index = 0;
+	for (s16 z = node_min.Z; z <= node_max.Z; z++)
+	for (s16 x = node_min.X; x <= node_max.X; x++, index++) {
+		const s16 top = heightmap[index];
+		if (top == biome_heightmap[index])
+			continue;
+		// Down from the top through the lids and the liquid to the ground
+		s16 y = top;
+		if (y >= node_min.Y) {
+			u32 vi = vm->m_area.index(x, y, z);
+			while (y >= node_min.Y) {
+				const content_t c = vm->m_data[vi].getContent();
+				if (ndef->get(c).walkable && !CONTAINS(water_lids, c))
+					break;
+				y--;
+				VoxelArea::add_y(em, vi, -1);
+			}
+		}
+		if (y < node_min.Y) {
+			// No ground in the mapchunk: the liquid surface, which a lid
+			// on top is, as the biome pass falls back to for open water
+			y = (top >= node_min.Y) ? top :
+				findLiquidSurface(v2s16(x, z), node_min.Y, node_max.Y);
+		}
+		biomemap[index] = (y < node_min.Y) ? BIOME_NONE :
+			biomegen->getBiomeAtIndex(index, v3s16(x, y, z))->index;
 	}
 }
 #endif
