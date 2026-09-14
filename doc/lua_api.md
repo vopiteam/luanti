@@ -9651,6 +9651,7 @@ child will follow movement and rotation of that bone.
                 Will use tonemaps, if set to `"default"`. (default: `"default"`)
         * `fog`: A table with following optional fields:
             * `fog_distance`: integer, set an upper bound for the client's viewing_range.
+               The nonnegative range of this signed-16-bit field is 0..32767.
                Any value >= 0 sets the desired upper bound for viewing_range,
                disables range_all and prevents disabling fog (F3 key by default).
                Any value < 0 resets the behavior to being client-controlled.
@@ -9663,6 +9664,11 @@ child will follow movement and rotation of that bone.
             * `fog_color`: ColorSpec, override the color of the fog.
                Unlike `base_color` above this will apply regardless of the skybox type.
                (default: `"#00000000"`, which means no override)
+               With an enabled VOPI day cycle and `type = "regular"`, RGB is
+               modulated by sky/cave brightness and alpha blends it over the
+               automatic fog color. Alpha zero keeps automatic fog; alpha 255
+               fully overrides it. Effective fog range/start changes are
+               smoothed on the client. See [Configurable day cycle](vopi/day-cycle.md).
         * `auto_dim_skybox`: boolean, whether to dim skybox brightness if
           the sky is assumed not to be visible (e.g. in caves),
           based on a hardcoded and sometimes buggy heuristic.
@@ -11886,13 +11892,15 @@ performance and computing power the practical limit is much lower.
     -- Any x, y or z field left undefined defaults to -31000 in 'min_pos' or
     -- 31000 in 'max_pos'.
 
-    -- VOPI Engine: optional terrain bounds; Valleys only.
-    -- slope_min / slope_max: inclusive degrees in [0, 90], defaults 0 / 90.
-    -- relief_min / relief_max: inclusive local height difference in nodes,
-    -- defaults 0 / unlimited. Explicit bounds must be finite and nonnegative.
-    -- All bounds must pass before climate selection. They do not shape terrain.
-    -- Without a terrain provider, restrictive biomes are ineligible.
-    -- See doc/vopi/mapgen.md for sampling scale and core.get_biome_terrain().
+    -- VOPI Engine: optional inclusive bounds and a selection priority.
+    -- heat_min / heat_max, humidity_min / humidity_max: the climate the
+    -- selector receives, on every mapgen. base_min / base_max,
+    -- valley_depth_min / valley_depth_max, valley_pos_min / valley_pos_max,
+    -- mountain_min / mountain_max: the form of the column, Valleys only;
+    -- elsewhere a biome with such a bound is ineligible. priority: among
+    -- the biomes passing every bound, only the highest competes by
+    -- climate distance. None of them shapes terrain.
+    -- See doc/vopi/mapgen.md, "Biome climate and form bounds".
 
     vertical_blend = 8,
     -- Vertical distance in nodes above 'y_max' over which the biome will

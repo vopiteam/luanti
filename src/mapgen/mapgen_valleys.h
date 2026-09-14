@@ -33,6 +33,8 @@ class BiomeGenOriginal;
 extern const FlagDesc flagdesc_mapgen_valleys[];
 
 #if IS_VOPI_ENGINE
+struct MapgenValleysParams;
+
 struct ValleysClimate {
 	float heat;
 	float humidity;
@@ -45,6 +47,50 @@ struct ValleysClimate {
 // are treated as 1, including zero from older configurations.
 ValleysClimate calcValleysClimate(float heat, float humidity,
 	float base, s16 column_max_y, int water_level, float altitude_chill, u32 flags);
+
+// The 2D column model of Valleys, shared by the generator and the biome
+// terrain sampler so that a point query and generation describe a column
+// the same way. These are the few parameters the model depends on.
+struct ValleysColumnParams {
+	float water_level;
+	float river_size_factor;
+	float river_depth_bed;
+	float river_valley_width;
+	float river_bank_height;
+	float mountain_river_width;
+	bool sea_level_rivers;
+
+	explicit ValleysColumnParams(const MapgenValleysParams &params);
+};
+
+// The terrain of one column, from its 2D noise values
+struct ValleysColumn {
+	float surface_y;      // terrain surface
+	float base;           // river bank level
+	float slope;          // amplitude of the 3D relief
+	float river;          // distance from the river edge, negative inside
+	float river_y;        // river water surface
+	float valley_profile;
+	bool river_water;     // sea level channel carrying river water
+	// The form of the column, for biome selection: the region level before
+	// the river-bank clamp, the valley depth amplitude, and the position in
+	// the valley profile, 0 at the river edge and 1 on the ridge
+	float region_level;
+	float valley_depth;
+	float valley_pos;
+};
+
+ValleysColumn calcValleysColumn(const ValleysColumnParams &params, float n_slope,
+	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile);
+
+// The gate of the mountain body in a column: 0 in the river channel and 1
+// beyond 'mountain_river_width' of the valley profile
+float valleysMountainGate(const ValleysColumn &c, float mountain_river_width);
+
+// The foot of the mountain body in a column: the 3D noise at the terrain
+// surface, through the gate, where positive
+float valleysMountainFoot(const NoiseParams &np_mountain, float x, float z,
+	float surface_y, float gate, s32 seed);
 #endif
 
 
@@ -140,6 +186,10 @@ private:
 #endif
 
 	// The terrain of one column, from the 2D noises
+#if IS_VOPI_ENGINE
+	using Column = ValleysColumn;
+	ValleysColumnParams column_params;
+#else
 	struct Column {
 		float surface_y;      // terrain surface
 		float base;           // river bank level
@@ -149,6 +199,7 @@ private:
 		float valley_profile;
 		bool river_water;     // sea level channel carrying river water
 	};
+#endif
 	void terrainColumn(float n_slope, float n_rivers, float n_terrain_height,
 		float n_valley, float n_valley_profile, Column &c) const;
 	Column columnAt(s16 x, s16 z) const;
@@ -191,9 +242,9 @@ private:
 	std::vector<float> floater_floor;
 	void removeFloaters();
 	// The top of every column as the biome pass left it, to find the
-	// columns whose surface the caves or the removal moved since; and the
-	// walkable nodes the pass lays on water, ice for one, which top a
-	// column without being its ground
+	// columns whose surface the caves, the floor or the removal moved
+	// since; and the walkable nodes the pass lays on water, ice for one,
+	// which top a column without being its ground
 	std::vector<s16> biome_heightmap;
 	std::vector<content_t> water_lids;
 	void reselectBiomes();

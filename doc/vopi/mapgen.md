@@ -14,9 +14,15 @@ integer-truncated 2D terrain surface of the column, computed from the same
 column model in every generation pass and in point queries. Stone generated in
 the pass, 3D relief and mountain bodies above the 2D surface do not change
 the climate; where a column sits in the landscape is described by the biome
-form bounds below instead. If all three correction flags are disabled, the
-final correction call and climate-map writes are skipped; `vary_river_depth`
-still runs independently.
+form bounds below instead. The generation pass writes this climate into the
+heat and humidity maps of every column, so the biomes of a mapchunk and a
+point query see one climate; with all three correction flags disabled it is
+the scalar raw climate and the column model is not consulted for it.
+`vary_river_depth` still runs on the bulk noise maps of the pass.
+
+The 2D column model is one function, `calcValleysColumn`, shared by the
+generator and the biome terrain sampler: the generator feeds it the bulk
+noise of the generation area, the sampler the scalar noise of one column.
 
 With `IS_VOPI_ENGINE` enabled, `mgvalleys_altitude_chill` has an effective
 minimum of **1**. A zero setting is normalized when mapgen parameters are read,
@@ -121,11 +127,12 @@ the top, so where that surface went since, eaten by a cave or removed as a
 piece, the record would name the biome of a height the column no longer
 has, while the ground under it was laid with the biome selected at its own
 surface, which can be another one when the surface that went stood in a
-higher Y band. After the removal the heightmap is rebuilt, and every column
-whose top moved since the biome pass has its biomemap entry selected again
-at the surface it has now, as that pass selects it: at the ground, under
-the lids the pass lays on water, such as ice, or, with no ground left in
-the mapchunk, at the liquid surface, or none. The nodes stay as laid;
+higher Y band. After the caves, the solid floor and the removal, whichever
+of them the flags enable, the heightmap is rebuilt, and every column whose
+top moved since the biome pass has its biomemap entry selected again at
+the surface it has now, as that pass selects it: at the ground, under the
+lids the pass lays on water, such as ice, or, with no ground left in the
+mapchunk, at the liquid surface, or none. The nodes stay as laid;
 decorations and dust, which go by the biomemap, follow the surface that is
 there.
 
@@ -167,61 +174,12 @@ positions and rotation, and a seed reproduces the world node for node.
 Schematics placed from Lua with `core.place_schematic` and
 `core.place_schematic_on_vmanip` keep the upstream behaviour.
 
-## Biome terrain constraints
-
-With `IS_VOPI_ENGINE`, `core.register_biome` accepts four optional, inclusive
-bounds. They select biomes for the existing terrain; they do not change terrain
-noise, density, rivers or the generation order.
-
-| Field | Unit | Default | Accepted explicit values |
-|---|---|---|---|
-| `slope_min` | degrees | 0 | finite number from 0 to 90 |
-| `slope_max` | degrees | 90 | finite number from 0 to 90 |
-| `relief_min` | nodes | 0 | finite nonnegative number representable as a float |
-| `relief_max` | nodes | unlimited | finite nonnegative number representable as a float |
-
-An inverted range, nonnumeric value, NaN or infinity is a registration error.
-All bounds must pass, together with the existing position and Y bounds, before
-weighted heat/humidity distance selects the winner. A terrain-rejected biome
-cannot enter through `vertical_blend`. Keep an unconstrained fallback biome
-for any climate/height that the constrained biomes do not cover; if no candidate
-passes, the existing default biome is returned.
-
-With `IS_VOPI_ENGINE`, a nonfinite weighted climate distance is recomputed in
-double precision from the original float inputs. This keeps finite climate
-centers and small positive finite weights selectable when float subtraction,
-squaring or division overflows. Ordinary finite float distances retain their
-rounding, registration-order ties and vertical blending rules. A distance
-equal to `FLT_MAX` is also a valid candidate, rather than the no-candidate
-sentinel. Builds without `IS_VOPI_ENGINE` retain the upstream selection path.
-
-Only Valleys supplies terrain metrics. On other mapgens, a biome with an
-operative terrain restriction is ineligible. Bounds equal to the unrestricted
-defaults (`slope_min = 0`, `slope_max = 90`, `relief_min = 0`) do not impose a
-restriction. Definitions without restrictions preserve the original selection
-and do not sample terrain. A definition is copied with its bounds into emerge
-threads.
-
-For example, the following fields may be added to a complete biome definition:
-
-```lua
-    y_min = 2,
-    y_max = 80,
-    slope_max = 12,
-    relief_max = 20,
-```
-
-These are illustrative thresholds, not universal values for a biome type.
-Y remains the position being classified, while slope and relief describe the
-natural surface above that X/Z, including for an underground biome query.
-
 ## Biome climate and form bounds
 
-With `IS_VOPI_ENGINE`, `core.register_biome` also accepts inclusive bounds on
-the climate the selector receives and on the terrain form of the column. Like
-the terrain constraints, they select among the existing terrain and change
-neither noise nor generation order. All are optional; an omitted bound is
-unrestricted.
+With `IS_VOPI_ENGINE`, `core.register_biome` accepts inclusive bounds on the
+climate the selector receives and on the terrain form of the column. They
+select among the existing terrain and change neither noise nor generation
+order. All are optional; an omitted bound is unrestricted.
 
 | Field | Meaning | Accepted explicit values |
 |---|---|---|
@@ -237,9 +195,12 @@ An inverted range, nonnumeric value, NaN, infinity, a value outside the float
 range or a nonzero value rounding to float zero is a registration error, and
 so is a priority that is not a whole number in range.
 
-Selection order: Y and position bounds, climate bounds, form bounds, terrain
-constraints, then priority, then weighted heat/humidity distance among the
-survivors, with the usual registration-order ties and vertical blending.
+Selection order: Y and position bounds, climate bounds, form bounds, then
+priority, then weighted heat/humidity distance among the survivors, with
+the usual registration-order ties and vertical blending. A biome rejected by
+a bound cannot enter through `vertical_blend`; if no candidate passes, the
+default biome is returned, so keep an unbounded fallback for every climate a
+bounded set does not cover.
 Several biomes may share one climate point when their bounds keep them
 apart. Priority is for a region that one box cannot carve out of the others:
 a mountain body is `mountain_min = 10` between `y_min = 20` and `y_max = 59`,
@@ -250,10 +211,12 @@ biome above its `y_max`, inside its `vertical_blend`, dithers into the biome
 in range only when its priority is at least as high; disjoint biomes of
 equal priority blend exactly as before. Climate bounds
 work on every mapgen. Form bounds need a mapgen with a column model, which is
-Valleys; elsewhere a biome with an operative form bound is ineligible, so keep
-an unbounded fallback for every climate a bounded set does not cover. The
+Valleys; elsewhere a biome with an operative form bound is ineligible. The
 form is the modeled 2D column, independent of chunks, generated nodes and
 player edits; it is sampled at most once per selection and cached per column.
+Definitions without bounds preserve the original selection and never sample
+the column. A definition is copied with its bounds and priority into the
+emerge threads.
 
 The form values describe the same column model as
 `get_effective_biome_data`, so a query and generation agree on them.
@@ -269,54 +232,48 @@ Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
     mountain_min = 10, y_min = 20, y_max = 59, priority = 1, -- a mountain body, ahead of the biomes it overlaps
 ```
 
+### Distance precision
+
+With `IS_VOPI_ENGINE`, a nonfinite weighted climate distance is recomputed in
+double precision from the original float inputs. This keeps finite climate
+centers and small positive finite weights selectable when float subtraction,
+squaring or division overflows. Ordinary finite float distances retain their
+rounding, registration-order ties and vertical blending rules. A distance
+equal to `FLT_MAX` is also a valid candidate, rather than the no-candidate
+sentinel. Builds without `IS_VOPI_ENGINE` retain the upstream selection path.
+
 ## `core.get_biome_terrain(pos)`
 
-Available in server and emerge Lua environments. Returns
-`{height = number, slope = number, relief = number}` for Valleys, or `nil` when
-no supported terrain sampler is available (including before mapgen setup).
-Only X/Z select the surface; Y does not select a cave floor or a vertical chunk.
-No mapblocks need to be loaded or generated first.
+Available in server and emerge Lua environments. Returns `{height = number}`
+for Valleys, or `nil` when no column model is available (including before
+mapgen setup). `pos` is read like the position of `get_effective_biome_data`
+below; only X/Z select the column, Y does not select a cave floor or a
+vertical chunk. No mapblocks need to be loaded or generated first.
 
-The query and biome filter use the same deterministic modeled natural surface.
-It includes the base 3D density, mountain bodies, mountain caps, solid floor,
-`carve_cliffs` and removal of natural floating components. The latter two use
-canonical chunk bounds, including components retained at chunk boundaries,
-the supporting floor, the native component-size limit and the native seeding
-rule: only a column's topmost solid node starts a fill, and not one whose run
-of solid nodes reaches the floor or the chunk bottom.
+`height` is the highest node of the modeled natural surface of the column:
+the base 3D density, mountain bodies, mountain caps, the solid floor,
+`carve_cliffs` and the removal of natural floating components. The latter
+two use canonical chunk bounds, including components retained at chunk
+boundaries, the supporting floor, the native component-size limit and the
+native seeding rule: only a column's topmost solid node starts a fill, and
+not one whose run of solid nodes reaches the floor or the chunk bottom.
 
 Cave carving and changes to biome materials are excluded: they depend on the
 already selected biome, so including their complete effects before selection
 would create a dependency cycle. Decorations and player edits are excluded
-as well. The query describes the landscape for classification, not the exact
-final visible voxel surface. Water does not replace the ground below it.
+as well. The query describes the landscape, not the exact final visible
+voxel surface. Water does not replace the ground below it.
 
-Surface heights are sampled on a world-aligned lattice every **8 nodes**.
-At each lattice point:
+Biome selection never uses this height: a biome lives where its Y bands and
+form bounds say. The query is for tools that describe the world without
+generating it, such as a map of the modeled surface. Its caches are bounded
+and owned by each generator; every cached value depends on the mapgen
+parameters and the world position alone, so they are kept across mapchunks
+and discarded only when full, without affecting results.
 
-- `height` is the highest modeled solid node, in node coordinates.
-- `slope` is `atan(g)` in degrees. For each axis, take the larger absolute
-  height difference to either adjacent sample, divided by 8. Combine these
-  X/Z derivatives with `hypot`; `g` is the larger of that result and each
-  absolute diagonal height difference divided by `8 * sqrt(2)`. Opposite
-  flanks of a ridge or valley therefore cannot cancel each other.
-- `relief` is the highest minus the lowest sampled height in a square with
-  radius **16 nodes** (5 by 5 samples).
-
-Between lattice points, all three metrics are bilinearly interpolated.
-Negative coordinates use floor alignment. Sampling extends beyond the active
-chunk and is independent of its Y range, generation order and saved mapblocks.
-These smoothed metrics cannot detect every feature narrower than 8 nodes.
-Caches are bounded and owned by each generator. Every cached value depends on
-the mapgen parameters and the world position alone, so they are kept across
-mapchunks and discarded only when full, without affecting results. Restrictive
-candidates and explicit API queries compute metrics on demand; without either,
-no heights are sampled.
-
-`core.get_biome_data(pos)` applies terrain restrictions but retains its existing
-raw heat/humidity semantics. Valleys adjusts the climate during generation;
-this API therefore still does not promise the same biome ID as the generated
-biomemap. The new terrain query does not change that older climate distinction.
+`core.get_biome_data(pos)` retains its raw heat/humidity semantics. Valleys
+generates with the effective climate; this API therefore still does not
+promise the same biome ID as the generated biomemap.
 
 ## `core.get_effective_biome_data(pos)`
 
@@ -356,13 +313,14 @@ and generation order. The column height is the integer-truncated 2D surface,
 clamped to the engine's global generation limits; the climate reference is
 the maximum of that height and the river-bank level. 3D relief, mountain
 bodies, cliff carving, floater removal, the solid floor and caves do not enter
-the climate. This is a separate model from the smoothed, post-carving
+the climate. This is a separate model from the post-carving
 `get_biome_terrain().height`. The four form fields are the values the biome
 form bounds are compared with.
 
 Query Y selects the vertical biome band; it does not replace the climate
-reference height. Selection uses the native weights, position and terrain
-restrictions, registration-order tie breaking and vertical blending. This is
+reference height. Selection uses the native weights, position, climate and
+form bounds, priority, registration-order tie breaking and vertical
+blending. This is
 a model classification, not a lookup of the historical material of a node.
 In particular, a chunk's 2D biomemap can record a selection made at another Y,
 or reuse a selection from a water surface; where the caves or the floating

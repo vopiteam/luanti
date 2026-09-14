@@ -16,10 +16,7 @@
 
 namespace {
 
-constexpr s32 SAMPLE_STEP = 8;
-constexpr s32 RELIEF_RADIUS = 16;
 constexpr size_t HEIGHT_CACHE_LIMIT = 4096;
-constexpr size_t METRIC_CACHE_LIMIT = 2048;
 constexpr size_t COLUMN_CACHE_LIMIT = 32768;
 constexpr size_t CAP_CACHE_LIMIT = 4096;
 constexpr size_t CAP_ROW_CACHE_LIMIT = 32768;
@@ -27,25 +24,11 @@ constexpr size_t CLIMATE_CACHE_LIMIT = 32768;
 constexpr size_t VOXEL_CACHE_LIMIT = 262144;
 constexpr size_t TOP_CACHE_LIMIT = 16384;
 constexpr size_t COMPONENT_LIMIT = 65536;
-constexpr float RAD_TO_DEG = 57.29577951308232f;
 
 u64 columnKey(s32 x, s32 z)
 {
 	return (static_cast<u64>(static_cast<u32>(x)) << 32) |
 		static_cast<u32>(z);
-}
-
-s32 latticeFloor(s32 value)
-{
-	s32 remainder = value % SAMPLE_STEP;
-	if (remainder < 0)
-		remainder += SAMPLE_STEP;
-	return value - remainder;
-}
-
-float interpolate(float a, float b, float c, float d, float x, float z)
-{
-	return (a + (b - a) * x) * (1.0f - z) + (c + (d - c) * x) * z;
 }
 
 // Value noise is bounded by one, and interpolation does not increase that
@@ -98,13 +81,9 @@ s32 chunkMinimum(s32 coordinate, s32 blocks)
 
 struct ValleysTerrainParams {
 	s32 seed;
+	ValleysColumnParams column;
 	float water_level;
-	float river_size_factor;
-	float river_depth_bed;
-	float river_valley_width;
-	float river_bank_height;
 	s32 floor_y;
-	bool sea_level_rivers;
 	bool mountains;
 	bool carve_cliffs;
 	bool remove_floaters;
@@ -112,7 +91,6 @@ struct ValleysTerrainParams {
 	float carve_zero_height;
 	s32 carve_reach;
 	float carve_undercut;
-	float mountain_river_width;
 	float mountain_cap;
 	float mountain_cap_height;
 	s32 mountain_cap_reach;
@@ -131,13 +109,9 @@ struct ValleysTerrainParams {
 
 	explicit ValleysTerrainParams(const MapgenValleysParams &p) :
 		seed(static_cast<s32>(p.seed)),
+		column(p),
 		water_level(p.water_level),
-		river_size_factor(p.river_size / 100.0f),
-		river_depth_bed(p.river_depth + 1.0f),
-		river_valley_width(p.river_valley_width),
-		river_bank_height(p.river_bank_height),
 		floor_y(p.floor_y),
-		sea_level_rivers(p.spflags & MGVALLEYS_SEA_LEVEL_RIVERS),
 		mountains(p.spflags & MGVALLEYS_MOUNTAINS),
 		carve_cliffs(p.spflags & MGVALLEYS_CARVE_CLIFFS),
 		remove_floaters(p.spflags & MGVALLEYS_REMOVE_FLOATERS),
@@ -146,7 +120,6 @@ struct ValleysTerrainParams {
 		carve_zero_height(std::fmax(static_cast<float>(p.carve_zero_height), 1.0f)),
 		carve_reach(static_cast<s16>(p.carve_reach)),
 		carve_undercut(p.carve_undercut),
-		mountain_river_width(std::fmax(p.mountain_river_width, 0.01f)),
 		mountain_cap(p.mountain_cap),
 		mountain_cap_height(std::fmax(static_cast<float>(p.mountain_cap_height), 1.0f)),
 		mountain_cap_reach(std::min<u16>(p.mountain_cap_reach, 32)),
@@ -173,7 +146,7 @@ struct ValleysTerrainParams {
 	}
 };
 
-class ValleysBiomeTerrainSampler final : public HeightmapBiomeTerrainSampler {
+class ValleysBiomeTerrainSampler final : public BiomeTerrainSampler {
 public:
 	explicit ValleysBiomeTerrainSampler(const MapgenValleysParams &params) :
 		m_params(params)
@@ -185,6 +158,7 @@ public:
 		return std::unique_ptr<BiomeTerrainSampler>(new ValleysBiomeTerrainSampler(m_params));
 	}
 
+	float sampleHeight(v2s16 pos) const override;
 	bool sampleClimate(v2s16 pos, BiomeClimateContext &out) const override;
 
 	void beginChunk() override
@@ -202,21 +176,6 @@ public:
 		if (m_caps.size() > CAP_CACHE_LIMIT / 2)
 			m_caps.clear();
 	}
-
-	void resetCache() override
-	{
-		HeightmapBiomeTerrainSampler::resetCache();
-		m_columns.clear();
-		m_caps.clear();
-		m_cap_rows.clear();
-		m_climates.clear();
-		m_carves.clear();
-		m_voxels.clear();
-		m_tops.clear();
-	}
-
-protected:
-	float sampleHeight(s32 x, s32 z) const override;
 
 private:
 	explicit ValleysBiomeTerrainSampler(const ValleysTerrainParams &params) :
@@ -241,6 +200,7 @@ private:
 		s32 ymax;
 	};
 	enum Voxel : u8 { AIR, SOLID, KEPT, REMOVED };
+	float modelHeight(s32 x, s32 z) const;
 	Column columnAt(s32 x, s32 z) const;
 	Carve carveAt(s32 x, s32 z) const;
 	TerrainChunk chunkAt(const TerrainPoint &point) const;
@@ -258,6 +218,7 @@ private:
 	float capRowAt(s32 x, s32 z) const;
 	float capAt(s32 x, s32 z) const;
 	const ValleysTerrainParams m_params;
+	mutable std::unordered_map<u64, float> m_heights;
 	mutable std::unordered_map<u64, Column> m_columns;
 	mutable std::unordered_map<u64, float> m_caps;
 	mutable std::unordered_map<u64, float> m_cap_rows;
@@ -274,59 +235,25 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 	if (found != m_columns.end())
 		return found->second;
 
+	// The generator's own column model on the scalar noise of this column.
+	// No node data, climate adjustments or mapgen noise buffers enter.
 	const auto &p = m_params;
-	float n_slope = NoiseFractal2D(&p.slope, x, z, p.seed);
-	float n_rivers = NoiseFractal2D(&p.rivers, x, z, p.seed);
-	float n_terrain = NoiseFractal2D(&p.terrain_height, x, z, p.seed);
-	float n_valley = NoiseFractal2D(&p.valley_depth, x, z, p.seed);
-	float n_profile = NoiseFractal2D(&p.valley_profile, x, z, p.seed);
-	float valley_d = n_valley * n_valley;
-	float base = n_terrain + valley_d;
-	float river = std::fabs(n_rivers) - p.river_size_factor;
-	float tv = std::fmax(river / n_profile, 0.0f);
-	float valley_pos = 1.0f - std::exp(-tv * tv);
-	float valley_h = valley_d * valley_pos;
-	float surface = base + valley_h;
-	float slope = n_slope * valley_h;
-	bool river_water = false;
-	// The form keeps the region level before the bank clamp below: that
-	// clamp shapes the surface, the region level says how high the land
-	// between the valleys would rise.
-	BiomeTerrainForm form{base, valley_d, valley_pos, 0.0f};
-
-	// Keep this terrain shape calculation in step with terrainColumn(). No
-	// node data, climate adjustments or existing mapgen noise buffers change.
-	if (p.sea_level_rivers) {
-		float bank = p.water_level + p.river_bank_height;
-		if (base > bank) {
-			float tg = std::fmax(river / (n_profile * p.river_valley_width), 0.0f);
-			surface -= (base - bank) * std::exp(-tg * tg);
-			base = bank;
-			river_water = river < 0.0f;
-			slope = std::fmin(slope, n_slope * (surface - base));
-		}
-	}
-	if (river < 0.0f) {
-		float tr = river / p.river_size_factor + 1.0f;
-		float depth = p.river_depth_bed * std::sqrt(std::fmax(0.0f, 1.0f - tr * tr));
-		surface = std::fmin(std::fmax(base - depth, p.water_level - 3.0f), surface);
-		slope = 0.0f;
-		if (river_water)
-			surface = std::fmin(base - depth, surface);
-	}
-
-	Column c{surface, base, slope, 0.0f, 0.0f, 0.0f, form};
+	const ValleysColumn column = calcValleysColumn(p.column,
+		NoiseFractal2D(&p.slope, x, z, p.seed),
+		NoiseFractal2D(&p.rivers, x, z, p.seed),
+		NoiseFractal2D(&p.terrain_height, x, z, p.seed),
+		NoiseFractal2D(&p.valley_depth, x, z, p.seed),
+		NoiseFractal2D(&p.valley_profile, x, z, p.seed));
+	Column c{column.surface_y, column.base, column.slope, 0.0f, 0.0f, 0.0f,
+		{column.region_level, column.valley_depth, column.valley_pos, 0.0f}};
 	if (p.mountains) {
 		c.mountain_height = NoiseFractal2D(&p.mountain_height, x, z, p.seed);
 		if (c.mountain_height > 0.0f) {
-			float tm = std::fmax(river / (n_profile * p.mountain_river_width), 0.0f);
-			c.mountain_gate = 1.0f - std::exp(-tm * tm);
+			c.mountain_gate = valleysMountainGate(column, p.column.mountain_river_width);
 			c.form.mountain = c.mountain_height * c.mountain_gate;
-			if (c.mountain_gate > 0.0f) {
-				float ys = std::floor(surface + 0.5f);
-				c.foot = std::fmax(NoiseFractal3D(&p.mountain, x, ys, z, p.seed) *
-					c.mountain_gate, 0.0f);
-			}
+			if (c.mountain_gate > 0.0f)
+				c.foot = valleysMountainFoot(p.mountain, x, z, c.surface,
+					c.mountain_gate, p.seed);
 		}
 	}
 	if (m_columns.size() < COLUMN_CACHE_LIMIT)
@@ -696,7 +623,7 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 	return true;
 }
 
-float ValleysBiomeTerrainSampler::sampleHeight(s32 x, s32 z) const
+float ValleysBiomeTerrainSampler::modelHeight(s32 x, s32 z) const
 {
 	trimSurfaceCaches();
 	const s32 floor = std::clamp(m_params.floor_y,
@@ -710,78 +637,20 @@ float ValleysBiomeTerrainSampler::sampleHeight(s32 x, s32 z) const
 	return static_cast<float>(floor);
 }
 
-} // namespace
-
-float HeightmapBiomeTerrainSampler::heightAt(s32 x, s32 z) const
+float ValleysBiomeTerrainSampler::sampleHeight(v2s16 pos) const
 {
-	u64 key = columnKey(x, z);
+	u64 key = columnKey(pos.X, pos.Y);
 	auto found = m_heights.find(key);
 	if (found != m_heights.end())
 		return found->second;
-	float height = sampleHeight(x, z);
+	float height = modelHeight(pos.X, pos.Y);
 	if (m_heights.size() >= HEIGHT_CACHE_LIMIT)
 		m_heights.clear();
 	m_heights.emplace(key, height);
 	return height;
 }
 
-BiomeTerrain HeightmapBiomeTerrainSampler::latticeAt(s32 x, s32 z) const
-{
-	u64 key = columnKey(x, z);
-	auto found = m_metrics.find(key);
-	if (found != m_metrics.end())
-		return found->second;
-	float low = std::numeric_limits<float>::max();
-	float high = std::numeric_limits<float>::lowest();
-	for (s32 dz = -RELIEF_RADIUS; dz <= RELIEF_RADIUS; dz += SAMPLE_STEP)
-	for (s32 dx = -RELIEF_RADIUS; dx <= RELIEF_RADIUS; dx += SAMPLE_STEP) {
-		float height = heightAt(x + dx, z + dz);
-		low = std::fmin(low, height);
-		high = std::fmax(high, height);
-	}
-	const float center = heightAt(x, z);
-	// Opposite flanks must not cancel at a ridge or a valley. One-sided
-	// axis maxima preserve the exact gradient of a plane; the diagonals
-	// also cover steep features that neither axis intersects.
-	float dx = std::fmax(std::fabs(heightAt(x + SAMPLE_STEP, z) - center),
-		std::fabs(heightAt(x - SAMPLE_STEP, z) - center)) / SAMPLE_STEP;
-	float dz = std::fmax(std::fabs(heightAt(x, z + SAMPLE_STEP) - center),
-		std::fabs(heightAt(x, z - SAMPLE_STEP) - center)) / SAMPLE_STEP;
-	float gradient = std::hypot(dx, dz);
-	const float diagonal_distance = SAMPLE_STEP * std::sqrt(2.0f);
-	for (s32 oz : {-SAMPLE_STEP, SAMPLE_STEP})
-	for (s32 ox : {-SAMPLE_STEP, SAMPLE_STEP})
-		gradient = std::fmax(gradient,
-			std::fabs(heightAt(x + ox, z + oz) - center) / diagonal_distance);
-	BiomeTerrain result{center, std::atan(gradient) * RAD_TO_DEG, high - low};
-	if (m_metrics.size() >= METRIC_CACHE_LIMIT)
-		m_metrics.clear();
-	m_metrics.emplace(key, result);
-	return result;
-}
-
-BiomeTerrain HeightmapBiomeTerrainSampler::sample(v2s16 pos) const
-{
-	s32 x = latticeFloor(pos.X);
-	s32 z = latticeFloor(pos.Y);
-	float tx = static_cast<float>(pos.X - x) / SAMPLE_STEP;
-	float tz = static_cast<float>(pos.Y - z) / SAMPLE_STEP;
-	BiomeTerrain a = latticeAt(x, z);
-	BiomeTerrain b = latticeAt(x + SAMPLE_STEP, z);
-	BiomeTerrain c = latticeAt(x, z + SAMPLE_STEP);
-	BiomeTerrain d = latticeAt(x + SAMPLE_STEP, z + SAMPLE_STEP);
-	return {
-		interpolate(a.height, b.height, c.height, d.height, tx, tz),
-		interpolate(a.slope, b.slope, c.slope, d.slope, tx, tz),
-		interpolate(a.relief, b.relief, c.relief, d.relief, tx, tz)
-	};
-}
-
-void HeightmapBiomeTerrainSampler::resetCache()
-{
-	m_heights.clear();
-	m_metrics.clear();
-}
+} // namespace
 
 std::unique_ptr<BiomeTerrainSampler> createValleysBiomeTerrainSampler(
 		const MapgenValleysParams &params)

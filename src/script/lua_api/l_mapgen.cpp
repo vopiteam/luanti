@@ -358,24 +358,6 @@ Biome *get_or_load_biome(lua_State *L, int index, BiomeManager *biomemgr)
 
 
 #if IS_VOPI_ENGINE
-static lua_Number read_terrain_bound(lua_State *L, int index, const char *name,
-		float fallback, float upper)
-{
-	lua_getfield(L, index, name);
-	if (lua_isnil(L, -1)) {
-		lua_pop(L, 1);
-		return fallback;
-	}
-	bool is_number = lua_type(L, -1) == LUA_TNUMBER;
-	lua_Number value = lua_tonumber(L, -1);
-	lua_pop(L, 1);
-	if (!is_number || !std::isfinite(value) || value < 0 || value > upper ||
-			(value > 0 && static_cast<float>(value) == 0))
-		throw LuaError(std::string("Biome field '") + name +
-			"' must be a finite nonnegative number within its allowed range");
-	return value;
-}
-
 // A climate or form bound: finite, inside [lower, upper], and not a nonzero
 // value that rounds to float zero. An absent field keeps the fallback.
 static lua_Number read_biome_bound(lua_State *L, int index, const char *name,
@@ -405,13 +387,6 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	BiomeType biometype = (BiomeType)getenumfield(L, index, "type",
 		ModApiMapgen::es_BiomeTerrainType, BIOMETYPE_NORMAL);
 #if IS_VOPI_ENGINE
-	lua_Number slope_min = read_terrain_bound(L, index, "slope_min", 0.0f, 90.0f);
-	lua_Number slope_max = read_terrain_bound(L, index, "slope_max", 90.0f, 90.0f);
-	lua_Number relief_min = read_terrain_bound(L, index, "relief_min", 0.0f, std::numeric_limits<float>::max());
-	lua_Number relief_max = read_terrain_bound(L, index, "relief_max",
-		std::numeric_limits<float>::infinity(), std::numeric_limits<float>::max());
-	if (slope_min > slope_max || relief_min > relief_max)
-		throw LuaError("Biome terrain minimum must not exceed its maximum");
 	const lua_Number inf = std::numeric_limits<lua_Number>::infinity();
 	const lua_Number largest = std::numeric_limits<float>::max();
 	const struct {
@@ -455,10 +430,6 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 #endif
 	Biome *b = BiomeManager::create(biometype);
 #if IS_VOPI_ENGINE
-	b->slope_min = static_cast<float>(slope_min);
-	b->slope_max = static_cast<float>(slope_max);
-	b->relief_min = static_cast<float>(relief_min);
-	b->relief_max = static_cast<float>(relief_max);
 	b->heat_min = static_cast<float>(bounds[0][0]);
 	b->heat_max = static_cast<float>(bounds[0][1]);
 	b->humidity_min = static_cast<float>(bounds[1][0]);
@@ -662,51 +633,57 @@ int ModApiMapgen::l_get_humidity(lua_State *L)
 
 
 #if IS_VOPI_ENGINE
-// Query the same modeled surface used by terrain-constrained biomes.
+// A query position: numeric, finite coordinates, rounded to the nearest
+// node and inside the generation bound. Invalid input is an error rather
+// than a silent conversion.
+static v3s16 read_query_position(lua_State *L, int index, const char *function)
+{
+	luaL_checktype(L, index, LUA_TTABLE);
+	v3s16 pos;
+	const char *names[] = {"x", "y", "z"};
+	for (int axis = 0; axis < 3; ++axis) {
+		lua_getfield(L, index, names[axis]);
+		if (lua_type(L, -1) != LUA_TNUMBER) {
+			lua_pop(L, 1);
+			throw LuaError(std::string(function) + ": coordinates must be numbers");
+		}
+		double value = lua_tonumber(L, -1);
+		lua_pop(L, 1);
+		if (!std::isfinite(value))
+			throw LuaError(std::string(function) + ": coordinates must be finite");
+		// Preserve doubleToInt's arithmetic, including rounding just below a
+		// half-node boundary, while rejecting values before narrowing.
+		value = std::trunc(value + (value > 0 ? 0.5 : -0.5));
+		if (value < -MAX_MAP_GENERATION_LIMIT || value > MAX_MAP_GENERATION_LIMIT)
+			throw LuaError(std::string(function) + ": rounded coordinates are out of range");
+		pos[axis] = static_cast<s16>(value);
+	}
+	return pos;
+}
+
+// The modeled natural surface of the column at X/Z, for tools that
+// describe the landscape without generating it.
 int ModApiMapgen::l_get_biome_terrain(lua_State *L)
 {
 	NO_MAP_LOCK_REQUIRED;
-	v3s16 pos = read_v3s16(L, 1);
+	const v3s16 pos = read_query_position(L, 1, "get_biome_terrain");
 	const BiomeGen *biomegen = getBiomeGen(L);
 	if (!biomegen || biomegen->getType() != BIOMEGEN_ORIGINAL)
 		return 0;
-	BiomeTerrain terrain;
-	if (!static_cast<const BiomeGenOriginal *>(biomegen)->getBiomeTerrain(
-			v2s16(pos.X, pos.Z), terrain))
+	float height;
+	if (!static_cast<const BiomeGenOriginal *>(biomegen)->getBiomeTerrainHeight(
+			v2s16(pos.X, pos.Z), height))
 		return 0;
-	lua_createtable(L, 0, 3);
-	lua_pushnumber(L, terrain.height);
+	lua_createtable(L, 0, 1);
+	lua_pushnumber(L, height);
 	lua_setfield(L, -2, "height");
-	lua_pushnumber(L, terrain.slope);
-	lua_setfield(L, -2, "slope");
-	lua_pushnumber(L, terrain.relief);
-	lua_setfield(L, -2, "relief");
 	return 1;
 }
 
 int ModApiMapgen::l_get_effective_biome_data(lua_State *L)
 {
 	NO_MAP_LOCK_REQUIRED;
-	luaL_checktype(L, 1, LUA_TTABLE);
-	v3s16 pos;
-	const char *names[] = {"x", "y", "z"};
-	for (int axis = 0; axis < 3; ++axis) {
-		lua_getfield(L, 1, names[axis]);
-		if (lua_type(L, -1) != LUA_TNUMBER) {
-			lua_pop(L, 1);
-			throw LuaError("get_effective_biome_data: coordinates must be numbers");
-		}
-		double value = lua_tonumber(L, -1);
-		lua_pop(L, 1);
-		if (!std::isfinite(value))
-			throw LuaError("get_effective_biome_data: coordinates must be finite");
-		// Preserve doubleToInt's arithmetic, including rounding just below a
-		// half-node boundary, while rejecting values before narrowing.
-		value = std::trunc(value + (value > 0 ? 0.5 : -0.5));
-		if (value < -MAX_MAP_GENERATION_LIMIT || value > MAX_MAP_GENERATION_LIMIT)
-			throw LuaError("get_effective_biome_data: rounded coordinates are out of range");
-		pos[axis] = static_cast<s16>(value);
-	}
+	const v3s16 pos = read_query_position(L, 1, "get_effective_biome_data");
 
 	const BiomeGen *biomegen = getBiomeGen(L);
 	if (!biomegen || biomegen->getType() != BIOMEGEN_ORIGINAL)

@@ -100,6 +100,9 @@ ValleysClimate calcValleysClimate(float heat, float humidity,
 
 MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	: MapgenBasic(MAPGEN_VALLEYS, params, emerge)
+#if IS_VOPI_ENGINE
+	, column_params(*params)
+#endif
 {
 	FATAL_ERROR_IF(biomegen->getType() != BIOMEGEN_ORIGINAL,
 		"MapgenValleys has a hard dependency on BiomeGenOriginal");
@@ -108,7 +111,11 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	spflags            = params->spflags;
 #if IS_VOPI_ENGINE
 	altitude_chill     = clampAltitudeChill(params->altitude_chill);
-	m_bgen->setValleysClimate(*params);
+	// The emerge manager gives the source generator the column model of
+	// these same parameters and every worker is its clone; a generator made
+	// without one, as the tests do, gets it here
+	if (!m_bgen->hasEffectiveClimate())
+		m_bgen->setValleysClimate(*params);
 #else
 	altitude_chill     = params->altitude_chill;
 #endif
@@ -121,7 +128,7 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 	carve_zero_height  = std::fmax((float)params->carve_zero_height, 1.0f);
 	carve_reach        = params->carve_reach;
 	carve_undercut     = params->carve_undercut;
-	mountain_river_width = std::fmax(params->mountain_river_width, 0.01f);
+	mountain_river_width = column_params.mountain_river_width;
 	mountain_cap        = params->mountain_cap;
 	mountain_cap_height = std::fmax((float)params->mountain_cap_height, 1.0f);
 	// The 2D noises grow with the square of the reach
@@ -407,17 +414,15 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	if (flags & MG_BIOMES) {
 		generateBiomes();
 #if IS_VOPI_ENGINE
-		if (spflags & MGVALLEYS_REMOVE_FLOATERS) {
-			// The top of every column as the biome pass leaves it, lids
-			// on water included: the biomemap is selected again where the
-			// caves or the floating piece removal move it
-			biome_heightmap.resize((size_t)csize.X * csize.Z);
-			u32 index = 0;
-			for (s16 z = node_min.Z; z <= node_max.Z; z++)
-			for (s16 x = node_min.X; x <= node_max.X; x++, index++)
-				biome_heightmap[index] = findGroundLevel(v2s16(x, z),
-					node_min.Y, node_max.Y);
-		}
+		// The top of every column as the biome pass leaves it, lids on
+		// water included: the biomemap is selected again where the caves,
+		// the floor or the floating piece removal move it
+		biome_heightmap.resize((size_t)csize.X * csize.Z);
+		u32 index = 0;
+		for (s16 z = node_min.Z; z <= node_max.Z; z++)
+		for (s16 x = node_min.X; x <= node_max.X; x++, index++)
+			biome_heightmap[index] = findGroundLevel(v2s16(x, z),
+				node_min.Y, node_max.Y);
 #endif
 	}
 
@@ -468,12 +473,13 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 		// placed in or on them
 		updateHeightmap(node_min, node_max);
 		removeFloaters();
-		updateHeightmap(node_min, node_max);
-		// The caves and the removal moved surfaces the biomemap was
-		// selected at
-		if (flags & MG_BIOMES)
-			reselectBiomes();
 	}
+	// The caves, the floor and the removal moved surfaces the biomemap was
+	// selected at: the heightmap and the biomemap follow the surface left,
+	// for the ores, the decorations and the dust placed from here on
+	updateHeightmap(node_min, node_max);
+	if (flags & MG_BIOMES)
+		reselectBiomes();
 #endif
 
 	// Generate the registered ores
@@ -504,6 +510,126 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 }
 
 
+#if IS_VOPI_ENGINE
+ValleysColumnParams::ValleysColumnParams(const MapgenValleysParams &params) :
+	water_level(params.water_level),
+	river_size_factor(params.river_size / 100.0f),
+	river_depth_bed(params.river_depth + 1.0f),
+	river_valley_width(params.river_valley_width),
+	river_bank_height(params.river_bank_height),
+	mountain_river_width(std::fmax(params.mountain_river_width, 0.01f)),
+	sea_level_rivers(params.spflags & MGVALLEYS_SEA_LEVEL_RIVERS)
+{
+}
+
+
+// The terrain of one column from its 2D noise values: the river bank
+// level, the valley rising away from the river, the amplitude of the 3D
+// relief, the river surface, the channel where the river runs, and the
+// form of the column. The generator feeds it the bulk noise of the area,
+// the biome terrain sampler the scalar noise of a column: one model.
+ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
+	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile)
+{
+	float valley_d = n_valley * n_valley;
+	// 'base' represents the level of the river banks
+	float base = n_terrain_height + valley_d;
+	// 'river' represents the distance from the river edge
+	float river = std::fabs(n_rivers) - p.river_size_factor;
+	// Use the curve of the function 1-exp(-(x/a)^2) to model valleys.
+	// 'valley_h' represents the height of the terrain, from the rivers.
+	float tv = std::fmax(river / n_valley_profile, 0.0f);
+	float valley_pos = 1.0f - std::exp(-tv * tv);
+	float valley_h = valley_d * valley_pos;
+	// Approximate height of the terrain
+	float surface_y = base + valley_h;
+	float slope = n_slope * valley_h;
+	// River water surface is 1 node below river banks
+	float river_y = base - 1.0f;
+	bool river_water = false;
+
+	ValleysColumn c;
+	// The form keeps the region level before the bank clamp below: that
+	// clamp shapes the surface, the region level says how high the land
+	// between the valleys would rise
+	c.region_level = base;
+	c.valley_depth = valley_d;
+	c.valley_pos = valley_pos;
+
+	// Sea level river channels carry river water below the water line
+	if (p.sea_level_rivers) {
+		float bank = p.water_level + p.river_bank_height;
+		if (base > bank) {
+			// River banks never rise above 'river_bank_height' over the
+			// sea: the height by which they would is removed, fading out over
+			// 'river_valley_width' of the valley profile. The terrain
+			// beyond keeps its height, so the valley deepens instead
+			// and every river is level with the sea.
+			float tg = std::fmax(river /
+				(n_valley_profile * p.river_valley_width), 0.0f);
+			surface_y -= (base - bank) * std::exp(-tg * tg);
+			base = bank;
+			// River water only below the water line, whatever the bank height
+			river_y = p.water_level;
+			river_water = river < 0.0f;
+			// The 3D relief never exceeds the height left above the
+			// bank, so lowered ground does not dip under the sea
+			slope = std::fmin(slope, n_slope * (surface_y - base));
+		}
+	}
+
+	// Rivers are placed where 'river' is negative
+	if (river < 0.0f) {
+		// Use the function -sqrt(1-x^2) which models a circle
+		float tr = river / p.river_size_factor + 1.0f;
+		float depth = p.river_depth_bed *
+			std::sqrt(std::fmax(0.0f, 1.0f - tr * tr));
+		// There is no logical equivalent to this using rangelim
+		surface_y = std::fmin(
+			std::fmax(base - depth, p.water_level - 3.0f), surface_y);
+		slope = 0.0f;
+		// Sea level channels are not held above 'water_level - 3':
+		// their depth follows 'river_depth' below the banks
+		if (river_water)
+			surface_y = std::fmin(base - depth, surface_y);
+	}
+
+	c.surface_y = surface_y;
+	c.base = base;
+	c.slope = slope;
+	c.river = river;
+	c.river_y = river_y;
+	c.valley_profile = n_valley_profile;
+	c.river_water = river_water;
+	return c;
+}
+
+
+float valleysMountainGate(const ValleysColumn &c, float mountain_river_width)
+{
+	float tm = std::fmax(c.river /
+		(c.valley_profile * mountain_river_width), 0.0f);
+	return 1.0f - std::exp(-tm * tm);
+}
+
+
+float valleysMountainFoot(const NoiseParams &np_mountain, float x, float z,
+	float surface_y, float gate, s32 seed)
+{
+	float ys = std::floor(surface_y + 0.5f);
+	float n = NoiseFractal3D(&np_mountain, x, ys, z, seed);
+	return std::fmax(n * gate, 0.0f);
+}
+
+
+void MapgenValleys::terrainColumn(float n_slope, float n_rivers,
+	float n_terrain_height, float n_valley, float n_valley_profile,
+	Column &c) const
+{
+	c = calcValleysColumn(column_params, n_slope, n_rivers, n_terrain_height,
+		n_valley, n_valley_profile);
+}
+#else
 // The terrain of one column from its 2D noise values: the river bank
 // level, the valley rising away from the river, the amplitude of the 3D
 // relief, the river surface, and the channel where the river runs.
@@ -525,31 +651,6 @@ void MapgenValleys::terrainColumn(float n_slope, float n_rivers,
 	float slope = n_slope * valley_h;
 	// River water surface is 1 node below river banks
 	float river_y = base - 1.0f;
-	bool river_water = false;
-
-#if IS_VOPI_ENGINE
-	// Sea level river channels carry river water below the water line
-	if (spflags & MGVALLEYS_SEA_LEVEL_RIVERS) {
-		float bank = (float)water_level + river_bank_height;
-		if (base > bank) {
-			// River banks never rise above 'river_bank_height' over the
-			// sea: the height by which they would is removed, fading out over
-			// 'river_valley_width' of the valley profile. The terrain
-			// beyond keeps its height, so the valley deepens instead
-			// and every river is level with the sea.
-			float tg = std::fmax(river /
-				(n_valley_profile * river_valley_width), 0.0f);
-			surface_y -= (base - bank) * std::exp(-tg * tg);
-			base = bank;
-			// River water only below the water line, whatever the bank height
-			river_y = (float)water_level;
-			river_water = river < 0.0f;
-			// The 3D relief never exceeds the height left above the
-			// bank, so lowered ground does not dip under the sea
-			slope = std::fmin(slope, n_slope * (surface_y - base));
-		}
-	}
-#endif
 
 	// Rivers are placed where 'river' is negative
 	if (river < 0.0f) {
@@ -564,25 +665,15 @@ void MapgenValleys::terrainColumn(float n_slope, float n_rivers,
 		slope = 0.0f;
 	}
 
-#if IS_VOPI_ENGINE
-	if (river_water) {
-		// Sea level channels are not held above 'water_level - 3':
-		// their depth follows 'river_depth' below the banks
-		float tr = river / river_size_factor + 1.0f;
-		float depth = river_depth_bed *
-			std::sqrt(std::fmax(0.0f, 1.0f - tr * tr));
-		surface_y = std::fmin(base - depth, surface_y);
-	}
-#endif
-
 	c.surface_y = surface_y;
 	c.base = base;
 	c.slope = slope;
 	c.river = river;
 	c.river_y = river_y;
 	c.valley_profile = n_valley_profile;
-	c.river_water = river_water;
+	c.river_water = false;
 }
+#endif
 
 
 MapgenValleys::Column MapgenValleys::columnAt(s16 x, s16 z) const
@@ -605,9 +696,7 @@ MapgenValleys::Column MapgenValleys::columnAt(s16 x, s16 z) const
 // valley and never dam a river.
 float MapgenValleys::mountainGate(const Column &c) const
 {
-	float tm = std::fmax(c.river /
-		(c.valley_profile * mountain_river_width), 0.0f);
-	return 1.0f - std::exp(-tm * tm);
+	return valleysMountainGate(c, mountain_river_width);
 }
 
 
@@ -616,9 +705,7 @@ float MapgenValleys::mountainGate(const Column &c) const
 float MapgenValleys::mountainFoot(s16 x, s16 z, const Column &c,
 	float gate) const
 {
-	float ys = std::floor(c.surface_y + 0.5f);
-	float n = NoiseFractal3D(&noise_mountain->np, x, ys, z, seed);
-	return std::fmax(n * gate, 0.0f);
+	return valleysMountainFoot(noise_mountain->np, x, z, c.surface_y, gate, seed);
 }
 
 
@@ -934,12 +1021,14 @@ void MapgenValleys::removeFloaters()
 
 // The biome pass records, per column, the biome selected at the first
 // stone surface met on the way down, and it runs before the caves, whose
-// entrance floors need that record, so before the floating piece removal
-// as well. Where that surface went since, eaten by a cave or removed as a
-// piece, the record names the biome of a height the column no longer has,
-// while the ground under it was laid with the biome selected at its own
-// surface: the decorations and the dust, which go by the record, would
-// follow the surface that is gone. Every column whose top moved since the
+// entrance floors need that record, so before the solid floor and the
+// floating piece removal as well. Where that surface went since, eaten by
+// a cave or removed as a piece, the record names the biome of a height the
+// column no longer has, while the ground under it was laid with the biome
+// selected at its own surface: the decorations and the dust, which go by
+// the record, would follow the surface that is gone; and where the floor
+// laid ground under a column that had none, the record names no biome at
+// all. Every column whose top moved since the
 // biome pass gets the biome selected at its surface now, as the pass
 // selects it: at the ground under the lids the pass lays on water, or,
 // with no ground left in the mapchunk, at the liquid surface, or none.

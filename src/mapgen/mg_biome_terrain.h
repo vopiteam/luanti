@@ -9,20 +9,8 @@
 
 #include "irr_v2d.h"
 #include <memory>
-#include <unordered_map>
 
 struct MapgenValleysParams;
-
-// Metrics of the modeled natural surface, including cliff carving and natural
-// floating-component removal, before caves and biome-material changes.
-// Height and relief are in nodes;
-// slope is in degrees. They describe an eight-node surface sampling lattice,
-// not individual voxel faces or modifications made after generation.
-struct BiomeTerrain {
-	float height = 0.0f;
-	float slope = 0.0f;
-	float relief = 0.0f;
-};
 
 // Terrain form of a column, from the 2D column model alone. It describes the
 // place a column occupies in the landscape rather than its materials: the
@@ -53,32 +41,17 @@ class BiomeTerrainSampler {
 public:
 	virtual ~BiomeTerrainSampler() = default;
 	virtual std::unique_ptr<BiomeTerrainSampler> clone() const = 0;
-	virtual BiomeTerrain sample(v2s16 pos) const = 0;
+	// The highest node of the modeled natural surface of a column: the base
+	// 3D density with mountain bodies, the solid floor, cliff carving and
+	// natural floating-component removal, before caves and biome material
+	// changes. Not the climate height, which sampleClimate gives.
+	virtual float sampleHeight(v2s16 pos) const = 0;
 	// Returns false when this sampler has no column model or its context
-	// cannot be calculated. This does not calculate slope or relief.
+	// cannot be calculated. This does not model the 3D surface.
 	virtual bool sampleClimate(v2s16, BiomeClimateContext &) const { return false; }
 	// Called once before a mapchunk is generated. A sampler may make room so
 	// that every column of the chunk stays cached from terrain to biomes.
 	virtual void beginChunk() {}
-	virtual void resetCache() = 0;
-};
-
-// Shared lattice and metric calculation, also usable with synthetic height
-// functions. The lattice is aligned to world coordinates, including negative
-// coordinates, and is independent of the chunk currently being generated.
-class HeightmapBiomeTerrainSampler : public BiomeTerrainSampler {
-public:
-	BiomeTerrain sample(v2s16 pos) const final;
-	void resetCache() override;
-
-protected:
-	virtual float sampleHeight(s32 x, s32 z) const = 0;
-
-private:
-	float heightAt(s32 x, s32 z) const;
-	BiomeTerrain latticeAt(s32 x, s32 z) const;
-	mutable std::unordered_map<u64, float> m_heights;
-	mutable std::unordered_map<u64, BiomeTerrain> m_metrics;
 };
 
 std::unique_ptr<BiomeTerrainSampler> createValleysBiomeTerrainSampler(

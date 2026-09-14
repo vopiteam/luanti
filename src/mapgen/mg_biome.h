@@ -97,20 +97,11 @@ public:
 	s16 vertical_blend = 0;
 	float weight = 1.0f;
 #if IS_VOPI_ENGINE
-	// Inclusive bounds on the modeled surface at this X/Z. Omitted bounds
-	// preserve the original biome selection without sampling terrain.
-	float slope_min = 0.0f;
-	float slope_max = 90.0f;
-	float relief_min = 0.0f;
-	float relief_max = std::numeric_limits<float>::infinity();
-
-	bool hasTerrainConstraints() const;
-	bool matchesTerrain(const BiomeTerrain &terrain) const;
-
 	// Inclusive bounds on the climate the selector receives and on the
-	// column's terrain form. Defaults are unrestricted. Climate bounds work
+	// column's terrain form. Defaults are unrestricted and preserve the
+	// original selection without sampling the column. Climate bounds work
 	// on every mapgen; form bounds need a mapgen with a column model and
-	// make the biome ineligible elsewhere, like the terrain bounds above.
+	// make the biome ineligible elsewhere.
 	float heat_min = -std::numeric_limits<float>::infinity();
 	float heat_max = std::numeric_limits<float>::infinity();
 	float humidity_min = -std::numeric_limits<float>::infinity();
@@ -272,7 +263,9 @@ public:
 
 #if IS_VOPI_ENGINE
 	void setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler);
-	bool getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const;
+	// The modeled natural surface of a column, for queries; selection
+	// goes by the form and Y, never by this height.
+	bool getBiomeTerrainHeight(v2s16 pos, float &height) const;
 	bool getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const;
 	void setValleysClimate(const MapgenValleysParams &params);
 	bool hasEffectiveClimate() const { return m_valleys_climate; }

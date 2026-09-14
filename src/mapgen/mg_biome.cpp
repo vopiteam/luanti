@@ -274,9 +274,6 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 	float dist_min_blend = FLT_MAX;
 #endif
 #if IS_VOPI_ENGINE
-	BiomeTerrain terrain;
-	bool terrain_sampled = false;
-	bool terrain_available = false;
 	BiomeTerrainForm sampled_form;
 	bool form_sampled = form != nullptr;
 	bool form_available = form != nullptr;
@@ -301,14 +298,6 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 				form_sampled = true;
 			}
 			if (!form_available || !b->matchesForm(sampled_form))
-				continue;
-		}
-		if (b->hasTerrainConstraints()) {
-			if (!terrain_sampled) {
-				terrain_available = getBiomeTerrain(v2s16(pos.X, pos.Z), terrain);
-				terrain_sampled = true;
-			}
-			if (!terrain_available || !b->matchesTerrain(terrain))
 				continue;
 		}
 #endif
@@ -425,10 +414,6 @@ ObjDef *Biome::clone() const
 	obj->vertical_blend = vertical_blend;
 	obj->weight = weight;
 #if IS_VOPI_ENGINE
-	obj->slope_min = slope_min;
-	obj->slope_max = slope_max;
-	obj->relief_min = relief_min;
-	obj->relief_max = relief_max;
 	obj->heat_min = heat_min;
 	obj->heat_max = heat_max;
 	obj->humidity_min = humidity_min;
@@ -448,18 +433,6 @@ ObjDef *Biome::clone() const
 }
 
 #if IS_VOPI_ENGINE
-bool Biome::hasTerrainConstraints() const
-{
-	return slope_min > 0.0f || slope_max < 90.0f ||
-		relief_min > 0.0f || std::isfinite(relief_max);
-}
-
-bool Biome::matchesTerrain(const BiomeTerrain &terrain) const
-{
-	return terrain.slope >= slope_min && terrain.slope <= slope_max &&
-		terrain.relief >= relief_min && terrain.relief <= relief_max;
-}
-
 bool Biome::hasClimateBounds() const
 {
 	return std::isfinite(heat_min) || std::isfinite(heat_max) ||
@@ -588,13 +561,12 @@ bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 	return true;
 }
 
-bool BiomeGenOriginal::getBiomeTerrain(v2s16 pos, BiomeTerrain &terrain) const
+bool BiomeGenOriginal::getBiomeTerrainHeight(v2s16 pos, float &height) const
 {
 	if (!m_terrain_sampler)
 		return false;
-	terrain = m_terrain_sampler->sample(pos);
-	return std::isfinite(terrain.height) && std::isfinite(terrain.slope) &&
-		std::isfinite(terrain.relief);
+	height = m_terrain_sampler->sampleHeight(pos);
+	return std::isfinite(height);
 }
 #endif
 
