@@ -266,7 +266,10 @@ voxel surface. Water does not replace the ground below it.
 
 Biome selection never uses this height: a biome lives where its Y bands and
 form bounds say. The query is for tools that describe the world without
-generating it, such as a map of the modeled surface. Its caches are bounded
+generating it, such as a map of the modeled surface. The 2D column is the
+generator's own model; the 3D surface is modeled a second time per column,
+and the unit tests compare it with generated mapchunks column by column, so
+the two cannot drift apart unnoticed. Its caches are bounded
 and owned by each generator; every cached value depends on the mapgen
 parameters and the world position alone, so they are kept across mapchunks
 and discarded only when full, without affecting results.

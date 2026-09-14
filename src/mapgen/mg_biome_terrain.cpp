@@ -146,6 +146,13 @@ struct ValleysTerrainParams {
 	}
 };
 
+// The 2D column comes from the generator's own calcValleysColumn; the 3D
+// surface, the density with the mountain body and its cap, the solid
+// floor, the cliff carving and the floating piece removal, is written a
+// second time here for one column instead of a mapchunk, and the unit
+// test testValleysSurfaceModel compares it with generation over whole
+// mapchunks of the game's profile: a change to either side that the
+// other does not follow fails there.
 class ValleysBiomeTerrainSampler final : public BiomeTerrainSampler {
 public:
 	explicit ValleysBiomeTerrainSampler(const MapgenValleysParams &params) :

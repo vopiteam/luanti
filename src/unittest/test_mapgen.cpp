@@ -45,6 +45,7 @@ public:
 	void testBiomeTerrainValleys();
 	void testBiomeTerrainProfile();
 	void testBiomeTerrainFloaterSeeds();
+	void testValleysSurfaceModel(IGameDef *gamedef);
 	void testValleysClimateParams();
 	void testValleysClimateCorrections();
 	void testValleysClimateContext();
@@ -86,6 +87,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testBiomeTerrainValleys);
 	TEST(testBiomeTerrainProfile);
 	TEST(testBiomeTerrainFloaterSeeds);
+	TEST(testValleysSurfaceModel, gamedef);
 	TEST(testValleysClimateParams);
 	TEST(testValleysClimateCorrections);
 	TEST(testValleysClimateContext);
@@ -1931,6 +1933,128 @@ void TestMapgen::testBiomeTerrainFloaterSeeds()
 		UASSERT(createValleysBiomeTerrainSampler(params)->sampleHeight(
 				column.pos) >= column.height);
 	}
+}
+
+void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
+{
+	// The biome terrain sampler models the natural surface of one column
+	// on its own: the density with the mountain body and its cap, the
+	// solid floor, the cliff carving and the floating piece removal, each
+	// written a second time for a column instead of a mapchunk. Generate
+	// stacks of mapchunks with the game's profile, terrain only, and
+	// compare the top solid node of every column with the model: any
+	// change to one side that the other does not follow shows up here.
+	MockServer server(getTestTempDirectory());
+	NodeDefManager ndef;
+	auto add_node = [&](const char *name, content_t source, bool walkable) {
+		ContentFeatures def = gamedef->ndef()->get(source);
+		def.name = name;
+		def.walkable = walkable;
+		return ndef.set(name, def);
+	};
+	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE, true);
+	add_node("mapgen_water_source", t_CONTENT_WATER, false);
+	add_node("mapgen_river_water_source", t_CONTENT_WATER, false);
+	MockBiomeManager manager(&server);
+	manager.setNodeDefManager(&ndef);
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	server.ndef()->cancelNodeResolveCallback(default_biome);
+	ndef.pendNodeResolve(default_biome);
+	ndef.setNodeRegistrationStatus(true);
+	ndef.runNodeResolveCallbacks();
+
+	MapgenValleysParams params;
+	params.seed = 14413353056704472440ULL;
+	params.chunksize = v3s16(5);
+	params.flags = 0;
+	params.spflags = MGVALLEYS_MOUNTAINS | MGVALLEYS_SEA_LEVEL_RIVERS |
+		MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS;
+	params.water_level = 0;
+	params.floor_y = -61;
+	params.river_size = 14;
+	params.river_depth = 6;
+	params.river_valley_width = 0.5f;
+	params.np_inter_valley_fill = {0, 1, v3f(256, 512, 256), 1993, 6, 0.55f, 2};
+	params.np_inter_valley_slope = {0.25f, 0.15f, v3f(128), 746, 1, 1, 2};
+	params.np_rivers = {0, 1, v3f(256), -6050, 5, 0.6f, 2};
+	params.np_terrain_height = {6, 50, v3f(1024), 5202, 6, 0.4f, 2};
+	params.np_valley_depth = {2.6f, 2, v3f(512), -1914, 1, 1, 2};
+	params.np_valley_profile = {1.5f, 0.5f, v3f(512), 777, 1, 1, 2};
+	params.np_mountain = {-0.55f, 1, v3f(192, 256, 192), 3517, 5, 0.7f, 2};
+	params.np_mountain_height = {-30, 280, v3f(800), 4021, 3, 0.6f, 2};
+	BiomeParamsOriginal climate;
+	climate.seed = params.seed;
+	MetricsBackend metrics;
+	EmergeManager emerge(&server, &metrics);
+	emerge.ndef = &ndef;
+	BiomeGenOriginal source(&manager, &climate, v3s16(5 * MAP_BLOCKSIZE));
+	MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+		emerge.getOreManager(), emerge.getDecorationManager(),
+		emerge.getSchematicManager()));
+	auto sampler = createValleysBiomeTerrainSampler(params);
+
+	// The two mapchunk columns of the profile fixtures, the carved cliff
+	// and the removed mountain cap, in mapblocks on the chunk grid, and a
+	// stack from the solid floor to above the highest body
+	const v3s16 chunk_blocks = params.chunksize;
+	const s16 side = chunk_blocks.X * MAP_BLOCKSIZE;
+	const v2s16 stacks[] = {v2s16(38, -102), v2s16(43, -102)};
+	const s16 lowest_block = -7;
+	const s16 highest_block = 18;
+	size_t mismatches = 0;
+	size_t columns = 0;
+	for (const auto &stack : stacks) {
+		std::vector<s16> top((size_t)side * side, -MAX_MAP_GENERATION_LIMIT);
+		for (s16 block_y = lowest_block; block_y <= highest_block;
+				block_y += chunk_blocks.Y) {
+			BlockMakeData data;
+			data.blockpos_min = v3s16(stack.X, block_y, stack.Y);
+			data.blockpos_max = data.blockpos_min + chunk_blocks - v3s16(1);
+			data.seed = params.seed;
+			data.nodedef = &ndef;
+			const v3s16 node_min = data.blockpos_min * MAP_BLOCKSIZE;
+			const v3s16 node_max = (data.blockpos_max + v3s16(1)) * MAP_BLOCKSIZE - v3s16(1);
+			data.vmanip = new MapgenTestVManip(VoxelArea(
+				node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
+			mapgen.makeChunk(&data);
+			for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+			for (s16 x = node_min.X; x <= node_max.X; ++x) {
+				s16 &column_top = top[(size_t)(z - node_min.Z) * side + (x - node_min.X)];
+				for (s16 y = node_max.Y; y >= node_min.Y && y > column_top; --y) {
+					if (data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)]
+							.getContent() == stone) {
+						column_top = y;
+						break;
+					}
+				}
+			}
+		}
+		const s16 node_min_x = stack.X * MAP_BLOCKSIZE;
+		const s16 node_min_z = stack.Y * MAP_BLOCKSIZE;
+		const s16 ceiling = (highest_block + chunk_blocks.Y) * MAP_BLOCKSIZE - 1;
+		for (s16 z = 0; z < side; ++z)
+		for (s16 x = 0; x < side; ++x) {
+			const v2s16 pos(node_min_x + x, node_min_z + z);
+			const float modeled = sampler->sampleHeight(pos);
+			const s16 generated = top[(size_t)z * side + x];
+			UASSERT(std::isfinite(modeled) && modeled < ceiling);
+			UASSERT(generated >= params.floor_y);
+			++columns;
+			if (modeled != static_cast<float>(generated)) {
+				if (mismatches < 8)
+					errorstream << "Valleys surface model: column " << pos
+						<< " modeled " << modeled << ", generated "
+						<< generated << std::endl;
+				++mismatches;
+			}
+		}
+	}
+	UASSERTEQ(size_t, columns, 2 * (size_t)side * side);
+	UASSERTEQ(size_t, mismatches, 0);
+	// The fixtures of testBiomeTerrainProfile lie in these stacks, the
+	// carved cliff and the removed cap: the area compared is not a flat one
+	UASSERTEQ(float, sampler->sampleHeight(v2s16(680, -1584)), 13.0f);
+	UASSERTEQ(float, sampler->sampleHeight(v2s16(744, -1584)), 104.0f);
 }
 
 void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
