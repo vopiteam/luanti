@@ -372,6 +372,24 @@ void Sky::update(float time_of_day, float time_brightness,
 	video::SColorf cloudcolor_bright_dawn_f = m_cloudcolor_dawn_f;
 
 #if IS_VOPI_ENGINE
+	if (m_day_cycle.enabled) {
+		// One target per sky packet; the shown palette eases into it.
+		m_palette.update(m_sky_params.sky_color, m_sky_params.fog_color,
+				m_sky_params.fog_sun_tint, m_sky_params.fog_moon_tint, dtime);
+		using SkyAppearance::Palette;
+		bgcolor_bright_normal_f = m_palette.color(Palette::DAY_HORIZON);
+		bgcolor_bright_indoor_f = m_palette.color(Palette::INDOORS);
+		bgcolor_bright_dawn_f = m_palette.color(Palette::DAWN_HORIZON);
+		bgcolor_bright_night_f = m_palette.color(Palette::NIGHT_HORIZON);
+		skycolor_bright_normal_f = m_palette.color(Palette::DAY_SKY);
+		skycolor_bright_dawn_f = m_palette.color(Palette::DAWN_SKY);
+		skycolor_bright_night_f = m_palette.color(Palette::NIGHT_SKY);
+	} else {
+		m_palette.reset();
+	}
+#endif
+
+#if IS_VOPI_ENGINE
 	float cloud_color_change_fraction = 0.95f;
 #else
 	float cloud_color_change_fraction = 0.95;
@@ -416,7 +434,8 @@ void Sky::update(float time_of_day, float time_brightness,
 				day.g * s.day_weight + dawn.g * s.dawn_weight + night.g * s.night_weight,
 				day.b * s.day_weight + dawn.b * s.dawn_weight + night.b * s.night_weight, 1);
 		};
-		// Smooth only cave exposure. Time and biome palettes remain current.
+		// The clock weights stay current; the palette itself eased above,
+		// the cave exposure eases here.
 		m_bgcolor_bright_f = m_exposure.color(blend(bgcolor_bright_normal_f,
 				bgcolor_bright_dawn_f, bgcolor_bright_night_f), bgcolor_bright_indoor_f);
 		m_skycolor_bright_f = m_exposure.color(blend(skycolor_bright_normal_f,
@@ -516,7 +535,13 @@ void Sky::update(float time_of_day, float time_brightness,
 				pointcolor_sun_f.g = pointcolor_light *
 					(float)m_materials[3].ColorParam.getGreen() / 255;
 			} else if (!m_default_tint) {
+#if IS_VOPI_ENGINE
+				pointcolor_sun_f = m_day_cycle.enabled ?
+						m_palette.color(SkyAppearance::Palette::SUN_TINT) :
+						video::SColorf(m_sky_params.fog_sun_tint);
+#else
 				pointcolor_sun_f = m_sky_params.fog_sun_tint;
+#endif
 			} else {
 				pointcolor_sun_f.r = pointcolor_light * 1;
 				pointcolor_sun_f.b = pointcolor_light *
@@ -534,12 +559,24 @@ void Sky::update(float time_of_day, float time_brightness,
 					1
 				);
 			} else {
+#if IS_VOPI_ENGINE
+				const video::SColorf moon_tint = m_day_cycle.enabled ?
+						m_palette.color(SkyAppearance::Palette::MOON_TINT) :
+						video::SColorf(m_sky_params.fog_moon_tint);
+				pointcolor_moon_f = video::SColorf(
+					moon_tint.r * pointcolor_light,
+					moon_tint.g * pointcolor_light,
+					moon_tint.b * pointcolor_light,
+					1
+				);
+#else
 				pointcolor_moon_f = video::SColorf(
 					(m_sky_params.fog_moon_tint.getRed() / 255.0f) * pointcolor_light,
 					(m_sky_params.fog_moon_tint.getGreen() / 255.0f) * pointcolor_light,
 					(m_sky_params.fog_moon_tint.getBlue() / 255.0f) * pointcolor_light,
 					1
 				);
+#endif
 			}
 			if (m_moon_tonemap && m_default_tint) {
 				pointcolor_moon_f.r = pointcolor_light *

@@ -29,6 +29,7 @@ public:
 	void testCaveReversal();
 	void testFogFollowing();
 	void testZeroFogDistance();
+	void testPaletteFollowing();
 };
 static TestSkyAppearance g_test_instance;
 
@@ -40,6 +41,7 @@ void TestSkyAppearance::runTests(IGameDef *)
 	TEST(testCaveReversal);
 	TEST(testFogFollowing);
 	TEST(testZeroFogDistance);
+	TEST(testPaletteFollowing);
 }
 
 void TestSkyAppearance::testFogColor()
@@ -156,6 +158,54 @@ void TestSkyAppearance::testFogFollowing()
 			fog.update(1234, 0.3f, 3000, dt, true);
 		near(fog.range(), 1234, 0);
 		near(fog.start(), 0.3f, 0);
+	}
+}
+
+void TestSkyAppearance::testPaletteFollowing()
+{
+	using SkyAppearance::Palette;
+	const video::SColor red(255, 255, 0, 0), blue(255, 0, 0, 255);
+	const video::SColor white(255, 255, 255, 255), grey(255, 128, 128, 128);
+	const SkyColor first = {red, red, red, red, red, red, red};
+	const SkyColor second = {blue, blue, blue, blue, blue, blue, blue};
+	const video::SColor no_fog(0, 200, 100, 50), full_fog(255, 200, 100, 50);
+	for (int fps : {30, 60, 120}) {
+		Palette palette;
+		const float dt = 1.0f / fps;
+		UASSERT(!palette.initialized());
+		// The first sample shows at once, whatever the frame time.
+		palette.update(first, no_fog, white, white, 0);
+		UASSERT(palette.initialized());
+		near(palette.color(Palette::DAY_SKY).r, 1, 0);
+		near(palette.color(Palette::FOG).a, 0, 0);
+		colorEqual(palette.fog(), no_fog);
+		// One second towards the new target lands at e^-2 of the way back.
+		for (int i = 0; i < fps; ++i)
+			palette.update(second, full_fog, grey, grey, dt);
+		near(palette.color(Palette::DAY_SKY).r, 0.1353353f, 0.0005f);
+		near(palette.color(Palette::NIGHT_HORIZON).b, 0.8646647f, 0.0005f);
+		near(palette.color(Palette::INDOORS).g, 0, 0);
+		near(palette.color(Palette::SUN_TINT).r, 0.5693634f, 0.0005f);
+		// Fog opacity eases too, the hue stays the fog's own.
+		near(palette.color(Palette::FOG).a, 0.8646647f, 0.0005f);
+		UASSERT(palette.fog().getAlpha() >= 219 && palette.fog().getAlpha() <= 221);
+		UASSERTEQ(u32, palette.fog().getRed(), 200);
+		// A frame without elapsed time changes nothing.
+		const float held = palette.color(Palette::DAY_SKY).r;
+		palette.update(first, no_fog, white, white, 0);
+		near(palette.color(Palette::DAY_SKY).r, held, 0);
+		// Ten seconds land exactly on the target, no visible tail.
+		for (int i = 0; i < fps * 10; ++i)
+			palette.update(second, full_fog, grey, grey, dt);
+		near(palette.color(Palette::DAY_SKY).r, 0, 0);
+		near(palette.color(Palette::DAWN_HORIZON).b, 1, 0);
+		colorEqual(palette.fog(), full_fog);
+		near(palette.color(Palette::MOON_TINT).g, grey.getGreen() / 255.0f, 0);
+		// A reset shows the next sample at once again.
+		palette.reset();
+		palette.update(first, no_fog, white, white, dt);
+		near(palette.color(Palette::DAY_SKY).r, 1, 0);
+		colorEqual(palette.fog(), no_fog);
 	}
 }
 

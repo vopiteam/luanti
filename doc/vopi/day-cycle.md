@@ -60,8 +60,19 @@ strength fade in controlled mode.
 For regular sky with an enabled profile, cave exposure follows elapsed time
 with a 0.4-second exponential time constant. Cave-side brightness is retained
 while exiting, so the first sunlight-visible frame does not jump directly to
-full outdoor brightness. Current clock weights and supplied biome palettes
-remain current; this filter smooths exposure, not outdoor clock edits.
+full outdoor brightness. Current clock weights remain current; this filter
+smooths exposure, not outdoor clock edits.
+
+The shown palette follows the last `set_sky` packet with a 0.5-second
+exponential time constant: the seven `sky_color` colors, the fog color with
+its alpha, and the custom sun and moon tints. A game that gives every biome
+its own sky sends one target per change, and the client eases into it; a
+fog override fades in and out through its alpha the same way. The first
+sample after joining shows at once, and a palette lands exactly on its target
+once every channel is within a quarter of an 8-bit step. The clock weights
+blend the followed colors each frame, so a clock edit is still authoritative
+on the same frame. `get_sky` returns the requested palette, not the client's
+current interpolated one.
 
 `set_sky` fog colors use the same sky/cave brightness. Their alpha composites
 the modulated RGB over the automatic background: zero selects automatic fog,
@@ -79,8 +90,8 @@ fixed-duration transitions. Player getters expose requested server settings,
 not the client's current interpolated result.
 
 Disabled profiles and non-regular skies retain the legacy fog color/range
-behavior; OFF builds retain the previous implementation. These changes add
-no fields to sky packets. Games still own transitions between sky palettes.
+behavior and the legacy per-frame palette filter; OFF builds retain the
+previous implementation. These changes add no fields to sky packets.
 
 ## World APIs
 
@@ -228,5 +239,6 @@ step partitioning, freeze/resume, calendar jumps, legacy light samples, visual
 weights/orbit, validation, snapshot parsing and clock formatting.
 `--test-module TestSkyAppearance` additionally covers fog compositing,
 initialization, cave transitions and reversals at 30/60/120 FPS, current-clock
-palette changes, effective fog bounds and the zero-distance denominator.
+palette changes, palette and fog-opacity following at 30/60/120 FPS,
+effective fog bounds and the zero-distance denominator.
 These headless tests do not replace device validation of shaders and formspecs.

@@ -146,8 +146,10 @@ public:
 	void setFogColor(video::SColor v) { m_sky_params.fog_color = v; }
 	video::SColor getFogColor() const {
 #if IS_VOPI_ENGINE
-		return SkyAppearance::fogColor(m_sky_params.fog_color, getBgColor(),
-				m_brightness, m_day_cycle.enabled && m_visible);
+		const bool controlled = m_day_cycle.enabled && m_visible;
+		return SkyAppearance::fogColor(controlled && m_palette.initialized() ?
+				m_palette.fog() : m_sky_params.fog_color,
+				getBgColor(), m_brightness, controlled);
 #else
 		if (m_sky_params.fog_color.getAlpha() > 0)
 			return m_sky_params.fog_color;
@@ -213,6 +215,7 @@ private:
 	DayCycleState m_cycle_state;
 	SkyAppearance::Exposure m_exposure;
 	SkyAppearance::Fog m_fog;
+	SkyAppearance::Palette m_palette;
 #endif
 	bool m_visible = true;
 	// Used when m_visible=false
