@@ -47,7 +47,8 @@ public:
 
 	void update(float m_time_of_day, float time_brightness, float direct_brightness,
 #if IS_VOPI_ENGINE
-			bool sunlight_seen, CameraMode cam_mode, float yaw, float pitch, float dtime = 1.0f / 60);
+			bool sunlight_seen, CameraMode cam_mode, float yaw, float pitch,
+			float dtime = 1.0f / 60, v3f position = v3f());
 #else
 			bool sunlight_seen, CameraMode cam_mode, float yaw, float pitch);
 #endif
@@ -216,6 +217,10 @@ private:
 	SkyAppearance::Exposure m_exposure;
 	SkyAppearance::Fog m_fog;
 	SkyAppearance::Palette m_palette;
+	// A move past what a frame can walk is a teleport.
+	static constexpr float TELEPORT_NODES = 16.0f;
+	v3f m_position;
+	bool m_position_known = false;
 #endif
 	bool m_visible = true;
 	// Used when m_visible=false

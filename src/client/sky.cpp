@@ -4,6 +4,7 @@
 // Copyright (C) 2020 numzero, Lobachevskiy Vitaliy <numzer0@yandex.ru>
 
 #include "sky.h"
+#include "constants.h"
 
 #include "camera.h"
 #include "client/renderingengine.h"
@@ -326,7 +327,7 @@ void Sky::render()
 void Sky::update(float time_of_day, float time_brightness,
 	float direct_brightness, bool sunlight_seen,
 #if IS_VOPI_ENGINE
-	CameraMode cam_mode, float yaw, float pitch, float dtime)
+	CameraMode cam_mode, float yaw, float pitch, float dtime, v3f position)
 #else
 	CameraMode cam_mode, float yaw, float pitch)
 #endif
@@ -341,7 +342,7 @@ void Sky::update(float time_of_day, float time_brightness,
 		for (u32 i = 0; i < 100; i++) {
 			update(time_of_day, time_brightness, direct_brightness,
 #if IS_VOPI_ENGINE
-					sunlight_seen, cam_mode, yaw, pitch, dtime);
+					sunlight_seen, cam_mode, yaw, pitch, dtime, position);
 #else
 					sunlight_seen, cam_mode, yaw, pitch);
 #endif
@@ -372,6 +373,13 @@ void Sky::update(float time_of_day, float time_brightness,
 	video::SColorf cloudcolor_bright_dawn_f = m_cloudcolor_dawn_f;
 
 #if IS_VOPI_ENGINE
+	// After a teleport the palette the server sends for the new place shows
+	// at once instead of fading in from the old one.
+	if (m_position_known && position.getDistanceFrom(m_position) > TELEPORT_NODES * BS)
+		m_palette.expectPacket(1.0f);
+	m_position = position;
+	m_position_known = true;
+
 	if (m_day_cycle.enabled) {
 		// One target per sky packet; the shown palette eases into it.
 		m_palette.update(m_sky_params.sky_color, m_sky_params.fog_color,
@@ -998,6 +1006,9 @@ void Sky::updateStars()
 void Sky::setSkyColors(const SkyColor &sky_color)
 {
 	m_sky_params.sky_color = sky_color;
+#if IS_VOPI_ENGINE
+	m_palette.packetArrived();
+#endif
 }
 
 void Sky::setHorizonTint(video::SColor sun_tint, video::SColor moon_tint,

@@ -66,13 +66,21 @@ smooths exposure, not outdoor clock edits.
 The shown palette follows the last `set_sky` packet with a 0.5-second
 exponential time constant: the seven `sky_color` colors, the fog color with
 its alpha, and the custom sun and moon tints. A game that gives every biome
-its own sky sends one target per change, and the client eases into it; a
-fog override fades in and out through its alpha the same way. The first
-sample after joining shows at once, and a palette lands exactly on its target
-once every channel is within a quarter of an 8-bit step. The clock weights
-blend the followed colors each frame, so a clock edit is still authoritative
-on the same frame. `get_sky` returns the requested palette, not the client's
-current interpolated one.
+its own sky sends one target per change, and the client eases into it. A fog
+override fades in and out through its alpha and keeps its hue while doing
+so: fading out ignores the transparent target's color, and a fog that starts
+from transparent takes the new hue at once. A color lands exactly on its
+target as a whole once every channel is within a quarter of an 8-bit step.
+The clock weights blend the followed colors each frame, so a clock edit is
+still authoritative on the same frame. `get_sky` returns the requested
+palette, not the client's current interpolated one.
+
+Two packets show at once instead of easing: the first regular sky packet of
+a session, whatever the stock palette showed before it, and one arriving
+within a second of a teleport, which the client recognizes as the player
+moving more than 16 nodes between two frames. A game that teleports a player
+into another biome sends that biome's palette within the second and the
+player lands in it; a later packet eases as usual.
 
 `set_sky` fog colors use the same sky/cave brightness. Their alpha composites
 the modulated RGB over the automatic background: zero selects automatic fog,

@@ -7,6 +7,7 @@
 #include "skyparams.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Client appearance helpers deliberately do not smooth the day-cycle clock.
 namespace SkyAppearance {
@@ -20,8 +21,10 @@ inline float retention(float dtime, float duration)
 // sent last with a 0.5-second exponential time constant: a game that gives
 // every biome its own sky sends one target per change and the client eases
 // into it, fog opacity included. The clock weights blend the followed
-// colors, so time stays current. The first sample after a reset shows at
-// once.
+// colors, so time stays current. A packet that arrives while the snap
+// window is open shows at once: the window starts open, for the first
+// packet of a session, and reopens for a second after a teleport, so a
+// respawn or a teleport lands in its sky rather than fading into it.
 class Palette {
 public:
 	enum Slot : u8 {
@@ -29,9 +32,24 @@ public:
 		INDOORS, FOG, SUN_TINT, MOON_TINT, SLOT_COUNT
 	};
 	static constexpr float TIME_CONSTANT = 0.5f;
+	// Below a quarter of an 8-bit step the tail is invisible.
+	static constexpr float LANDING = 1.0f / 1024;
 
 	void reset() { m_initialized = false; }
 	bool initialized() const { return m_initialized; }
+
+	// Open the snap window for a while: the next packet shows at once.
+	void expectPacket(float window) { m_snap_window = window; }
+
+	// A regular sky packet was applied. While the window is open the next
+	// update shows it at once; the window closes with it.
+	void packetArrived()
+	{
+		if (m_snap_window > 0) {
+			m_snap_window = 0;
+			m_initialized = false;
+		}
+	}
 
 	void update(const SkyColor &sky, video::SColor fog, video::SColor sun_tint,
 			video::SColor moon_tint, float dtime)
@@ -50,31 +68,45 @@ public:
 		}
 		if (dtime <= 0)
 			return;
+		m_snap_window = std::max(0.0f, m_snap_window - dtime);
 		const float keep = retention(dtime, TIME_CONSTANT);
+		// The fog's hue is invisible at zero opacity: keep the old hue while
+		// fading out, take the new one at once when nothing shows yet, so a
+		// fog never fades through the color of a transparent target.
+		video::SColorf fog_target = targets[FOG];
+		if (fog_target.a <= 0) {
+			fog_target.r = m_current[FOG].r;
+			fog_target.g = m_current[FOG].g;
+			fog_target.b = m_current[FOG].b;
+		} else if (m_current[FOG].a <= 0) {
+			m_current[FOG].r = fog_target.r;
+			m_current[FOG].g = fog_target.g;
+			m_current[FOG].b = fog_target.b;
+		}
 		for (int i = 0; i < SLOT_COUNT; ++i)
-			m_current[i] = follow(m_current[i], targets[i], keep);
+			m_current[i] = follow(m_current[i], i == FOG ? fog_target : targets[i], keep);
 	}
 
 	const video::SColorf &color(Slot slot) const { return m_current[slot]; }
 	video::SColor fog() const { return m_current[FOG].toSColor(); }
 
 private:
-	static float channel(float current, float target, float keep)
-	{
-		const float next = target + (current - target) * keep;
-		// Below a quarter of an 8-bit step the tail is invisible: land exactly.
-		return std::abs(next - target) < 1.0f / 1024 ? target : next;
-	}
 	static video::SColorf follow(const video::SColorf &current,
 			const video::SColorf &target, float keep)
 	{
-		return video::SColorf(channel(current.r, target.r, keep),
-				channel(current.g, target.g, keep),
-				channel(current.b, target.b, keep),
-				channel(current.a, target.a, keep));
+		const video::SColorf next(target.r + (current.r - target.r) * keep,
+				target.g + (current.g - target.g) * keep,
+				target.b + (current.b - target.b) * keep,
+				target.a + (current.a - target.a) * keep);
+		// Land the color as a whole, so its channels do not arrive one by one.
+		if (std::abs(next.r - target.r) < LANDING && std::abs(next.g - target.g) < LANDING &&
+				std::abs(next.b - target.b) < LANDING && std::abs(next.a - target.a) < LANDING)
+			return target;
+		return next;
 	}
 
 	bool m_initialized = false;
+	float m_snap_window = std::numeric_limits<float>::infinity();
 	video::SColorf m_current[SLOT_COUNT];
 };
 

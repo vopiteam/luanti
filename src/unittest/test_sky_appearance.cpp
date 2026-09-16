@@ -30,6 +30,9 @@ public:
 	void testFogFollowing();
 	void testZeroFogDistance();
 	void testPaletteFollowing();
+	void testPaletteFogHue();
+	void testPaletteSnapWindow();
+	void testPaletteLandsWhole();
 };
 static TestSkyAppearance g_test_instance;
 
@@ -42,6 +45,9 @@ void TestSkyAppearance::runTests(IGameDef *)
 	TEST(testFogFollowing);
 	TEST(testZeroFogDistance);
 	TEST(testPaletteFollowing);
+	TEST(testPaletteFogHue);
+	TEST(testPaletteSnapWindow);
+	TEST(testPaletteLandsWhole);
 }
 
 void TestSkyAppearance::testFogColor()
@@ -207,6 +213,115 @@ void TestSkyAppearance::testPaletteFollowing()
 		near(palette.color(Palette::DAY_SKY).r, 1, 0);
 		colorEqual(palette.fog(), no_fog);
 	}
+}
+
+void TestSkyAppearance::testPaletteFogHue()
+{
+	using SkyAppearance::Palette;
+	const video::SColor red(255, 255, 0, 0), white(255, 255, 255, 255);
+	const SkyColor sky = {red, red, red, red, red, red, red};
+	const video::SColor rose(255, 200, 100, 50), clear_blue(0, 0, 0, 255);
+	const video::SColor blue(255, 0, 0, 255);
+	const float dt = 1.0f / 60;
+	Palette palette;
+	// The stock fog is transparent black. The first explicit fog takes its
+	// own hue at once; only its opacity eases in.
+	palette.update(sky, video::SColor(0), white, white, dt);
+	palette.update(sky, rose, white, white, dt);
+	UASSERTEQ(u32, palette.fog().getRed(), 200);
+	UASSERTEQ(u32, palette.fog().getBlue(), 50);
+	UASSERT(palette.fog().getAlpha() > 0 && palette.fog().getAlpha() < 255);
+	for (int i = 0; i < 600; ++i)
+		palette.update(sky, rose, white, white, dt);
+	colorEqual(palette.fog(), rose);
+	// Fading out keeps the hue: the transparent target's color never shows.
+	for (int i = 0; i < 60; ++i)
+		palette.update(sky, clear_blue, white, white, dt);
+	UASSERTEQ(u32, palette.fog().getRed(), 200);
+	UASSERTEQ(u32, palette.fog().getBlue(), 50);
+	near(palette.color(Palette::FOG).a, 0.1353353f, 0.0005f);
+	for (int i = 0; i < 600; ++i)
+		palette.update(sky, clear_blue, white, white, dt);
+	UASSERTEQ(u32, palette.fog().getAlpha(), 0);
+	UASSERTEQ(u32, palette.fog().getRed(), 200);
+	// From transparent, a new hue shows at once again.
+	palette.update(sky, blue, white, white, dt);
+	UASSERTEQ(u32, palette.fog().getRed(), 0);
+	UASSERTEQ(u32, palette.fog().getBlue(), 255);
+	UASSERT(palette.fog().getAlpha() > 0 && palette.fog().getAlpha() < 255);
+}
+
+void TestSkyAppearance::testPaletteSnapWindow()
+{
+	using SkyAppearance::Palette;
+	const video::SColor red(255, 255, 0, 0), blue(255, 0, 0, 255), green(255, 0, 255, 0);
+	const SkyColor first = {red, red, red, red, red, red, red};
+	const SkyColor second = {blue, blue, blue, blue, blue, blue, blue};
+	const SkyColor third = {green, green, green, green, green, green, green};
+	const video::SColor white(255, 255, 255, 255), no_fog(0);
+	const float dt = 1.0f / 60;
+	Palette palette;
+	// The window starts open: the first packet of a session shows at once
+	// even when it arrives after the first frame showed the stock palette.
+	palette.update(first, no_fog, white, white, dt);
+	palette.packetArrived();
+	palette.update(second, no_fog, white, white, dt);
+	near(palette.color(Palette::DAY_SKY).b, 1, 0);
+	// The next packet eases.
+	palette.packetArrived();
+	palette.update(third, no_fog, white, white, dt);
+	UASSERT(palette.color(Palette::DAY_SKY).g < 0.5f);
+	UASSERT(palette.color(Palette::DAY_SKY).b > 0.5f);
+	for (int i = 0; i < 600; ++i)
+		palette.update(third, no_fog, white, white, dt);
+	near(palette.color(Palette::DAY_SKY).g, 1, 0);
+	// A packet within a second of a teleport shows at once ...
+	palette.expectPacket(1.0f);
+	for (int i = 0; i < 30; ++i)
+		palette.update(third, no_fog, white, white, dt);
+	palette.packetArrived();
+	palette.update(first, no_fog, white, white, dt);
+	near(palette.color(Palette::DAY_SKY).r, 1, 0);
+	// ... and one arriving later eases as usual.
+	palette.expectPacket(1.0f);
+	for (int i = 0; i < 90; ++i)
+		palette.update(first, no_fog, white, white, dt);
+	palette.packetArrived();
+	palette.update(second, no_fog, white, white, dt);
+	UASSERT(palette.color(Palette::DAY_SKY).r > 0.5f);
+	// One window, one snap: a second packet in the same window eases.
+	palette.expectPacket(1.0f);
+	palette.packetArrived();
+	palette.update(third, no_fog, white, white, dt);
+	near(palette.color(Palette::DAY_SKY).g, 1, 0);
+	palette.packetArrived();
+	palette.update(first, no_fog, white, white, dt);
+	UASSERT(palette.color(Palette::DAY_SKY).r < 0.5f);
+}
+
+void TestSkyAppearance::testPaletteLandsWhole()
+{
+	using SkyAppearance::Palette;
+	const video::SColor from(255, 255, 0, 0), to(255, 0, 0, 8);
+	const SkyColor start = {from, from, from, from, from, from, from};
+	const SkyColor end = {to, to, to, to, to, to, to};
+	const video::SColor white(255, 255, 255, 255), no_fog(0);
+	const float dt = 1.0f / 60;
+	const float target_blue = 8.0f / 255;
+	Palette palette;
+	palette.update(start, no_fog, white, white, dt);
+	// After three seconds red is still e^-6 away, so the short blue travel,
+	// far inside the landing distance, waits for it.
+	for (int i = 0; i < 180; ++i)
+		palette.update(end, no_fog, white, white, dt);
+	UASSERT(palette.color(Palette::DAY_SKY).r > Palette::LANDING);
+	UASSERT(palette.color(Palette::DAY_SKY).b != target_blue);
+	UASSERT(std::abs(palette.color(Palette::DAY_SKY).b - target_blue) < Palette::LANDING);
+	// A second later the whole color lands together.
+	for (int i = 0; i < 60; ++i)
+		palette.update(end, no_fog, white, white, dt);
+	near(palette.color(Palette::DAY_SKY).r, 0, 0);
+	near(palette.color(Palette::DAY_SKY).b, target_blue, 0);
 }
 
 void TestSkyAppearance::testZeroFogDistance()
