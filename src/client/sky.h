@@ -13,6 +13,7 @@
 #include "skyparams.h"
 #if IS_VOPI_ENGINE
 #include "daycycle.h"
+#include "sky_appearance.h"
 #endif
 
 #define SKY_MATERIAL_COUNT 12
@@ -125,13 +126,33 @@ public:
 	s16 getFogDistance() const { return m_sky_params.fog_distance; }
 
 	void setFogStart(float fog_start) { m_sky_params.fog_start = fog_start; }
-	float getFogStart() const { return m_sky_params.fog_start; }
+	float getFogStart() const {
+#if IS_VOPI_ENGINE
+		if (m_fog.active())
+			return m_fog.start();
+#endif
+		return m_sky_params.fog_start;
+	}
+
+#if IS_VOPI_ENGINE
+	float updateFog(float range, float limit, float dtime, bool controlled)
+	{
+		m_fog.update(range, m_sky_params.fog_start, limit, dtime,
+				controlled && m_visible);
+		return m_fog.range();
+	}
+#endif
 
 	void setFogColor(video::SColor v) { m_sky_params.fog_color = v; }
 	video::SColor getFogColor() const {
+#if IS_VOPI_ENGINE
+		return SkyAppearance::fogColor(m_sky_params.fog_color, getBgColor(),
+				m_brightness, m_day_cycle.enabled && m_visible);
+#else
 		if (m_sky_params.fog_color.getAlpha() > 0)
 			return m_sky_params.fog_color;
 		return getBgColor();
+#endif
 	}
 
 	void setAutoCaveBrightness(bool auto_dim_skybox)
@@ -149,12 +170,12 @@ private:
 	// How much sun & moon transition should affect horizon color
 	float m_horizon_blend()
 	{
-		if (!m_sunlight_seen)
-			return 0;
 #if IS_VOPI_ENGINE
 		if (m_day_cycle.enabled)
-			return m_cycle_state.dawn_weight;
+			return m_cycle_state.dawn_weight * (1 - m_exposure.indoors());
 #endif
+		if (!m_sunlight_seen)
+			return 0;
 		float x = m_time_of_day >= 0.5 ? (1 - m_time_of_day) * 2
 					       : m_time_of_day * 2;
 
@@ -190,6 +211,8 @@ private:
 #if IS_VOPI_ENGINE
 	DayCycleDefinition m_day_cycle;
 	DayCycleState m_cycle_state;
+	SkyAppearance::Exposure m_exposure;
+	SkyAppearance::Fog m_fog;
 #endif
 	bool m_visible = true;
 	// Used when m_visible=false

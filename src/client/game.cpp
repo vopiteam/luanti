@@ -3807,6 +3807,12 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		Fog range
 	*/
 
+#if IS_VOPI_ENGINE
+	auto &environment = client->getEnv();
+	auto cycle = environment.getDayCycleSnapshot();
+	const float client_range = draw_control->wanted_range;
+#endif
+
 	if (sky->getFogDistance() >= 0) {
 		draw_control->wanted_range = MYMIN(draw_control->wanted_range, sky->getFogDistance());
 	}
@@ -3816,12 +3822,20 @@ void Game::updateFrame(ProfilerGraph *graph, RunStats *stats, f32 dtime,
 		runData.fog_range = draw_control->wanted_range * BS;
 	}
 
+#if IS_VOPI_ENGINE
+	const float fog_limit = draw_control->range_all ? FOG_RANGE_ALL : client_range * BS;
+	const float smooth_fog_range = sky->updateFog(runData.fog_range, fog_limit, dtime,
+			cycle.definition.enabled);
+	// Keep geometry available while a shorter requested fog range fades in.
+	if (smooth_fog_range != runData.fog_range)
+		draw_control->wanted_range = std::min(client_range, smooth_fog_range / BS);
+	runData.fog_range = smooth_fog_range;
+#endif
+
 	/*
 		Calculate general brightness
 	*/
 #if IS_VOPI_ENGINE
-	auto &environment = client->getEnv();
-	auto cycle = environment.getDayCycleSnapshot();
 	double time_of_day_smooth = runData.time_of_day_smooth;
 	if (cycle.definition.enabled) {
 		if (runData.day_cycle_revision != cycle.revision ||

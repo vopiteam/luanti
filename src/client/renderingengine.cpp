@@ -20,6 +20,9 @@
 #include "porting.h"
 #include "clientmap.h"
 #include "renderingengine.h"
+#if IS_VOPI_ENGINE
+#include "sky_appearance.h"
+#endif
 #include "render/core.h"
 #include "render/factory.h"
 #include "filesys.h"
@@ -107,7 +110,13 @@ public:
 		video::SColorf fog_colorf(fog_color);
 		m_fog_color.set(fog_colorf, services);
 
+#if IS_VOPI_ENGINE
+		// A zero range means full fog; avoid 0 / 0 in every fog shader.
+		const float fog_distance = SkyAppearance::fogDistance(fog_end);
+		m_fog_distance.set(&fog_distance, services);
+#else
 		m_fog_distance.set(&fog_end, services);
+#endif
 
 		float parameter = 0;
 		if (fog_end > 0)

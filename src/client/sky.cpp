@@ -372,19 +372,20 @@ void Sky::update(float time_of_day, float time_brightness,
 	video::SColorf cloudcolor_bright_dawn_f = m_cloudcolor_dawn_f;
 
 #if IS_VOPI_ENGINE
-	float cloud_color_change_fraction = m_day_cycle.enabled ? std::pow(0.95f, dtime * 60) : 0.95f;
+	float cloud_color_change_fraction = 0.95f;
 #else
 	float cloud_color_change_fraction = 0.95;
 #endif
-	if (sunlight_seen) {
 #if IS_VOPI_ENGINE
-		if (m_day_cycle.enabled) {
-			m_brightness = time_brightness;
-			cloud_color_change_fraction = 0;
-		} else if (std::fabs(time_brightness - m_brightness) < 0.2f) {
-#else
-		if (std::fabs(time_brightness - m_brightness) < 0.2f) {
+	if (m_day_cycle.enabled) {
+		m_exposure.update(sunlight_seen, direct_brightness, dtime);
+		m_brightness = m_exposure.brightness(time_brightness);
+		cloud_color_change_fraction = 0;
+	} else {
+		m_exposure.reset();
 #endif
+	if (sunlight_seen) {
+		if (std::fabs(time_brightness - m_brightness) < 0.2f) {
 			m_brightness = m_brightness * 0.95 + time_brightness * 0.05;
 		} else {
 			m_brightness = m_brightness * 0.80 + time_brightness * 0.20;
@@ -393,8 +394,6 @@ void Sky::update(float time_of_day, float time_brightness,
 	} else {
 #if IS_VOPI_ENGINE
 		float fraction = direct_brightness < m_brightness ? 0.95f : 0.98f;
-		if (m_day_cycle.enabled)
-			fraction = std::pow(fraction, dtime * 60);
 		m_brightness = m_brightness * fraction + direct_brightness * (1 - fraction);
 #else
 		if (direct_brightness < m_brightness)
@@ -403,33 +402,32 @@ void Sky::update(float time_of_day, float time_brightness,
 			m_brightness = m_brightness * 0.98 + direct_brightness * 0.02;
 #endif
 	}
+#if IS_VOPI_ENGINE
+	}
+#endif
 
-	m_clouds_visible = true;
+	m_clouds_visible = sunlight_seen;
 #if IS_VOPI_ENGINE
-	float color_change_fraction = m_day_cycle.enabled ? std::pow(0.98f, dtime * 60) : 0.98f;
-#else
+	if (m_day_cycle.enabled) {
+		auto blend = [&](video::SColorf day, video::SColorf dawn, video::SColorf night) {
+			const auto &s = m_cycle_state;
+			return video::SColorf(
+				day.r * s.day_weight + dawn.r * s.dawn_weight + night.r * s.night_weight,
+				day.g * s.day_weight + dawn.g * s.dawn_weight + night.g * s.night_weight,
+				day.b * s.day_weight + dawn.b * s.dawn_weight + night.b * s.night_weight, 1);
+		};
+		// Smooth only cave exposure. Time and biome palettes remain current.
+		m_bgcolor_bright_f = m_exposure.color(blend(bgcolor_bright_normal_f,
+				bgcolor_bright_dawn_f, bgcolor_bright_night_f), bgcolor_bright_indoor_f);
+		m_skycolor_bright_f = m_exposure.color(blend(skycolor_bright_normal_f,
+				skycolor_bright_dawn_f, skycolor_bright_night_f), bgcolor_bright_indoor_f);
+		m_cloudcolor_bright_f = blend(cloudcolor_bright_normal_f,
+				cloudcolor_bright_dawn_f, cloudcolor_bright_normal_f);
+	} else {
+#endif
 	float color_change_fraction = 0.98f;
-#endif
 	if (sunlight_seen) {
-#if IS_VOPI_ENGINE
-		if (m_day_cycle.enabled) {
-			auto blend = [&](video::SColorf day, video::SColorf dawn, video::SColorf night) {
-				const auto &s = m_cycle_state;
-				return video::SColorf(
-					day.r * s.day_weight + dawn.r * s.dawn_weight + night.r * s.night_weight,
-					day.g * s.day_weight + dawn.g * s.dawn_weight + night.g * s.night_weight,
-					day.b * s.day_weight + dawn.b * s.dawn_weight + night.b * s.night_weight, 1);
-			};
-			m_bgcolor_bright_f = blend(bgcolor_bright_normal_f,
-					bgcolor_bright_dawn_f, bgcolor_bright_night_f);
-			m_skycolor_bright_f = blend(skycolor_bright_normal_f,
-					skycolor_bright_dawn_f, skycolor_bright_night_f);
-			m_cloudcolor_bright_f = blend(cloudcolor_bright_normal_f,
-					cloudcolor_bright_dawn_f, cloudcolor_bright_normal_f);
-		} else if (is_dawn) { // Dawn
-#else
 		if (is_dawn) { // Dawn
-#endif
 			m_bgcolor_bright_f = m_bgcolor_bright_f.getInterpolated(
 				bgcolor_bright_dawn_f, color_change_fraction);
 			m_skycolor_bright_f = m_skycolor_bright_f.getInterpolated(
@@ -448,7 +446,6 @@ void Sky::update(float time_of_day, float time_brightness,
 				m_skycolor_bright_f = m_skycolor_bright_f.getInterpolated(
 					skycolor_bright_normal_f, color_change_fraction);
 			}
-
 			m_cloudcolor_bright_f = m_cloudcolor_bright_f.getInterpolated(
 				cloudcolor_bright_normal_f, color_change_fraction);
 		}
@@ -459,8 +456,10 @@ void Sky::update(float time_of_day, float time_brightness,
 			bgcolor_bright_indoor_f, color_change_fraction);
 		m_cloudcolor_bright_f = m_cloudcolor_bright_f.getInterpolated(
 			cloudcolor_bright_normal_f, color_change_fraction);
-		m_clouds_visible = false;
 	}
+#if IS_VOPI_ENGINE
+	}
+#endif
 
 	video::SColor bgcolor_bright = m_bgcolor_bright_f.toSColor();
 	m_bgcolor = video::SColor(
@@ -561,18 +560,17 @@ void Sky::update(float time_of_day, float time_brightness,
 	}
 
 	float cloud_direct_brightness = 0.0f;
-	if (sunlight_seen) {
 #if IS_VOPI_ENGINE
-		if (m_day_cycle.enabled) {
-			// The boost follows palette weights instead of switching at a gamma-dependent
-			// brightness threshold, which would make clouds jump during twilight.
-			cloud_direct_brightness = std::min(1.0f, time_brightness *
-					static_cast<float>(1 + 0.3 * (1 - m_cycle_state.day_weight)) +
-					(m_directional_colored_fog ? m_horizon_blend() * 0.15f : 0));
-		} else if (!m_directional_colored_fog) {
-#else
-		if (!m_directional_colored_fog) {
+	if (m_day_cycle.enabled) {
+		// The boost follows current palette weights; exposure only changes caves.
+		cloud_direct_brightness = std::min(1.0f, time_brightness *
+				static_cast<float>(1 + 0.3 * (1 - m_cycle_state.day_weight)) +
+				(m_directional_colored_fog ? m_horizon_blend() * 0.15f : 0));
+		m_cloud_brightness = m_exposure.brightness(cloud_direct_brightness);
+	} else {
 #endif
+	if (sunlight_seen) {
+		if (!m_directional_colored_fog) {
 			cloud_direct_brightness = time_brightness;
 			// Boost cloud brightness relative to sky, at dawn, dusk and at night
 			if (time_brightness < 0.7f)
@@ -591,6 +589,9 @@ void Sky::update(float time_of_day, float time_brightness,
 
 	m_cloud_brightness = m_cloud_brightness * cloud_color_change_fraction +
 		cloud_direct_brightness * (1.0 - cloud_color_change_fraction);
+#if IS_VOPI_ENGINE
+	}
+#endif
 	m_cloudcolor_f = video::SColorf(
 		m_cloudcolor_bright_f.r * m_cloud_brightness,
 		m_cloudcolor_bright_f.g * m_cloud_brightness,
