@@ -5,6 +5,7 @@
 
 #include "mg_decoration.h"
 #include "mg_schematic.h"
+#include "mg_biome.h"
 #include "mapgen.h"
 #include "noise.h"
 #include "map.h"
@@ -21,6 +22,9 @@ const FlagDesc flagdesc_deco[] = {
 	{"liquid_surface",  DECO_LIQUID_SURFACE},
 	{"all_floors",      DECO_ALL_FLOORS},
 	{"all_ceilings",    DECO_ALL_CEILINGS},
+#if IS_VOPI_ENGINE
+	{"biome_at_surface", DECO_BIOME_AT_SURFACE},
+#endif
 	{NULL,              0}
 };
 
@@ -63,6 +67,31 @@ void Decoration::resolveNodeNames()
 	getIdsFromNrBacklog(&c_place_on);
 	getIdsFromNrBacklog(&c_spawnby);
 }
+
+
+#if IS_VOPI_ENGINE
+// Whether the biome filter admits a placement on the given surface node.
+// Without the flag it is the column's biomemap entry, the biome of the
+// first stone surface from the top, as upstream; with the flag the biome
+// is selected at the surface itself, so biomes stacked by Y each receive
+// their own floor and ceiling decorations in the caves that cut them, and
+// a liquid surface counts as the biome of the water rather than the bed.
+bool Decoration::biomeAllows(Mapgen *mg, u32 mapindex, v3s16 surface) const
+{
+	if (biomes.empty())
+		return true;
+
+	if ((flags & DECO_BIOME_AT_SURFACE) && mg->biomegen) {
+		const Biome *biome = mg->biomegen->getBiomeAtIndex(mapindex, surface);
+		return biome && biomes.find(biome->index) != biomes.end();
+	}
+
+	if (!mg->biomemap)
+		return true;
+
+	return biomes.find(mg->biomemap[mapindex]) != biomes.end();
+}
+#endif
 
 
 bool Decoration::canPlaceDecoration(MMVManip *vm, v3s16 p)
@@ -190,7 +219,14 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 					(flags & DECO_ALL_CEILINGS)) {
 				// All-surfaces decorations
 				// Check biome of column
+#if IS_VOPI_ENGINE
+				// With the biome at every surface the column cannot be
+				// refused ahead of its surfaces
+				if (!(flags & DECO_BIOME_AT_SURFACE) &&
+						mg->biomemap && !biomes.empty()) {
+#else
 				if (mg->biomemap && !biomes.empty()) {
+#endif
 					auto iter = biomes.find(mg->biomemap[mapindex]);
 					if (iter == biomes.end())
 						continue;
@@ -212,6 +248,11 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 							continue;
 
 						v3s16 pos(x, y, z);
+#if IS_VOPI_ENGINE
+						if ((flags & DECO_BIOME_AT_SURFACE) &&
+								!biomeAllows(mg, mapindex, pos))
+							continue;
+#endif
 						if (generate(mg->vm, &ps, pos, false))
 							mg->gennotify.addDecorationEvent(pos, index);
 					}
@@ -224,6 +265,11 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 							continue;
 
 						v3s16 pos(x, y, z);
+#if IS_VOPI_ENGINE
+						if ((flags & DECO_BIOME_AT_SURFACE) &&
+								!biomeAllows(mg, mapindex, pos))
+							continue;
+#endif
 						if (generate(mg->vm, &ps, pos, true))
 							mg->gennotify.addDecorationEvent(pos, index);
 					}
@@ -240,11 +286,16 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 				if (y < y_min || y > y_max || y < nmin.Y || y > nmax.Y)
 					continue;
 
+#if IS_VOPI_ENGINE
+				if (!biomeAllows(mg, mapindex, v3s16(x, y, z)))
+					continue;
+#else
 				if (mg->biomemap && !biomes.empty()) {
 					auto iter = biomes.find(mg->biomemap[mapindex]);
 					if (iter == biomes.end())
 						continue;
 				}
+#endif
 
 				v3s16 pos(x, y, z);
 				if (generate(mg->vm, &ps, pos, false))

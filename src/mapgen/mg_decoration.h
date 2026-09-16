@@ -32,6 +32,11 @@ enum DecorationType {
 #define DECO_LIQUID_SURFACE  0x20
 #define DECO_ALL_FLOORS      0x40
 #define DECO_ALL_CEILINGS    0x80
+#if IS_VOPI_ENGINE
+// The biome filter looks at the surface the decoration stands on instead
+// of the column's biomemap entry
+#define DECO_BIOME_AT_SURFACE 0x100
+#endif
 
 extern const FlagDesc flagdesc_deco[];
 
@@ -45,6 +50,9 @@ public:
 
 	bool canPlaceDecoration(MMVManip *vm, v3s16 p);
 	void placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax);
+#if IS_VOPI_ENGINE
+	bool biomeAllows(Mapgen *mg, u32 mapindex, v3s16 surface) const;
+#endif
 
 	virtual size_t generate(MMVManip *vm, PcgRandom *pr, v3s16 p, bool ceiling) = 0;
 

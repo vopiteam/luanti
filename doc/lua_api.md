@@ -12009,6 +12009,14 @@ See [Decoration types](#decoration-types). Used by `core.register_decoration`.
     --   schematic decorations as the behavior is unchanged.
     --   If a single decoration registration has both flags the floor and
     --   ceiling decorations will be aligned vertically.
+    -- "biome_at_surface": The 'biomes' filter is applied to the biome
+    --   selected at the surface node the decoration is placed on, instead
+    --   of to the biome recorded for the column at its first stone surface
+    --   from the top. With "all_floors" or "all_ceilings" every floor and
+    --   ceiling is checked on its own, so biomes stacked by Y each receive
+    --   their decorations in the caves that cut them; with "liquid_surface"
+    --   the biome is that of the water, not of the bed beneath it.
+    --   Available with IS_VOPI_ENGINE.
 
     ----- Simple-type parameters
 
