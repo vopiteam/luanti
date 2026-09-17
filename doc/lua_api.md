@@ -12012,10 +12012,17 @@ See [Decoration types](#decoration-types). Used by `core.register_decoration`.
     -- "biome_at_surface": The 'biomes' filter is applied to the biome
     --   selected at the surface node the decoration is placed on, instead
     --   of to the biome recorded for the column at its first stone surface
-    --   from the top. With "all_floors" or "all_ceilings" every floor and
-    --   ceiling is checked on its own, so biomes stacked by Y each receive
-    --   their decorations in the caves that cut them; with "liquid_surface"
-    --   the biome is that of the water, not of the bed beneath it.
+    --   from the top. With "all_floors" or "all_ceilings" the floors and
+    --   ceilings are checked on their own, so biomes stacked by Y each
+    --   receive their decorations in the caves that cut them; the biome is
+    --   selected as the biome pass selects it, once for a run of surfaces
+    --   between two Y limits of any biome, so 'vertical_blend' dithers a
+    --   surface only where it is the first of its run.
+    --   Otherwise the surface is the top walkable node of the column, or
+    --   the liquid with "liquid_surface": over a sea, under a lid of ice or
+    --   not, that is the biome at the water line rather than the biome of
+    --   the bed.
+    --   Has no effect while the mapgen flag "biomes" is off.
     --   Available with IS_VOPI_ENGINE.
 
     ----- Simple-type parameters

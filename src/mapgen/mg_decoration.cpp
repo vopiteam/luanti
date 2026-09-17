@@ -70,26 +70,16 @@ void Decoration::resolveNodeNames()
 
 
 #if IS_VOPI_ENGINE
-// Whether the biome filter admits a placement on the given surface node.
-// Without the flag it is the column's biomemap entry, the biome of the
-// first stone surface from the top, as upstream; with the flag the biome
-// is selected at the surface itself, so biomes stacked by Y each receive
-// their own floor and ceiling decorations in the caves that cut them, and
-// a liquid surface counts as the biome of the water rather than the bed.
-bool Decoration::biomeAllows(Mapgen *mg, u32 mapindex, v3s16 surface) const
+// Whether the biome filter looks at the surface a decoration stands on
+// rather than at the column's biomemap entry, the biome of the first stone
+// surface from the top: the flag, a filter to apply, and a biome generator
+// whose climate maps the generation pass filled for this mapchunk. With
+// the mapgen's biomes off the maps hold nothing of this mapchunk, and the
+// filter stays with the biomemap, which then names no biome, as upstream.
+bool Decoration::filtersAtSurface(const Mapgen *mg) const
 {
-	if (biomes.empty())
-		return true;
-
-	if ((flags & DECO_BIOME_AT_SURFACE) && mg->biomegen) {
-		const Biome *biome = mg->biomegen->getBiomeAtIndex(mapindex, surface);
-		return biome && biomes.find(biome->index) != biomes.end();
-	}
-
-	if (!mg->biomemap)
-		return true;
-
-	return biomes.find(mg->biomemap[mapindex]) != biomes.end();
+	return (flags & DECO_BIOME_AT_SURFACE) && !biomes.empty() &&
+		mg->biomegen && (mg->flags & MG_BIOMES);
 }
 #endif
 
@@ -157,6 +147,9 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 	if (nmax.Y < y_min || y_max < nmin.Y)
 		return;
 
+#if IS_VOPI_ENGINE
+	const bool at_surface = filtersAtSurface(mg);
+#endif
 	PcgRandom ps(blockseed + 53);
 	int carea_size = nmax.X - nmin.X + 1;
 	if (nmax.Z - nmin.Z + 1 != carea_size) {
@@ -222,8 +215,7 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 #if IS_VOPI_ENGINE
 				// With the biome at every surface the column cannot be
 				// refused ahead of its surfaces
-				if (!(flags & DECO_BIOME_AT_SURFACE) &&
-						mg->biomemap && !biomes.empty()) {
+				if (!at_surface && mg->biomemap && !biomes.empty()) {
 #else
 				if (mg->biomemap && !biomes.empty()) {
 #endif
@@ -239,7 +231,35 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 				floors.reserve(size);
 				ceilings.reserve(size);
 
+#if IS_VOPI_ENGINE
+				// Only the surfaces the Y range admits. A floor shows at
+				// its own Y against the node above it and a ceiling at its
+				// own Y against the node below, so one node more each way
+				// finds every surface of the range the whole scan would.
+				const s16 scan_min = std::max<int>(nmin.Y, (int)y_min - 1);
+				const s16 scan_max = std::min<int>(nmax.Y, (int)y_max + 1);
+				mg->getSurfaces(v2s16(x, z), scan_min, scan_max, floors, ceilings);
+
+				// The biome at a surface, selected as the biome pass
+				// selects it: once for a run of surfaces between two Y
+				// limits of any biome, at the first surface of the run.
+				// Both lists run from the top down, each on its own.
+				const Biome *surface_biome = nullptr;
+				s16 biome_y_next = 0;
+				auto surface_allowed = [&](s16 y) {
+					if (!at_surface)
+						return true;
+					if (!surface_biome || y <= biome_y_next) {
+						surface_biome = mg->biomegen->getBiomeAtIndex(
+							mapindex, v3s16(x, y, z));
+						biome_y_next = mg->biomegen->getNextTransitionY(y);
+					}
+					return surface_biome &&
+						biomes.find(surface_biome->index) != biomes.end();
+				};
+#else
 				mg->getSurfaces(v2s16(x, z), nmin.Y, nmax.Y, floors, ceilings);
+#endif
 
 				if (flags & DECO_ALL_FLOORS) {
 					// Floor decorations
@@ -247,12 +267,11 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 						if (y < y_min || y > y_max)
 							continue;
 
-						v3s16 pos(x, y, z);
 #if IS_VOPI_ENGINE
-						if ((flags & DECO_BIOME_AT_SURFACE) &&
-								!biomeAllows(mg, mapindex, pos))
+						if (!surface_allowed(y))
 							continue;
 #endif
+						v3s16 pos(x, y, z);
 						if (generate(mg->vm, &ps, pos, false))
 							mg->gennotify.addDecorationEvent(pos, index);
 					}
@@ -260,16 +279,18 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 
 				if (flags & DECO_ALL_CEILINGS) {
 					// Ceiling decorations
+#if IS_VOPI_ENGINE
+					surface_biome = nullptr;
+#endif
 					for (const s16 y : ceilings) {
 						if (y < y_min || y > y_max)
 							continue;
 
-						v3s16 pos(x, y, z);
 #if IS_VOPI_ENGINE
-						if ((flags & DECO_BIOME_AT_SURFACE) &&
-								!biomeAllows(mg, mapindex, pos))
+						if (!surface_allowed(y))
 							continue;
 #endif
+						v3s16 pos(x, y, z);
 						if (generate(mg->vm, &ps, pos, true))
 							mg->gennotify.addDecorationEvent(pos, index);
 					}
@@ -287,15 +308,19 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 					continue;
 
 #if IS_VOPI_ENGINE
-				if (!biomeAllows(mg, mapindex, v3s16(x, y, z)))
-					continue;
-#else
+				if (at_surface) {
+					// The top walkable node of the column, or the liquid
+					const Biome *biome = mg->biomegen->getBiomeAtIndex(
+						mapindex, v3s16(x, y, z));
+					if (!biome || biomes.find(biome->index) == biomes.end())
+						continue;
+				} else
+#endif
 				if (mg->biomemap && !biomes.empty()) {
 					auto iter = biomes.find(mg->biomemap[mapindex]);
 					if (iter == biomes.end())
 						continue;
 				}
-#endif
 
 				v3s16 pos(x, y, z);
 				if (generate(mg->vm, &ps, pos, false))

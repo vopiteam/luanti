@@ -51,7 +51,7 @@ public:
 	bool canPlaceDecoration(MMVManip *vm, v3s16 p);
 	void placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax);
 #if IS_VOPI_ENGINE
-	bool biomeAllows(Mapgen *mg, u32 mapindex, v3s16 surface) const;
+	bool filtersAtSurface(const Mapgen *mg) const;
 #endif
 
 	virtual size_t generate(MMVManip *vm, PcgRandom *pr, v3s16 p, bool ceiling) = 0;

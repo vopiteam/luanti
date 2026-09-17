@@ -2242,37 +2242,33 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 
 void TestMapgen::testDecorationBiomeAtSurface(IGameDef *gamedef)
 {
-	// Two biomes on one climate point, stacked by Y, in a mapchunk that
-	// lies wholly inside the stone, with an air pocket set in each biome
-	// before generation, which the terrain pass leaves in place. The
-	// column's biomemap entry is the biome of the mapchunk's top, so a
-	// floor and ceiling decoration bound to the lower biome reaches nothing
-	// by it; with the biome at every surface it lines the lower pocket and
-	// leaves the upper one bare, and bound to the upper biome the reverse.
+	// Two biomes on one climate point, stacked by Y, and a decoration
+	// bound to one of them, judged by the column's biomemap entry or by the
+	// biome at the surface it stands on.
 	MockServer server(getTestTempDirectory());
 	NodeDefManager ndef;
-	auto add_node = [&](const char *name, content_t source) {
+	auto add_node = [&](const char *name, content_t source, bool walkable) {
 		ContentFeatures def = gamedef->ndef()->get(source);
 		def.name = name;
+		def.walkable = walkable;
 		return ndef.set(name, def);
 	};
-	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE);
-	const content_t water = add_node("mapgen_water_source", t_CONTENT_WATER);
-	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER);
-	const content_t glow = add_node("test:glow", t_CONTENT_GRASS);
+	const content_t stone = add_node("mapgen_stone", t_CONTENT_STONE, true);
+	const content_t water = add_node("mapgen_water_source", t_CONTENT_WATER, false);
+	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER, false);
+	const content_t glow = add_node("test:glow", t_CONTENT_GRASS, true);
+	const content_t lily = add_node("test:lily", t_CONTENT_GRASS, true);
 	MockBiomeManager manager(&server);
 	manager.setNodeDefManager(&ndef);
 	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
 	server.ndef()->cancelNodeResolveCallback(default_biome);
 	ndef.pendNodeResolve(default_biome);
-	// All stone: no top or filler, so a pocket's floor stays stone
-	auto add_biome = [&](const char *name, s16 y_min, s16 y_max) {
+	// All stone: no top or filler, so a surface under air stays stone
+	auto add_biome = [&](const char *name) {
 		auto biome = addTerrainTestBiome(manager, name, 50.0f, 50.0f);
 		biome->m_nodenames = default_biome->m_nodenames;
 		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
 		ndef.pendNodeResolve(biome);
-		biome->min_pos.Y = y_min;
-		biome->max_pos.Y = y_max;
 		biome->c_top = biome->c_filler = biome->c_stone = stone;
 		biome->depth_top = 0;
 		biome->depth_filler = 0;
@@ -2281,22 +2277,19 @@ void TestMapgen::testDecorationBiomeAtSurface(IGameDef *gamedef)
 		biome->c_riverbed = stone;
 		return biome;
 	};
-	auto lower = add_biome("lower", -MAX_MAP_GENERATION_LIMIT, 23);
-	auto upper = add_biome("upper", 24, MAX_MAP_GENERATION_LIMIT);
+	auto lower = add_biome("lower");
+	auto upper = add_biome("upper");
 	ndef.setNodeRegistrationStatus(true);
 	ndef.runNodeResolveCallbacks();
 
 	auto constant_noise = [](float value) {
 		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
 	};
-	// The ridge column of the form fixture: stone up to Y 52, so the
-	// mapblock at Y 16..31 is solid
+	// The ridge column of the form fixture: stone up to Y 52
 	MapgenValleysParams params;
 	params.seed = 12345;
 	params.chunksize = v3s16(1);
-	params.flags = MG_BIOMES | MG_DECORATIONS;
 	params.spflags = 0;
-	params.water_level = 0;
 	params.altitude_chill = 100;
 	params.mountain_cap = 0.0f;
 	params.np_terrain_height = constant_noise(0.0f);
@@ -2316,107 +2309,221 @@ void TestMapgen::testDecorationBiomeAtSurface(IGameDef *gamedef)
 	EmergeManager emerge(&server, &metrics);
 	emerge.ndef = &ndef;
 
-	// One node of glow on every floor and under every ceiling of every
-	// column of the biomes it is bound to
-	DecorationManager decorations(&server);
-	auto deco = static_cast<DecoSimple *>(DecorationManager::create(DECO_SIMPLE));
-	deco->name = "test:glow";
-	deco->c_place_on.push_back(stone);
-	deco->c_decos.push_back(glow);
-	deco->deco_height = 1;
-	deco->deco_height_max = 0;
-	deco->deco_param2 = 0;
-	deco->deco_param2_max = 0;
-	deco->sidelen = MAP_BLOCKSIZE;
-	deco->fill_ratio = 10.0f;
-	deco->y_min = -MAX_MAP_GENERATION_LIMIT;
-	deco->y_max = MAX_MAP_GENERATION_LIMIT;
-	deco->nspawnby = -1;
-	UASSERT(decorations.add(deco) != OBJDEF_INVALID_HANDLE);
-
-	const v3s16 node_min(-16, MAP_BLOCKSIZE, 16);
-	const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
-	// The pockets: air at Y 18..20 in the lower biome, 26..28 in the upper
-	const v2s16 pocket_min(node_min.X + 2, node_min.Z + 2);
-	const v2s16 pocket_max(node_min.X + 5, node_min.Z + 5);
-	const s16 lower_floor = 18, lower_ceiling = 20;
-	const s16 upper_floor = 26, upper_ceiling = 28;
-	const u32 surfaces = DECO_ALL_FLOORS | DECO_ALL_CEILINGS;
-	const struct {
-		const char *name;
-		u32 flags;
-		Biome *bound;
-		bool lower_lined;
-		bool upper_lined;
-	} cases[] = {
-		// By the biomemap the whole column is the upper biome
-		{"lower by the biomemap", surfaces, lower, false, false},
-		{"upper by the biomemap", surfaces, upper, true, true},
-		// At the surface each pocket is its own biome's
-		{"lower at the surface", surfaces | DECO_BIOME_AT_SURFACE, lower, true, false},
-		{"upper at the surface", surfaces | DECO_BIOME_AT_SURFACE, upper, false, true},
+	// One node on every surface of every column the filter admits
+	auto add_deco = [&](DecorationManager &decorations, const char *name,
+			content_t place_on, content_t node) {
+		auto deco = static_cast<DecoSimple *>(DecorationManager::create(DECO_SIMPLE));
+		deco->name = name;
+		deco->c_place_on.push_back(place_on);
+		deco->c_decos.push_back(node);
+		deco->deco_height = 1;
+		deco->deco_height_max = 0;
+		deco->deco_param2 = 0;
+		deco->deco_param2_max = 0;
+		deco->sidelen = MAP_BLOCKSIZE;
+		deco->fill_ratio = 10.0f;
+		deco->y_min = -MAX_MAP_GENERATION_LIMIT;
+		deco->y_max = MAX_MAP_GENERATION_LIMIT;
+		deco->nspawnby = -1;
+		UASSERT(decorations.add(deco) != OBJDEF_INVALID_HANDLE);
+		return deco;
 	};
-	for (const auto &test : cases) {
-		infostream << "Decoration biome fixture: " << test.name << std::endl;
-		deco->flags = test.flags;
-		deco->biomes.clear();
-		deco->biomes.insert(test.bound->index);
-		BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
-		source.setValleysClimate(params);
-		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
-			emerge.getOreManager(), &decorations, emerge.getSchematicManager()));
-		BlockMakeData data;
-		data.blockpos_min = data.blockpos_max = v3s16(-1, 1, 1);
+	auto make_chunk = [&](MapgenValleys &mapgen, BlockMakeData &data, s16 block_y) {
+		const v3s16 node_min(-16, block_y * MAP_BLOCKSIZE, 16);
+		data.blockpos_min = data.blockpos_max = v3s16(-1, block_y, 1);
 		data.seed = params.seed;
 		data.nodedef = &ndef;
-		data.vmanip = new MapgenTestVManip(VoxelArea(
-			node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
-		auto node_at = [&](s16 x, s16 y, s16 z) -> MapNode & {
-			return data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)];
-		};
-		for (s16 z = pocket_min.Y; z <= pocket_max.Y; ++z)
-		for (s16 x = pocket_min.X; x <= pocket_max.X; ++x) {
-			for (s16 y = lower_floor; y <= lower_ceiling; ++y)
-				node_at(x, y, z) = MapNode(CONTENT_AIR);
-			for (s16 y = upper_floor; y <= upper_ceiling; ++y)
-				node_at(x, y, z) = MapNode(CONTENT_AIR);
-		}
-		mapgen.makeChunk(&data);
+		data.vmanip = new MapgenTestVManip(VoxelArea(node_min - v3s16(MAP_BLOCKSIZE),
+			node_min + v3s16(2 * MAP_BLOCKSIZE - 1)));
+		return node_min;
+	};
 
-		// The column is the upper biome by the biomemap, whatever the pockets
-		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
-		for (s16 x = node_min.X; x <= node_max.X; ++x) {
-			const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
-			UASSERTEQ(biome_t, mapgen.biomemap[index], upper->index);
+	// In the stone. The mapblock at Y 16..31 is solid, with an air pocket
+	// set in each biome before generation, which the terrain pass leaves
+	// in place: Y 18..20 in the lower biome, which ends at 23, and 26..28
+	// in the upper. The biomemap entry is the biome of the mapchunk's top,
+	// so by it both pockets are the upper biome's; at the surface each is
+	// its own biome's. A vertical blend of the lower biome reaches the
+	// node under the upper pocket, Y 25: as the first floor of its run it is
+	// dithered, and this climate draws the lower biome there; after a
+	// higher floor of the same run, the floor of a third pocket at Y 30, it
+	// keeps the biome selected up there, as the biome pass would.
+	{
+		DecorationManager decorations(&server);
+		auto deco = add_deco(decorations, "test:glow", stone, glow);
+		const s16 lower_floor = 18, lower_ceiling = 20;
+		const s16 upper_floor = 26, upper_ceiling = 28;
+		const s16 top_pocket = 30;
+		const u32 surfaces = DECO_ALL_FLOORS | DECO_ALL_CEILINGS;
+		const u32 at_surface = surfaces | DECO_BIOME_AT_SURFACE;
+		const u32 floors_at_surface = DECO_ALL_FLOORS | DECO_BIOME_AT_SURFACE;
+		const s16 blend = 3;
+		{
+			// The selector's dither for the node at 25, two above the lower
+			// biome, in a climate of 50 and 50
+			PcgRandom rng(static_cast<s64>(25 + (50.0f + 50.0f) * 0.9f));
+			UASSERT(rng.range(0, blend) >= 25 - 23);
 		}
-		for (s16 z = pocket_min.Y; z <= pocket_max.Y; ++z)
-		for (s16 x = pocket_min.X; x <= pocket_max.X; ++x) {
-			const content_t lined = glow;
-			const content_t bare = CONTENT_AIR;
-			UASSERTEQ(content_t, node_at(x, lower_floor, z).getContent(),
-				test.lower_lined ? lined : bare);
-			UASSERTEQ(content_t, node_at(x, lower_ceiling, z).getContent(),
-				test.lower_lined ? lined : bare);
-			UASSERTEQ(content_t, node_at(x, lower_floor + 1, z).getContent(), bare);
-			UASSERTEQ(content_t, node_at(x, upper_floor, z).getContent(),
-				test.upper_lined ? lined : bare);
-			UASSERTEQ(content_t, node_at(x, upper_ceiling, z).getContent(),
-				test.upper_lined ? lined : bare);
-			UASSERTEQ(content_t, node_at(x, upper_floor + 1, z).getContent(), bare);
-			// The pockets stand in stone on both sides
-			UASSERTEQ(content_t, node_at(x, lower_floor - 1, z).getContent(), stone);
-			UASSERTEQ(content_t, node_at(x, upper_ceiling + 1, z).getContent(), stone);
+		enum Lined : u8 { NONE = 0, FLOOR = 1, CEILING = 2, BOTH = 3 };
+		const struct {
+			const char *name;
+			u32 mg_flags;
+			u32 flags;
+			Biome *bound;
+			s16 blend;          // of the lower biome
+			bool third_pocket;
+			s16 y_min, y_max;   // of the decoration
+			u8 lower_lined;
+			u8 upper_lined;
+		} cases[] = {
+			{"lower by the biomemap", MG_BIOMES, surfaces, lower, 0, false,
+				-100, 100, NONE, NONE},
+			{"upper by the biomemap", MG_BIOMES, surfaces, upper, 0, false,
+				-100, 100, BOTH, BOTH},
+			{"lower at the surface", MG_BIOMES, at_surface, lower, 0, false,
+				-100, 100, BOTH, NONE},
+			{"upper at the surface", MG_BIOMES, at_surface, upper, 0, false,
+				-100, 100, NONE, BOTH},
+			// The Y range cuts the scan, not what is found in the range:
+			// the lower pocket's ceiling stands on the node at 21, the
+			// upper pocket's floor on the node at 25
+			{"upper at the surface, floors of the range", MG_BIOMES, at_surface, upper,
+				0, false, 21, 25, NONE, FLOOR},
+			{"lower at the surface, ceilings of the range", MG_BIOMES, at_surface, lower,
+				0, false, 21, 25, CEILING, NONE},
+			// The blend: the first floor of a run is dithered, a later one
+			// keeps the biome of the run
+			{"blended floor, first of its run", MG_BIOMES, floors_at_surface, lower,
+				blend, false, -100, 100, FLOOR, FLOOR},
+			{"blended floor, after a higher one", MG_BIOMES, floors_at_surface, lower,
+				blend, true, -100, 100, FLOOR, NONE},
+			// The mapgen's biomes off: no climate of this mapchunk to
+			// select by, and a biomemap that names no biome
+			{"biomes off", 0, at_surface, lower, 0, false,
+				-100, 100, NONE, NONE},
+		};
+		for (const auto &test : cases) {
+			infostream << "Decoration biome fixture: " << test.name << std::endl;
+			params.flags = test.mg_flags | MG_DECORATIONS;
+			params.water_level = 0;
+			lower->max_pos.Y = 23;
+			lower->vertical_blend = test.blend;
+			upper->min_pos.Y = 24;
+			deco->flags = test.flags;
+			deco->y_min = test.y_min;
+			deco->y_max = test.y_max;
+			deco->biomes.clear();
+			deco->biomes.insert(test.bound->index);
+			BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+			source.setValleysClimate(params);
+			MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+				emerge.getOreManager(), &decorations, emerge.getSchematicManager()));
+			BlockMakeData data;
+			const v3s16 node_min = make_chunk(mapgen, data, 1);
+			const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+			const v2s16 pocket_min(node_min.X + 2, node_min.Z + 2);
+			const v2s16 pocket_max(node_min.X + 5, node_min.Z + 5);
+			auto node_at = [&](s16 x, s16 y, s16 z) -> MapNode & {
+				return data.vmanip->m_data[data.vmanip->m_area.index(x, y, z)];
+			};
+			for (s16 z = pocket_min.Y; z <= pocket_max.Y; ++z)
+			for (s16 x = pocket_min.X; x <= pocket_max.X; ++x) {
+				for (s16 y = lower_floor; y <= lower_ceiling; ++y)
+					node_at(x, y, z) = MapNode(CONTENT_AIR);
+				for (s16 y = upper_floor; y <= upper_ceiling; ++y)
+					node_at(x, y, z) = MapNode(CONTENT_AIR);
+				if (test.third_pocket)
+					node_at(x, top_pocket, z) = MapNode(CONTENT_AIR);
+			}
+			mapgen.makeChunk(&data);
+
+			const biome_t column_biome = (test.mg_flags & MG_BIOMES) ?
+				upper->index : BIOME_NONE;
+			for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+			for (s16 x = node_min.X; x <= node_max.X; ++x) {
+				const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+				UASSERTEQ(biome_t, mapgen.biomemap[index], column_biome);
+			}
+			auto expected = [&](u8 lined, u8 which) {
+				return (lined & which) ? glow : (content_t)CONTENT_AIR;
+			};
+			for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+			for (s16 y = node_min.Y; y <= node_max.Y; ++y)
+			for (s16 x = node_min.X; x <= node_max.X; ++x) {
+				const bool in_column = x >= pocket_min.X && x <= pocket_max.X &&
+					z >= pocket_min.Y && z <= pocket_max.Y;
+				content_t want = stone;
+				if (in_column && y >= lower_floor && y <= lower_ceiling) {
+					want = y == lower_floor ? expected(test.lower_lined, FLOOR) :
+						y == lower_ceiling ? expected(test.lower_lined, CEILING) :
+						(content_t)CONTENT_AIR;
+				} else if (in_column && y >= upper_floor && y <= upper_ceiling) {
+					want = y == upper_floor ? expected(test.upper_lined, FLOOR) :
+						y == upper_ceiling ? expected(test.upper_lined, CEILING) :
+						(content_t)CONTENT_AIR;
+				} else if (in_column && test.third_pocket && y == top_pocket) {
+					// Its floor is the upper biome's, which no case here
+					// binds together with a third pocket
+					want = CONTENT_AIR;
+				}
+				UASSERTEQ(content_t, node_at(x, y, z).getContent(), want);
+			}
 		}
-		// Nothing outside the pockets: no surface there
-		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
-		for (s16 y = node_min.Y; y <= node_max.Y; ++y)
-		for (s16 x = node_min.X; x <= node_max.X; ++x) {
-			const bool in_pocket = x >= pocket_min.X && x <= pocket_max.X &&
-				z >= pocket_min.Y && z <= pocket_max.Y &&
-				((y >= lower_floor && y <= lower_ceiling) ||
-				 (y >= upper_floor && y <= upper_ceiling));
-			if (!in_pocket)
-				UASSERTEQ(content_t, node_at(x, y, z).getContent(), stone);
+	}
+
+	// On the water. The mapblock at Y 48..63 holds the bed at 52, in the
+	// lower biome, which ends at 56, and the water line at 60, in the
+	// upper. The biomemap entry is the bed's biome; a decoration on the
+	// liquid surface stands on the water.
+	{
+		DecorationManager decorations(&server);
+		auto deco = add_deco(decorations, "test:lily", water, lily);
+		const s16 water_level = 60;
+		const struct {
+			const char *name;
+			u32 flags;
+			Biome *bound;
+			bool placed;
+		} cases[] = {
+			{"bed by the biomemap", DECO_LIQUID_SURFACE, lower, true},
+			{"water line by the biomemap", DECO_LIQUID_SURFACE, upper, false},
+			{"bed at the surface",
+				DECO_LIQUID_SURFACE | DECO_BIOME_AT_SURFACE, lower, false},
+			{"water line at the surface",
+				DECO_LIQUID_SURFACE | DECO_BIOME_AT_SURFACE, upper, true},
+		};
+		for (const auto &test : cases) {
+			infostream << "Decoration biome fixture: " << test.name << std::endl;
+			params.flags = MG_BIOMES | MG_DECORATIONS;
+			params.water_level = water_level;
+			lower->max_pos.Y = 56;
+			lower->vertical_blend = 0;
+			upper->min_pos.Y = 57;
+			deco->flags = test.flags;
+			deco->biomes.clear();
+			deco->biomes.insert(test.bound->index);
+			BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+			source.setValleysClimate(params);
+			MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+				emerge.getOreManager(), &decorations, emerge.getSchematicManager()));
+			BlockMakeData data;
+			const v3s16 node_min = make_chunk(mapgen, data, 3);
+			const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+			mapgen.makeChunk(&data);
+
+			for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+			for (s16 x = node_min.X; x <= node_max.X; ++x) {
+				const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+				UASSERTEQ(biome_t, mapgen.biomemap[index], lower->index);
+				auto node_at = [&](s16 y) {
+					return data.vmanip->m_data[
+						data.vmanip->m_area.index(x, y, z)].getContent();
+				};
+				UASSERTEQ(content_t, node_at(water_level), water);
+				UASSERTEQ(content_t, node_at(water_level + 1),
+					test.placed ? lily : (content_t)CONTENT_AIR);
+				UASSERTEQ(content_t, node_at(water_level + 2), CONTENT_AIR);
+			}
 		}
 	}
 }
