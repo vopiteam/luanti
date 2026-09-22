@@ -1351,10 +1351,17 @@ void TestMapgen::testBiomeFormSelection()
 	auto hot = addTerrainTestBiome(manager, "hot", 65.0f, 50.0f);
 	hot->heat_min = 60.0f;
 	auto anywhere = addTerrainTestBiome(manager, "anywhere", 80.0f, 80.0f);
+	// Two biomes on one cold cell split by the variant axis at zero.
+	auto even = addTerrainTestBiome(manager, "even", 15.0f, 15.0f);
+	even->heat_max = 30.0f;
+	even->variant_max = 0.0f;
+	auto odd = addTerrainTestBiome(manager, "odd", 15.0f, 15.0f);
+	odd->heat_max = 30.0f;
+	odd->variant_min = 0.0f;
 	// Resolve definitions before cloning into an independent worker registry.
 	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
 	auto ndef = const_cast<NodeDefManager *>(server.getNodeDefManager());
-	for (Biome *biome : {floor, ridge, peak, hot, anywhere}) {
+	for (Biome *biome : {floor, ridge, peak, hot, anywhere, even, odd}) {
 		biome->m_nodenames = default_biome->m_nodenames;
 		biome->m_nnlistsizes = default_biome->m_nnlistsizes;
 		ndef->pendNodeResolve(biome);
@@ -1439,6 +1446,21 @@ void TestMapgen::testBiomeFormSelection()
 	climate.np_base_blend = climate.np_valley_depth_blend = constant_noise(0.0f);
 	anywhere->base_min = -std::numeric_limits<float>::infinity();
 
+	// The variant axis: the noise decides between two biomes on one climate
+	// point, takes no part in the distance, and the query reports it.
+	climate.np_variant = constant_noise(-0.5f);
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(15.0f, 15.0f, pos, &supplied)->index,
+		even->index);
+	climate.np_variant = constant_noise(0.5f);
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(15.0f, 15.0f, pos, &supplied)->index,
+		odd->index);
+	UASSERT(generator.getEffectiveBiomeData(pos, result));
+	UASSERTEQ(float, result.variant, 0.5f);
+	// A biome outside its variant bound cannot win however close it is.
+	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(50.0f, 50.0f, pos, &supplied)->index,
+		ridge->index);
+	climate.np_variant = constant_noise(0.0f);
+
 	// A clone carries the bounds and its own column model.
 	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
 	auto copied_ridge = static_cast<Biome *>(copied_manager->getRaw(ridge->index));
@@ -1447,6 +1469,9 @@ void TestMapgen::testBiomeFormSelection()
 	auto copied_hot = static_cast<Biome *>(copied_manager->getRaw(hot->index));
 	UASSERTEQ(float, copied_hot->heat_min, 60.0f);
 	UASSERT(std::isinf(copied_hot->heat_max));
+	auto copied_odd = static_cast<Biome *>(copied_manager->getRaw(odd->index));
+	UASSERTEQ(float, copied_odd->variant_min, 0.0f);
+	UASSERT(std::isinf(copied_odd->variant_max));
 	std::unique_ptr<BiomeGen> worker_base(generator.clone(copied_manager.get()));
 	auto worker = static_cast<BiomeGenOriginal *>(worker_base.get());
 	UASSERT(worker->getEffectiveBiomeData(pos, result));

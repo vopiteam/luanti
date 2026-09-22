@@ -39,6 +39,8 @@ struct EffectiveBiomeClimate {
 	float climate_reference_height;
 	float river_bank_height;
 	BiomeTerrainForm form;
+	// The third climate axis, 'mg_biome_np_variant' at the column
+	float variant;
 };
 
 struct EffectiveBiomeData : EffectiveBiomeClimate {
@@ -106,6 +108,11 @@ public:
 	float heat_max = std::numeric_limits<float>::infinity();
 	float humidity_min = -std::numeric_limits<float>::infinity();
 	float humidity_max = std::numeric_limits<float>::infinity();
+	// Bounds on the variant axis, the noise 'mg_biome_np_variant' at the
+	// column. It takes no part in the climate distance: like the form, it
+	// only says where a biome is eligible.
+	float variant_min = -std::numeric_limits<float>::infinity();
+	float variant_max = std::numeric_limits<float>::infinity();
 	float base_min = -std::numeric_limits<float>::infinity();
 	float base_max = std::numeric_limits<float>::infinity();
 	float valley_depth_min = 0.0f;
@@ -117,6 +124,8 @@ public:
 
 	bool hasClimateBounds() const;
 	bool matchesClimate(float heat, float humidity) const;
+	bool hasVariantBounds() const;
+	bool matchesVariant(float variant) const;
 	bool hasFormConstraints() const;
 	bool matchesForm(const BiomeTerrainForm &form) const;
 
@@ -219,7 +228,8 @@ struct BiomeParamsOriginal : public BiomeParams {
 		np_humidity_blend(0, 1.5, v3f(8.0, 8.0, 8.0), 90003, 2, 1.0, 2.0)
 #if IS_VOPI_ENGINE
 		, np_base_blend(0, 0, v3f(48.0, 48.0, 48.0), 1021, 2, 0.5, 2.0),
-		np_valley_depth_blend(0, 0, v3f(48.0, 48.0, 48.0), 4417, 2, 0.5, 2.0)
+		np_valley_depth_blend(0, 0, v3f(48.0, 48.0, 48.0), 4417, 2, 0.5, 2.0),
+		np_variant(0, 0, v3f(512.0, 512.0, 512.0), 7717, 5, 0.55, 2.0)
 #endif
 	{
 	}
@@ -235,10 +245,15 @@ struct BiomeParamsOriginal : public BiomeParams {
 	// Small-scale variation added to the region level and the valley depth
 	// of the column form before the form bounds are compared, so that a
 	// bound on a slow field does not cut the world along its smooth
-	// contour. Scale 0, the default, leaves the form as the mapgen models
-	// it.
+	// contour. Scale 0 and offset 0, the defaults, leave the form as the
+	// mapgen models it.
 	NoiseParams np_base_blend;
 	NoiseParams np_valley_depth_blend;
+	// A third climate axis beside heat and humidity: a 2D noise a biome
+	// can be bounded on, so that one climate cell alternates between two
+	// biomes along the zero line of the noise. Scale 0, the default, keeps
+	// the axis at its offset everywhere.
+	NoiseParams np_variant;
 #endif
 };
 
@@ -266,9 +281,10 @@ public:
 #if IS_VOPI_ENGINE
 	// A known column form skips sampling it again; without one, a candidate
 	// with form bounds samples the column model, or is ineligible when the
-	// mapgen has none.
+	// mapgen has none. Likewise a known variant value.
 	Biome *calcBiomeFromNoise(float heat, float humidity, v3s16 pos,
-		const BiomeTerrainForm *form = nullptr) const;
+		const BiomeTerrainForm *form = nullptr,
+		const float *known_variant = nullptr) const;
 #else
 	Biome *calcBiomeFromNoise(float heat, float humidity, v3s16 pos) const;
 #endif
@@ -300,6 +316,9 @@ private:
 	// The blend noise of the form, added where selection and queries read
 	// the column form, so both see the same values.
 	void blendForm(v2s16 pos, BiomeTerrainForm &form) const;
+	// The variant axis at a column, scalar noise, the same for selection
+	// and queries.
+	float calcVariantAtPoint(v2s16 pos) const;
 	bool m_valleys_climate = false;
 	int m_climate_water_level = 0;
 	float m_climate_altitude_chill = 1.0f;

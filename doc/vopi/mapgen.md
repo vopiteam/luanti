@@ -185,6 +185,7 @@ order. All are optional; an omitted bound is unrestricted.
 |---|---|---|
 | `heat_min`, `heat_max` | heat as the selector sees it (effective in Valleys) | finite float |
 | `humidity_min`, `humidity_max` | humidity as the selector sees it | finite float |
+| `variant_min`, `variant_max` | the variant axis: the noise `mg_biome_np_variant` at the column | finite float |
 | `base_min`, `base_max` | region level: `terrain_height + valley_depth²` before the river-bank clamp, in nodes | finite float |
 | `valley_depth_min`, `valley_depth_max` | valley depth amplitude `valley_depth²`, in nodes | finite float ≥ 0 |
 | `valley_pos_min`, `valley_pos_max` | position in the valley profile, 0 at the river edge, 1 on the ridge | 0 to 1 |
@@ -195,7 +196,8 @@ An inverted range, nonnumeric value, NaN, infinity, a value outside the float
 range or a nonzero value rounding to float zero is a registration error, and
 so is a priority that is not a whole number in range.
 
-Selection order: Y and position bounds, climate bounds, form bounds, then
+Selection order: Y and position bounds, climate bounds, variant bounds,
+form bounds, then
 priority, then weighted heat/humidity distance among the survivors, with
 the usual registration-order ties and vertical blending. A biome rejected by
 a bound cannot enter through `vertical_blend`; if no candidate passes, the
@@ -218,13 +220,23 @@ Definitions without bounds preserve the original selection and never sample
 the column. A definition is copied with its bounds and priority into the
 emerge threads.
 
+The variant axis is a third climate noise beside heat and humidity,
+`mg_biome_np_variant`, sampled per column like the form. It takes no part
+in the distance: two biomes on one climate point, one with
+`variant_max = 0` and the other with `variant_min = 0`, alternate along
+the zero line of the noise, so that one climate cell holds two biome
+variants. The default noise has scale 0, so the
+axis stays at its offset and unbounded definitions never notice it. The
+query below reports the value as `variant`.
+
 Two blend noises, `mg_biome_np_base_blend` and
 `mg_biome_np_valley_depth_blend`, are added to the region level and the
 valley depth of the form before the bounds are compared, in nodes, the way
 the heat and humidity blend noises are added to the climate; the valley
 depth never falls below zero. A bound on one of these slow fields then cuts
 a ragged border rather than the smooth contour of the terrain noise. Both
-default to scale 0, which leaves the form as the mapgen models it.
+default to scale 0 and offset 0, which leaves the form as the mapgen
+models it.
 
 The form values describe the same column model as
 `get_effective_biome_data`, so a query and generation agree on them, blend
@@ -316,6 +328,7 @@ For Valleys, the result contains:
 | `river_bank_height` | Modeled river-bank level, in absolute node coordinates. |
 | `base` | Region level before the river-bank clamp, in nodes. |
 | `valley_depth` | Valley depth amplitude, in nodes. |
+| `variant` | The variant axis at the column, `mg_biome_np_variant`. |
 | `valley_pos` | Position in the valley profile, 0 at the river edge, 1 on the ridge. |
 | `mountain` | Mountain mask, 0 where no mountain body can rise. |
 

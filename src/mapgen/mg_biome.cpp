@@ -91,6 +91,7 @@ void BiomeParamsOriginal::readParams(const Settings *settings)
 #if IS_VOPI_ENGINE
 	settings->getNoiseParams("mg_biome_np_base_blend",     np_base_blend);
 	settings->getNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
+	settings->getNoiseParams("mg_biome_np_variant",        np_variant);
 #endif
 }
 
@@ -104,6 +105,7 @@ void BiomeParamsOriginal::writeParams(Settings *settings) const
 #if IS_VOPI_ENGINE
 	settings->setNoiseParams("mg_biome_np_base_blend",     np_base_blend);
 	settings->setNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
+	settings->setNoiseParams("mg_biome_np_variant",        np_variant);
 #endif
 }
 
@@ -258,7 +260,7 @@ Biome *BiomeGenOriginal::getBiomeAtIndex(size_t index, v3s16 pos) const
 
 #if IS_VOPI_ENGINE
 Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 pos,
-		const BiomeTerrainForm *form) const
+		const BiomeTerrainForm *form, const float *known_variant) const
 #else
 Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 pos) const
 #endif
@@ -287,6 +289,8 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 	bool form_available = form != nullptr;
 	if (form)
 		sampled_form = *form;
+	float variant = known_variant ? *known_variant : 0.0f;
+	bool variant_sampled = known_variant != nullptr;
 #endif
 
 	for (size_t i = 1; i < m_bmgr->getNumObjects(); i++) {
@@ -300,6 +304,14 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 #if IS_VOPI_ENGINE
 		if (b->hasClimateBounds() && !b->matchesClimate(heat, humidity))
 			continue;
+		if (b->hasVariantBounds()) {
+			if (!variant_sampled) {
+				variant = calcVariantAtPoint(v2s16(pos.X, pos.Z));
+				variant_sampled = true;
+			}
+			if (!b->matchesVariant(variant))
+				continue;
+		}
 		if (b->hasFormConstraints()) {
 			if (!form_sampled) {
 				form_available = getBiomeForm(v2s16(pos.X, pos.Z), sampled_form);
@@ -426,6 +438,8 @@ ObjDef *Biome::clone() const
 	obj->heat_max = heat_max;
 	obj->humidity_min = humidity_min;
 	obj->humidity_max = humidity_max;
+	obj->variant_min = variant_min;
+	obj->variant_max = variant_max;
 	obj->base_min = base_min;
 	obj->base_max = base_max;
 	obj->valley_depth_min = valley_depth_min;
@@ -451,6 +465,16 @@ bool Biome::matchesClimate(float heat, float humidity) const
 {
 	return heat >= heat_min && heat <= heat_max &&
 		humidity >= humidity_min && humidity <= humidity_max;
+}
+
+bool Biome::hasVariantBounds() const
+{
+	return std::isfinite(variant_min) || std::isfinite(variant_max);
+}
+
+bool Biome::matchesVariant(float variant) const
+{
+	return variant >= variant_min && variant <= variant_max;
 }
 
 bool Biome::hasFormConstraints() const
@@ -519,8 +543,11 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	result.climate_reference_height = std::fmax(context.river_bank_height,
 		static_cast<float>(context.column_max_y));
 	result.form = context.form;
-	if (include_context)
+	result.variant = 0.0f;
+	if (include_context) {
 		blendForm(pos, result.form);
+		result.variant = calcVariantAtPoint(pos);
+	}
 	const auto climate = calcValleysClimate(result.raw_heat, result.raw_humidity,
 		context.river_bank_height, context.column_max_y, m_climate_water_level,
 		m_climate_altitude_chill, m_climate_flags);
@@ -553,7 +580,8 @@ bool BiomeGenOriginal::getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out)
 {
 	if (!getEffectiveClimate(v2s16(pos.X, pos.Z), out))
 		return false;
-	Biome *biome = calcBiomeFromNoise(out.heat, out.humidity, pos, &out.form);
+	Biome *biome = calcBiomeFromNoise(out.heat, out.humidity, pos, &out.form,
+		&out.variant);
 	if (!biome || biome->index == OBJDEF_INVALID_INDEX)
 		return false;
 	out.biome = biome->index;
@@ -570,6 +598,14 @@ bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 	form = context.form;
 	blendForm(pos, form);
 	return true;
+}
+
+float BiomeGenOriginal::calcVariantAtPoint(v2s16 pos) const
+{
+	const NoiseParams &np = m_params->np_variant;
+	if (np.scale == 0.0f)
+		return np.offset;
+	return NoiseFractal2D(&np, pos.X, pos.Y, m_params->seed);
 }
 
 void BiomeGenOriginal::blendForm(v2s16 pos, BiomeTerrainForm &form) const
