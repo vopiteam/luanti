@@ -217,6 +217,10 @@ struct BiomeParamsOriginal : public BiomeParams {
 		np_humidity(50, 50, v3f(1000.0, 1000.0, 1000.0), 842, 3, 0.5, 2.0),
 		np_heat_blend(0, 1.5, v3f(8.0, 8.0, 8.0), 13, 2, 1.0, 2.0),
 		np_humidity_blend(0, 1.5, v3f(8.0, 8.0, 8.0), 90003, 2, 1.0, 2.0)
+#if IS_VOPI_ENGINE
+		, np_base_blend(0, 0, v3f(48.0, 48.0, 48.0), 1021, 2, 0.5, 2.0),
+		np_valley_depth_blend(0, 0, v3f(48.0, 48.0, 48.0), 4417, 2, 0.5, 2.0)
+#endif
 	{
 	}
 
@@ -227,6 +231,15 @@ struct BiomeParamsOriginal : public BiomeParams {
 	NoiseParams np_humidity;
 	NoiseParams np_heat_blend;
 	NoiseParams np_humidity_blend;
+#if IS_VOPI_ENGINE
+	// Small-scale variation added to the region level and the valley depth
+	// of the column form before the form bounds are compared, so that a
+	// bound on a slow field does not cut the world along its smooth
+	// contour. Scale 0, the default, leaves the form as the mapgen models
+	// it.
+	NoiseParams np_base_blend;
+	NoiseParams np_valley_depth_blend;
+#endif
 };
 
 class BiomeGenOriginal final : public BiomeGen {
@@ -284,6 +297,9 @@ private:
 	std::unique_ptr<BiomeTerrainSampler> m_terrain_sampler;
 	bool sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out,
 		bool include_context) const;
+	// The blend noise of the form, added where selection and queries read
+	// the column form, so both see the same values.
+	void blendForm(v2s16 pos, BiomeTerrainForm &form) const;
 	bool m_valleys_climate = false;
 	int m_climate_water_level = 0;
 	float m_climate_altitude_chill = 1.0f;

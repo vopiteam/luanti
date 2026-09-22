@@ -88,6 +88,10 @@ void BiomeParamsOriginal::readParams(const Settings *settings)
 	settings->getNoiseParams("mg_biome_np_heat_blend",     np_heat_blend);
 	settings->getNoiseParams("mg_biome_np_humidity",       np_humidity);
 	settings->getNoiseParams("mg_biome_np_humidity_blend", np_humidity_blend);
+#if IS_VOPI_ENGINE
+	settings->getNoiseParams("mg_biome_np_base_blend",     np_base_blend);
+	settings->getNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
+#endif
 }
 
 
@@ -97,6 +101,10 @@ void BiomeParamsOriginal::writeParams(Settings *settings) const
 	settings->setNoiseParams("mg_biome_np_heat_blend",     np_heat_blend);
 	settings->setNoiseParams("mg_biome_np_humidity",       np_humidity);
 	settings->setNoiseParams("mg_biome_np_humidity_blend", np_humidity_blend);
+#if IS_VOPI_ENGINE
+	settings->setNoiseParams("mg_biome_np_base_blend",     np_base_blend);
+	settings->setNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
+#endif
 }
 
 
@@ -511,6 +519,8 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	result.climate_reference_height = std::fmax(context.river_bank_height,
 		static_cast<float>(context.column_max_y));
 	result.form = context.form;
+	if (include_context)
+		blendForm(pos, result.form);
 	const auto climate = calcValleysClimate(result.raw_heat, result.raw_humidity,
 		context.river_bank_height, context.column_max_y, m_climate_water_level,
 		m_climate_altitude_chill, m_climate_flags);
@@ -558,7 +568,21 @@ bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 	if (!m_terrain_sampler->sampleClimate(pos, context))
 		return false;
 	form = context.form;
+	blendForm(pos, form);
 	return true;
+}
+
+void BiomeGenOriginal::blendForm(v2s16 pos, BiomeTerrainForm &form) const
+{
+	auto active = [](const NoiseParams &np) {
+		return np.scale != 0.0f || np.offset != 0.0f;
+	};
+	if (active(m_params->np_base_blend))
+		form.base += NoiseFractal2D(&m_params->np_base_blend, pos.X, pos.Y,
+			m_params->seed);
+	if (active(m_params->np_valley_depth_blend))
+		form.valley_depth = std::fmax(0.0f, form.valley_depth + NoiseFractal2D(
+			&m_params->np_valley_depth_blend, pos.X, pos.Y, m_params->seed));
 }
 
 bool BiomeGenOriginal::getBiomeTerrainHeight(v2s16 pos, float &height) const

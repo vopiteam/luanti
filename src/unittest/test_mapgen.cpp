@@ -1420,6 +1420,25 @@ void TestMapgen::testBiomeFormSelection()
 	UASSERTEQ(biome_t, generator.calcBiomeFromNoise(62.0f, 50.0f, pos, &supplied)->index,
 		hot->index);
 
+	// The form blend noise moves the region level and the valley depth that
+	// selection and queries see, the depth never below zero. The fixture
+	// column has base 16: a bound of 20 rejects it until the blend adds 5.
+	anywhere->base_min = 20.0f;
+	UASSERTEQ(biome_t, generator.calcBiomeAtPoint(pos)->index, BIOME_NONE);
+	climate.np_base_blend = constant_noise(5.0f);
+	climate.np_valley_depth_blend = constant_noise(-20.0f);
+	BiomeTerrainForm blended;
+	UASSERT(generator.getBiomeForm(v2s16(pos.X, pos.Z), blended));
+	UASSERTEQ(float, blended.base, 21.0f);
+	UASSERTEQ(float, blended.valley_depth, 0.0f);
+	UASSERTEQ(biome_t, generator.calcBiomeAtPoint(pos)->index, anywhere->index);
+	UASSERT(generator.getEffectiveBiomeData(pos, result));
+	UASSERTEQ(float, result.form.base, 21.0f);
+	UASSERTEQ(float, result.form.valley_depth, 0.0f);
+	UASSERTEQ(biome_t, result.biome, anywhere->index);
+	climate.np_base_blend = climate.np_valley_depth_blend = constant_noise(0.0f);
+	anywhere->base_min = -std::numeric_limits<float>::infinity();
+
 	// A clone carries the bounds and its own column model.
 	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
 	auto copied_ridge = static_cast<Biome *>(copied_manager->getRaw(ridge->index));

@@ -218,8 +218,17 @@ Definitions without bounds preserve the original selection and never sample
 the column. A definition is copied with its bounds and priority into the
 emerge threads.
 
+Two blend noises, `mg_biome_np_base_blend` and
+`mg_biome_np_valley_depth_blend`, are added to the region level and the
+valley depth of the form before the bounds are compared, in nodes, the way
+the heat and humidity blend noises are added to the climate; the valley
+depth never falls below zero. A bound on one of these slow fields then cuts
+a ragged border rather than the smooth contour of the terrain noise. Both
+default to scale 0, which leaves the form as the mapgen models it.
+
 The form values describe the same column model as
-`get_effective_biome_data`, so a query and generation agree on them.
+`get_effective_biome_data`, so a query and generation agree on them, blend
+included.
 Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
 
 ```lua
