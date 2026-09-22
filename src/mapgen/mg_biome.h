@@ -121,6 +121,8 @@ public:
 	float valley_pos_max = 1.0f;
 	float mountain_min = 0.0f;
 	float mountain_max = std::numeric_limits<float>::infinity();
+	float body_min = 0.0f;
+	float body_max = std::numeric_limits<float>::infinity();
 
 	bool hasClimateBounds() const;
 	bool matchesClimate(float heat, float humidity) const;

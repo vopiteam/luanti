@@ -491,6 +491,8 @@ ObjDef *Biome::clone() const
 	obj->valley_pos_max = valley_pos_max;
 	obj->mountain_min = mountain_min;
 	obj->mountain_max = mountain_max;
+	obj->body_min = body_min;
+	obj->body_max = body_max;
 	obj->priority = priority;
 #endif
 
@@ -525,7 +527,8 @@ bool Biome::hasFormConstraints() const
 	return std::isfinite(base_min) || std::isfinite(base_max) ||
 		valley_depth_min > 0.0f || std::isfinite(valley_depth_max) ||
 		valley_pos_min > 0.0f || valley_pos_max < 1.0f ||
-		mountain_min > 0.0f || std::isfinite(mountain_max);
+		mountain_min > 0.0f || std::isfinite(mountain_max) ||
+		body_min > 0.0f || std::isfinite(body_max);
 }
 
 bool Biome::matchesForm(const BiomeTerrainForm &form) const
@@ -534,7 +537,8 @@ bool Biome::matchesForm(const BiomeTerrainForm &form) const
 		form.valley_depth >= valley_depth_min &&
 		form.valley_depth <= valley_depth_max &&
 		form.valley_pos >= valley_pos_min && form.valley_pos <= valley_pos_max &&
-		form.mountain >= mountain_min && form.mountain <= mountain_max;
+		form.mountain >= mountain_min && form.mountain <= mountain_max &&
+		form.body >= body_min && form.body <= body_max;
 }
 
 void BiomeGenOriginal::setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler)

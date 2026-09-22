@@ -472,6 +472,10 @@ void TestMapgen::testValleysClimateContext()
 		BiomeClimateContext context;
 		UASSERT(mountains->sampleClimate(v2s16(-17, 31), context));
 		UASSERTEQ(float, context.form.mountain, 20.0f);
+		// A constant body noise of 1 through a gate of 1 on the ridge: the
+		// density is positive up to the mountain height, and the sampled
+		// body ends within a few nodes below it
+		UASSERT(context.form.body > 19.0f && context.form.body <= 20.0f);
 		UASSERTEQ(float, context.form.valley_depth, 0.0f);
 		UASSERTEQ(float, context.form.base, 0.0f);
 	}
@@ -480,6 +484,7 @@ void TestMapgen::testValleysClimateContext()
 	BiomeClimateContext flat_context;
 	UASSERT(no_mountains->sampleClimate(v2s16(-17, 31), flat_context));
 	UASSERTEQ(float, flat_context.form.mountain, 0.0f);
+	UASSERTEQ(float, flat_context.form.body, 0.0f);
 
 	MapgenValleysParams varied_params;
 	varied_params.seed = 54321;
@@ -574,6 +579,7 @@ void TestMapgen::testBiomeShift()
 		UASSERTEQ(float, form.valley_depth, read_form.valley_depth);
 		UASSERTEQ(float, form.valley_pos, read_form.valley_pos);
 		UASSERTEQ(float, form.mountain, read_form.mountain);
+		UASSERTEQ(float, form.body, read_form.body);
 		EffectiveBiomeData data, read_data, own;
 		UASSERT(generator.getEffectiveBiomeData(pos, data));
 		UASSERT(reference.getEffectiveBiomeData(read, read_data));
@@ -1279,6 +1285,14 @@ void TestMapgen::testBiomeFormRanges()
 	form.mountain_max = 10.0f;
 	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0f, 10.01f}));
 	form.mountain_max = std::numeric_limits<float>::infinity();
+	form.body_min = 15.0f;
+	UASSERT(form.hasFormConstraints());
+	UASSERT(form.matchesForm({0.0f, 0.0f, 0.0f, 0.0f, 15.0f}));
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0f, 0.0f, 14.99f}));
+	form.body_min = 0.0f;
+	form.body_max = 10.0f;
+	UASSERT(!form.matchesForm({0.0f, 0.0f, 0.0f, 0.0f, 10.01f}));
+	form.body_max = std::numeric_limits<float>::infinity();
 	form.base_max = -5.0f;
 	UASSERT(form.hasFormConstraints());
 	UASSERT(form.matchesForm({-5.0f, 0.0f, 0.0f, 0.0f}));
@@ -1316,6 +1330,8 @@ void TestMapgen::testBiomeFormParsing()
 		UASSERT(parsed && !parsed->hasClimateBounds() && !parsed->hasFormConstraints());
 		UASSERT(std::isinf(parsed->heat_min) && parsed->heat_min < 0.0f);
 		UASSERT(std::isinf(parsed->mountain_max) && parsed->mountain_max > 0.0f);
+		UASSERT(std::isinf(parsed->body_max) && parsed->body_max > 0.0f);
+		UASSERTEQ(float, parsed->body_min, 0.0f);
 		UASSERTEQ(float, parsed->valley_pos_max, 1.0f);
 		UASSERTEQ(int, parsed->priority, 0);
 	}
@@ -1333,9 +1349,13 @@ void TestMapgen::testBiomeFormParsing()
 	number("valley_pos_max", 0.15);
 	number("mountain_min", 10.0);
 	number("mountain_max", 40.0);
+	number("body_min", 3.0);
+	number("body_max", 6.0);
 	{
 		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
 		UASSERT(parsed && parsed->hasClimateBounds() && parsed->hasFormConstraints());
+		UASSERTEQ(float, parsed->body_min, 3.0f);
+		UASSERTEQ(float, parsed->body_max, 6.0f);
 		UASSERTEQ(float, parsed->heat_min, -14.0f);
 		UASSERTEQ(float, parsed->heat_max, 28.0f);
 		UASSERT(std::isinf(parsed->humidity_min) && parsed->humidity_min < 0.0f);
@@ -1391,7 +1411,8 @@ void TestMapgen::testBiomeFormParsing()
 		reject();
 	}
 	for (const char *name : {"valley_depth_min", "valley_depth_max",
-			"valley_pos_min", "valley_pos_max", "mountain_min", "mountain_max"}) {
+			"valley_pos_min", "valley_pos_max", "mountain_min", "mountain_max",
+			"body_min", "body_max"}) {
 		for (lua_Number invalid : {-1.0, inf, nan, 1.0e-300}) {
 			lua_newtable(L);
 			number(name, invalid);

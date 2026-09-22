@@ -175,6 +175,7 @@ order. All are optional; an omitted bound is unrestricted.
 | `valley_depth_min`, `valley_depth_max` | valley depth amplitude `valley_depth²`, in nodes | finite float ≥ 0 |
 | `valley_pos_min`, `valley_pos_max` | position in the valley profile, 0 at the river edge, 1 on the ridge | 0 to 1 |
 | `mountain_min`, `mountain_max` | mountain mask `max(mountain_height, 0) · gate`, 0 where no body can rise | finite float ≥ 0 |
+| `body_min`, `body_max` | the mountain body: the height it reaches over the terrain at the column, from its density sampled up the column, within a few nodes of the modeled surface, 0 where no body stands on the column. The mask says how tall a body can be in the region, the body whether and how far one rises here | finite float ≥ 0 |
 | `priority` | among the biomes passing every bound, only the highest priority competes by distance | whole number in the s16 range, default 0 |
 
 An inverted range, nonnumeric value, NaN, infinity, a value outside the float
@@ -335,6 +336,7 @@ For Valleys, the result contains:
 | `variant` | The variant axis at the column, `mg_biome_np_variant`. |
 | `valley_pos` | Position in the valley profile, 0 at the river edge, 1 on the ridge. |
 | `mountain` | Mountain mask, 0 where no mountain body can rise. |
+| `body` | The mountain body of the column: the height it reaches over the terrain, 0 where none stands. |
 
 The climate context and the form depend on exact X/Z and the world's frozen
 mapgen parameters, independently of query Y, generated chunks, player edits

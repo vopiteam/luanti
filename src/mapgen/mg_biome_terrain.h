@@ -15,13 +15,19 @@ struct MapgenValleysParams;
 // Terrain form of a column, from the 2D column model alone. It describes the
 // place a column occupies in the landscape rather than its materials: the
 // region level before the river-bank clamp, the valley depth amplitude, the
-// position in the valley profile (0 at the river edge, 1 on the ridge) and
-// the mountain mask (0 where no mountain body can rise).
+// position in the valley profile (0 at the river edge, 1 on the ridge), the
+// mountain mask (0 where no mountain body can rise) and the body: the
+// height the mountain body reaches over the terrain at the column, from
+// the body's density sampled up the column, within a few nodes of the
+// modeled surface, 0 where no body stands on the column. The mask says
+// how tall a body can be in the region, the body whether and how far one
+// rises here.
 struct BiomeTerrainForm {
 	float base = 0.0f;
 	float valley_depth = 0.0f;
 	float valley_pos = 0.0f;
 	float mountain = 0.0f;
+	float body = 0.0f;
 };
 
 // Exact-column context for climate corrections and form selection,

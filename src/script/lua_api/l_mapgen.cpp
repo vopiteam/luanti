@@ -399,10 +399,11 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 		{"valley_depth_min", "valley_depth_max", 0.0, inf, 0.0, largest},
 		{"valley_pos_min", "valley_pos_max", 0.0, 1.0, 0.0, 1.0},
 		{"mountain_min", "mountain_max", 0.0, inf, 0.0, largest},
+		{"body_min", "body_max", 0.0, inf, 0.0, largest},
 		{"variant_min", "variant_max", -inf, inf, -largest, largest},
 	};
-	lua_Number bounds[7][2];
-	for (size_t i = 0; i < 7; ++i) {
+	lua_Number bounds[8][2];
+	for (size_t i = 0; i < 8; ++i) {
 		const auto &field = bound_fields[i];
 		bounds[i][0] = read_biome_bound(L, index, field.min_name,
 			field.min_fallback, field.lower, field.upper);
@@ -443,8 +444,10 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	b->valley_pos_max = static_cast<float>(bounds[4][1]);
 	b->mountain_min = static_cast<float>(bounds[5][0]);
 	b->mountain_max = static_cast<float>(bounds[5][1]);
-	b->variant_min = static_cast<float>(bounds[6][0]);
-	b->variant_max = static_cast<float>(bounds[6][1]);
+	b->body_min = static_cast<float>(bounds[6][0]);
+	b->body_max = static_cast<float>(bounds[6][1]);
+	b->variant_min = static_cast<float>(bounds[7][0]);
+	b->variant_max = static_cast<float>(bounds[7][1]);
 	b->priority = static_cast<s16>(priority);
 #endif
 
@@ -695,7 +698,7 @@ int ModApiMapgen::l_get_effective_biome_data(lua_State *L)
 	if (!static_cast<const BiomeGenOriginal *>(biomegen)->getEffectiveBiomeData(pos, data))
 		return 0;
 
-	lua_createtable(L, 0, 12);
+	lua_createtable(L, 0, 13);
 	lua_pushinteger(L, data.biome);
 	lua_setfield(L, -2, "biome");
 	lua_pushnumber(L, data.form.base);
@@ -706,6 +709,8 @@ int ModApiMapgen::l_get_effective_biome_data(lua_State *L)
 	lua_setfield(L, -2, "valley_pos");
 	lua_pushnumber(L, data.form.mountain);
 	lua_setfield(L, -2, "mountain");
+	lua_pushnumber(L, data.form.body);
+	lua_setfield(L, -2, "body");
 	lua_pushnumber(L, data.heat);
 	lua_setfield(L, -2, "heat");
 	lua_pushnumber(L, data.humidity);

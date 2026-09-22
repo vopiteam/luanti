@@ -205,6 +205,7 @@ private:
 	void trimSurfaceCaches() const;
 	float capRowAt(s32 x, s32 z) const;
 	float capAt(s32 x, s32 z) const;
+	float bodyHeightAt(s32 x, s32 z, const Column &column) const;
 	const ValleysTerrainParams m_params;
 	mutable std::unordered_map<u64, float> m_heights;
 	mutable std::unordered_map<u64, Column> m_columns;
@@ -232,20 +233,63 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 		NoiseFractal2D(&p.valley_depth, x, z, p.seed),
 		NoiseFractal2D(&p.valley_profile, x, z, p.seed));
 	Column c{column.surface_y, column.base, column.slope, 0.0f, 0.0f, 0.0f,
-		{column.region_level, column.valley_depth, column.valley_pos, 0.0f}};
+		{column.region_level, column.valley_depth, column.valley_pos, 0.0f, 0.0f}};
 	if (p.mountains) {
 		c.mountain_height = NoiseFractal2D(&p.mountain_height, x, z, p.seed);
 		if (c.mountain_height > 0.0f) {
 			c.mountain_gate = valleysMountainGate(column, p.column.mountain_river_width);
 			c.form.mountain = c.mountain_height * c.mountain_gate;
-			if (c.mountain_gate > 0.0f)
+			if (c.mountain_gate > 0.0f) {
 				c.foot = valleysMountainFoot(p.mountain, x, z, c.surface,
 					c.mountain_gate, p.seed);
+				c.form.body = bodyHeightAt(x, z, c);
+			}
 		}
 	}
 	if (m_columns.size() < COLUMN_CACHE_LIMIT)
 		m_columns.emplace(key, c);
 	return c;
+}
+
+// The height the mountain body reaches over the terrain in a column: its
+// density, the noise through the gate less delta over the mountain height,
+// sampled at eight steps from the highest point it can be positive at down
+// to the terrain, and the topmost positive sample refined by three
+// bisections. Within a few nodes of what the 3D model finds voxel by
+// voxel, at a dozen noise samples, and a function of the noise alone, so
+// selection and queries agree. The cap and the fill relief are not in it.
+float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) const
+{
+	const auto &p = m_params;
+	const float reach = p.mountain_noise_max * c.mountain_gate * c.mountain_height;
+	if (!(reach > 0.0f))
+		return 0.0f;
+	auto density = [&](float delta) {
+		const float y = std::floor(c.surface + delta + 0.5f);
+		return NoiseFractal3D(&p.mountain, x, y, z, p.seed) * c.mountain_gate -
+			delta / c.mountain_height;
+	};
+	constexpr int STEPS = 8;
+	float below = -1.0f;
+	float above = reach;
+	for (int k = STEPS - 1; k >= 0; --k) {
+		const float delta = reach * static_cast<float>(k) / STEPS;
+		if (density(delta) > 0.0f) {
+			below = delta;
+			break;
+		}
+		above = delta;
+	}
+	if (below < 0.0f)
+		return 0.0f;
+	for (int i = 0; i < 3; ++i) {
+		const float mid = 0.5f * (below + above);
+		if (density(mid) > 0.0f)
+			below = mid;
+		else
+			above = mid;
+	}
+	return below;
 }
 
 float ValleysBiomeTerrainSampler::capRowAt(s32 x, s32 z) const
@@ -535,7 +579,8 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 	const Column c = columnAt(pos.X, pos.Y);
 	if (!std::isfinite(c.surface) || !std::isfinite(c.bank) ||
 			!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
-			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
+			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain) ||
+			!std::isfinite(c.form.body))
 		return false;
 
 	// Clamp before conversion, preserving truncation toward zero even for
