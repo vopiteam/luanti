@@ -1,9 +1,9 @@
 # Mapgen additions
 
-Four flags extend Mapgen Valleys. `sea_level_rivers`, `mountains` and
-`remove_floaters` are part of the default `mgvalleys_spflags` when
-`IS_VOPI_ENGINE` is on, `carve_cliffs` is opt-in, and none of them exists in
-a build without the option, which generates the upstream terrain unchanged.
+Three flags extend Mapgen Valleys: `sea_level_rivers`, `mountains` and
+`remove_floaters`, all part of the default `mgvalleys_spflags` when
+`IS_VOPI_ENGINE` is on. None of them exists in a build without the option,
+which generates the upstream terrain unchanged.
 The code lives in `src/mapgen/mapgen_valleys.cpp`.
 
 ## Climate corrections
@@ -92,28 +92,13 @@ of Mapgen v7, stone where
 The 3D noise is computed only for mapchunks that can hold a body, and the
 spawn search knows the body.
 
-## `carve_cliffs`
-
-Carves the walls of high ground into alcoves, undercuts, arches and windows,
-so the terrain keeps its silhouette and gains negative space. A node belongs
-to a wall when it stands higher than the terrain surface of some column
-within `mgvalleys_carve_reach`: flat tops and gentle slopes have no such
-nodes and stay untouched, steep walls carry the whole carving, so steepness
-gates it without any derivative. Inside a wall the 3D noise
-`mgvalleys_np_carve` decides what goes, faded in with the height of the
-ground above the river banks up to `mgvalleys_carve_zero_height`, and
-biased by `mgvalleys_carve_undercut` towards the foot of the wall, which
-turns alcoves into overhangs. Nothing is carved below the water line.
-Pieces cut loose are taken away by `remove_floaters`.
-
 ## `remove_floaters`
 
 The 3D relief noise of Valleys leaves pieces of stone hanging in the air
 above steep ground, the mountain body pinches lobes off above the ground,
-the cliff carving adds more, and tunnels near the surface cut further
-pieces loose. For every column the terrain pass records
-a floor: the level under which the base terrain is solid whatever the 3D
-noise does. After the caves are carved, every column whose topmost run of
+and tunnels near the surface cut further pieces loose. For every column
+the terrain pass records a floor: the level under which the base terrain
+is solid whatever the 3D noise does. After the caves are carved, every column whose topmost run of
 solid nodes ends above that floor seeds a flood fill over connected solid
 nodes. A piece that reaches neither the floor nor the edge of the mapchunk
 is removed, whatever its size; everything standing on the ground, overhangs
@@ -272,9 +257,9 @@ below; only X/Z select the column, Y does not select a cave floor or a
 vertical chunk. No mapblocks need to be loaded or generated first.
 
 `height` is the highest node of the modeled natural surface of the column:
-the base 3D density, mountain bodies, mountain caps, the solid floor,
-`carve_cliffs` and the removal of natural floating components. The latter
-two use canonical chunk bounds, including components retained at chunk
+the base 3D density, mountain bodies, mountain caps, the solid floor and
+the removal of natural floating components. The removal uses canonical
+chunk bounds, including components retained at chunk
 boundaries, the supporting floor, the native component-size limit and the
 native seeding rule: only a column's topmost solid node starts a fill, and
 not one whose run of solid nodes reaches the floor or the chunk bottom.
@@ -337,8 +322,8 @@ mapgen parameters, independently of query Y, generated chunks, player edits
 and generation order. The column height is the integer-truncated 2D surface,
 clamped to the engine's global generation limits; the climate reference is
 the maximum of that height and the river-bank level. 3D relief, mountain
-bodies, cliff carving, floater removal, the solid floor and caves do not enter
-the climate. This is a separate model from the post-carving
+bodies, floater removal, the solid floor and caves do not enter the
+climate. This is a separate model from the natural surface
 `get_biome_terrain().height`. The four form fields are the values the biome
 form bounds are compared with.
 

@@ -320,7 +320,7 @@ void TestMapgen::testValleysClimateCorrections()
 	constexpr u32 all_climate = MGVALLEYS_ALT_CHILL | MGVALLEYS_HUMID_RIVERS |
 		MGVALLEYS_ALT_DRY;
 	constexpr u32 other_flags = MGVALLEYS_VARY_RIVER_DEPTH | MGVALLEYS_SEA_LEVEL_RIVERS |
-		MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS | MGVALLEYS_MOUNTAINS;
+		MGVALLEYS_REMOVE_FLOATERS | MGVALLEYS_MOUNTAINS;
 	const struct {
 		const char *name;
 		float raw_heat;
@@ -402,9 +402,7 @@ void TestMapgen::testValleysClimateContext()
 	// climate. The column has bank 16 and a 2D surface at 32; the density
 	// relief reaching 52 above it is not the climate height, and the form
 	// records a full-depth valley column on its ridge.
-	for (u32 flags : {0U, u32(MGVALLEYS_CARVE_CLIFFS),
-			u32(MGVALLEYS_REMOVE_FLOATERS),
-			u32(MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS)}) {
+	for (u32 flags : {0U, u32(MGVALLEYS_REMOVE_FLOATERS)}) {
 		params.spflags = flags;
 		for (s16 floor : {s16(-MAX_MAP_GENERATION_LIMIT), s16(100)}) {
 			params.floor_y = floor;
@@ -499,7 +497,7 @@ void TestMapgen::testValleysClimateContext()
 	varied_params.chunksize = v3s16(9);
 	varied_params.mapgen_limit = 32;
 	varied_params.floor_y = 1000;
-	varied_params.spflags |= MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS;
+	varied_params.spflags |= MGVALLEYS_REMOVE_FLOATERS;
 	auto later_operations = createValleysBiomeTerrainSampler(varied_params);
 	for (size_t i = expected.size(); i-- > 0;) {
 		for (const BiomeTerrainSampler *sampler :
@@ -1770,9 +1768,9 @@ void TestMapgen::testBiomeTerrainValleys()
 	auto flat = createValleysBiomeTerrainSampler(params);
 	UASSERTEQ(float, flat->sampleHeight(v2s16(-17, 31)), 19.0f);
 
-	// Inactive cliff carving must not convert an enormous but finite
-	// surface directly to an integer before applying the generation bounds.
-	params.spflags = MGVALLEYS_CARVE_CLIFFS;
+	// An enormous but finite surface is clipped to the generation bounds
+	// and never converted to an integer first.
+	params.spflags = 0;
 	params.np_terrain_height.offset = 1.0e20f;
 	params.np_rivers.offset = 2.0f;
 	auto beyond_world = createValleysBiomeTerrainSampler(params);
@@ -1881,13 +1879,10 @@ void TestMapgen::testBiomeTerrainProfile()
 	auto cleaned = createValleysBiomeTerrainSampler(params);
 	UASSERTEQ(float, cleaned->sampleHeight(floater_pos), 104.0f);
 
-	// These heights come from native terrain generation with caves and
-	// biome-material replacement disabled, before and after cliff carving.
+	// This height comes from native terrain generation with caves and
+	// biome-material replacement disabled.
 	const v2s16 cliff_pos(680, -1584);
 	UASSERTEQ(float, cleaned->sampleHeight(cliff_pos), 24.0f);
-	params.spflags |= MGVALLEYS_CARVE_CLIFFS;
-	auto carved = createValleysBiomeTerrainSampler(params);
-	UASSERTEQ(float, carved->sampleHeight(cliff_pos), 13.0f);
 
 	// Cleanup operates on canonical chunks, including their Y extent.
 	// The first pairs straddle X/Z chunk boundaries; the final pair probes
@@ -1986,7 +1981,7 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 {
 	// The biome terrain sampler models the natural surface of one column
 	// on its own: the density with the mountain body and its cap, the
-	// solid floor, the cliff carving and the floating piece removal, each
+	// solid floor and the floating piece removal, each
 	// written a second time for a column instead of a mapchunk. Generate
 	// stacks of mapchunks with the game's profile, terrain only, and
 	// compare the top solid node of every column with the model: any
@@ -2015,7 +2010,7 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 	params.chunksize = v3s16(5);
 	params.flags = 0;
 	params.spflags = MGVALLEYS_MOUNTAINS | MGVALLEYS_SEA_LEVEL_RIVERS |
-		MGVALLEYS_CARVE_CLIFFS | MGVALLEYS_REMOVE_FLOATERS;
+		MGVALLEYS_REMOVE_FLOATERS;
 	params.water_level = 0;
 	params.floor_y = -61;
 	params.river_size = 14;
@@ -2040,8 +2035,8 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 		emerge.getSchematicManager()));
 	auto sampler = createValleysBiomeTerrainSampler(params);
 
-	// The two mapchunk columns of the profile fixtures, the carved cliff
-	// and the removed mountain cap, in mapblocks on the chunk grid, and a
+	// The two mapchunk columns of the profile fixtures, the cliff and
+	// the removed mountain cap, in mapblocks on the chunk grid, and a
 	// stack from the solid floor to above the highest body
 	const v3s16 chunk_blocks = params.chunksize;
 	const s16 side = chunk_blocks.X * MAP_BLOCKSIZE;
@@ -2099,8 +2094,8 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 	UASSERTEQ(size_t, columns, 2 * (size_t)side * side);
 	UASSERTEQ(size_t, mismatches, 0);
 	// The fixtures of testBiomeTerrainProfile lie in these stacks, the
-	// carved cliff and the removed cap: the area compared is not a flat one
-	UASSERTEQ(float, sampler->sampleHeight(v2s16(680, -1584)), 13.0f);
+	// cliff and the removed cap: the area compared is not a flat one
+	UASSERTEQ(float, sampler->sampleHeight(v2s16(680, -1584)), 24.0f);
 	UASSERTEQ(float, sampler->sampleHeight(v2s16(744, -1584)), 104.0f);
 }
 

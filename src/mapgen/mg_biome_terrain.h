@@ -42,8 +42,8 @@ public:
 	virtual ~BiomeTerrainSampler() = default;
 	virtual std::unique_ptr<BiomeTerrainSampler> clone() const = 0;
 	// The highest node of the modeled natural surface of a column: the base
-	// 3D density with mountain bodies, the solid floor, cliff carving and
-	// natural floating-component removal, before caves and biome material
+	// 3D density with mountain bodies, the solid floor and natural
+	// floating-component removal, before caves and biome material
 	// changes. Not the climate height, which sampleClimate gives.
 	virtual float sampleHeight(v2s16 pos) const = 0;
 	// Returns false when this sampler has no column model or its context

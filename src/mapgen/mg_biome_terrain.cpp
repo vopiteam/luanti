@@ -10,7 +10,6 @@
 #include "noise.h"
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <unordered_set>
 #include <vector>
 
@@ -85,12 +84,8 @@ struct ValleysTerrainParams {
 	float water_level;
 	s32 floor_y;
 	bool mountains;
-	bool carve_cliffs;
 	bool remove_floaters;
 	TerrainPoint chunk_blocks;
-	float carve_zero_height;
-	s32 carve_reach;
-	float carve_undercut;
 	float mountain_cap;
 	float mountain_cap_height;
 	s32 mountain_cap_reach;
@@ -105,7 +100,6 @@ struct ValleysTerrainParams {
 	NoiseParams valley_profile;
 	NoiseParams mountain;
 	NoiseParams mountain_height;
-	NoiseParams carve;
 
 	explicit ValleysTerrainParams(const MapgenValleysParams &p) :
 		seed(static_cast<s32>(p.seed)),
@@ -113,13 +107,9 @@ struct ValleysTerrainParams {
 		water_level(p.water_level),
 		floor_y(p.floor_y),
 		mountains(p.spflags & MGVALLEYS_MOUNTAINS),
-		carve_cliffs(p.spflags & MGVALLEYS_CARVE_CLIFFS),
 		remove_floaters(p.spflags & MGVALLEYS_REMOVE_FLOATERS),
 		chunk_blocks{std::max<s32>(p.chunksize.X, 1),
 			std::max<s32>(p.chunksize.Y, 1), std::max<s32>(p.chunksize.Z, 1)},
-		carve_zero_height(std::fmax(static_cast<float>(p.carve_zero_height), 1.0f)),
-		carve_reach(static_cast<s16>(p.carve_reach)),
-		carve_undercut(p.carve_undercut),
 		mountain_cap(p.mountain_cap),
 		mountain_cap_height(std::fmax(static_cast<float>(p.mountain_cap_height), 1.0f)),
 		mountain_cap_reach(std::min<u16>(p.mountain_cap_reach, 32)),
@@ -130,8 +120,7 @@ struct ValleysTerrainParams {
 		valley_depth(p.np_valley_depth),
 		valley_profile(p.np_valley_profile),
 		mountain(p.np_mountain),
-		mountain_height(p.np_mountain_height),
-		carve(p.np_carve)
+		mountain_height(p.np_mountain_height)
 	{
 		// Match the gate used by MapgenValleys::generateTerrain, including its
 		// disabled-mountain fast path. The more conservative bounds below are
@@ -148,7 +137,7 @@ struct ValleysTerrainParams {
 
 // The 2D column comes from the generator's own calcValleysColumn; the 3D
 // surface, the density with the mountain body and its cap, the solid
-// floor, the cliff carving and the floating piece removal, is written a
+// floor and the floating piece removal, is written a
 // second time here for one column instead of a mapchunk, and the unit
 // test testValleysSurfaceModel compares it with generation over whole
 // mapchunks of the game's profile: a change to either side that the
@@ -199,23 +188,15 @@ private:
 		float foot;
 		BiomeTerrainForm form;
 	};
-	struct Carve {
-		float foot;
-		float height;
-		float gate;
-		s32 ymin;
-		s32 ymax;
-	};
 	enum Voxel : u8 { AIR, SOLID, KEPT, REMOVED };
 	float modelHeight(s32 x, s32 z) const;
 	Column columnAt(s32 x, s32 z) const;
-	Carve carveAt(s32 x, s32 z) const;
 	TerrainChunk chunkAt(const TerrainPoint &point) const;
 	float densityUpperAt(const Column &column) const;
 	s32 upperAt(const Column &column) const;
 	float densityAt(const TerrainPoint &point, const Column &column) const;
 	bool naturalSolid(const TerrainPoint &point) const;
-	float floaterFloor(const TerrainPoint &point, const TerrainChunk &chunk) const;
+	float floaterFloor(const TerrainPoint &point) const;
 	s32 initialTop(s32 x, s32 z, const TerrainChunk &chunk) const;
 	bool retained(const TerrainPoint &point) const;
 	bool seedsRemoval(const TerrainPoint &top, const TerrainChunk &chunk) const;
@@ -230,7 +211,6 @@ private:
 	mutable std::unordered_map<u64, float> m_caps;
 	mutable std::unordered_map<u64, float> m_cap_rows;
 	mutable std::unordered_map<u64, BiomeClimateContext> m_climates;
-	mutable std::unordered_map<u64, Carve> m_carves;
 	mutable std::unordered_map<TerrainPoint, Voxel, TerrainPointHash> m_voxels;
 	mutable std::unordered_map<TerrainPoint, s32, TerrainPointHash> m_tops;
 };
@@ -320,8 +300,6 @@ void ValleysBiomeTerrainSampler::trimSurfaceCaches() const
 	// Never evict while exploring a connected component. Insertion budgets
 	// also bound memory for a single unusually expensive height query.
 	trimColumnCaches();
-	if (m_carves.size() >= CAP_CACHE_LIMIT)
-		m_carves.clear();
 	if (m_voxels.size() >= VOXEL_CACHE_LIMIT)
 		m_voxels.clear();
 	if (m_tops.size() >= TOP_CACHE_LIMIT)
@@ -336,43 +314,6 @@ TerrainChunk ValleysBiomeTerrainSampler::chunkAt(const TerrainPoint &point) cons
 	return {min, {min.x + blocks.x * MAP_BLOCKSIZE - 1,
 		min.y + blocks.y * MAP_BLOCKSIZE - 1,
 		min.z + blocks.z * MAP_BLOCKSIZE - 1}};
-}
-
-ValleysBiomeTerrainSampler::Carve ValleysBiomeTerrainSampler::carveAt(s32 x, s32 z) const
-{
-	u64 key = columnKey(x, z);
-	auto found = m_carves.find(key);
-	if (found != m_carves.end())
-		return found->second;
-	Column c = columnAt(x, z);
-	float foot = c.surface;
-	const auto &p = m_params;
-	const auto chunk = chunkAt({x, 0, z});
-	// Native carving clamps the local minimum to this canonical chunk. An
-	// unrestricted halo would change the cliff near its X/Z boundaries.
-	for (s32 zz = std::max(chunk.min.z, z - p.carve_reach);
-			zz <= std::min(chunk.max.z, z + p.carve_reach); ++zz)
-	for (s32 xx = std::max(chunk.min.x, x - p.carve_reach);
-			xx <= std::min(chunk.max.x, x + p.carve_reach); ++xx)
-		foot = std::fmin(foot, columnAt(xx, zz).surface);
-	Carve carve{foot, c.surface - foot,
-		std::clamp((c.surface - c.bank) / p.carve_zero_height, 0.0f, 1.0f), 1, 0};
-	if (carve.height >= 2.0f && carve.gate > 0.0f) {
-		// Keep inactive or wholly out-of-range walls empty. Clip in double:
-		// float(s32::max) rounds above the largest representable integer.
-		const double lowest = std::numeric_limits<s32>::min();
-		const double highest = std::numeric_limits<s32>::max();
-		double ymin = std::max(std::floor(static_cast<double>(foot + 1.0f)),
-			static_cast<double>(p.water_level) + 1.0);
-		double ymax = std::floor(static_cast<double>(c.surface));
-		if (ymin <= highest && ymax >= lowest && ymin <= ymax) {
-			carve.ymin = static_cast<s32>(std::max(ymin, lowest));
-			carve.ymax = static_cast<s32>(std::min(ymax, highest));
-		}
-	}
-	if (m_carves.size() < CAP_CACHE_LIMIT)
-		m_carves.emplace(key, carve);
-	return carve;
 }
 
 float ValleysBiomeTerrainSampler::densityUpperAt(const Column &c) const
@@ -431,33 +372,16 @@ bool ValleysBiomeTerrainSampler::naturalSolid(const TerrainPoint &point) const
 	if (!solid) {
 		Column c = columnAt(x, z);
 		solid = densityAt(point, c) > 0.0f;
-		if (solid && p.carve_cliffs) {
-			Carve carve = carveAt(x, z);
-			if (carve.height >= 2.0f && carve.gate > 0.0f &&
-					y >= carve.ymin && y <= carve.ymax) {
-				float t = (c.surface - static_cast<float>(y)) / carve.height;
-				solid = NoiseFractal3D(&p.carve, x, y, z, p.seed) * carve.gate +
-					p.carve_undercut * t <= 0.0f;
-			}
-		}
 	}
 	if (m_voxels.size() < VOXEL_CACHE_LIMIT)
 		m_voxels.emplace(point, solid ? SOLID : AIR);
 	return solid;
 }
 
-float ValleysBiomeTerrainSampler::floaterFloor(const TerrainPoint &point,
-		const TerrainChunk &chunk) const
+float ValleysBiomeTerrainSampler::floaterFloor(const TerrainPoint &point) const
 {
 	Column c = columnAt(point.x, point.z);
-	float floor = c.surface - 1.5f * std::fabs(c.slope);
-	if (m_params.carve_cliffs) {
-		Carve carve = carveAt(point.x, point.z);
-		if (carve.height >= 2.0f && carve.gate > 0.0f &&
-				std::max(carve.ymin, chunk.min.y) <= std::min(carve.ymax, chunk.max.y))
-			floor = std::fmin(floor, carve.foot);
-	}
-	return floor;
+	return c.surface - 1.5f * std::fabs(c.slope);
 }
 
 s32 ValleysBiomeTerrainSampler::initialTop(s32 x, s32 z, const TerrainChunk &chunk) const
@@ -484,7 +408,7 @@ bool ValleysBiomeTerrainSampler::retained(const TerrainPoint &point) const
 			return false;
 	}
 	const auto chunk = chunkAt(point);
-	const float floor = floaterFloor(point, chunk);
+	const float floor = floaterFloor(point);
 	if (static_cast<float>(point.y) <= floor || point.y <= m_params.floor_y)
 		return true;
 
@@ -522,7 +446,7 @@ bool ValleysBiomeTerrainSampler::retained(const TerrainPoint &point) const
 		stack.pop_back();
 		piece.push_back(current);
 		if (piece.size() > COMPONENT_LIMIT ||
-				static_cast<float>(current.y) <= floaterFloor(current, chunk) ||
+				static_cast<float>(current.y) <= floaterFloor(current) ||
 				current.x == chunk.min.x || current.x == chunk.max.x ||
 				current.y == chunk.min.y || current.y == chunk.max.y ||
 				current.z == chunk.min.z || current.z == chunk.max.z) {
@@ -578,7 +502,7 @@ bool ValleysBiomeTerrainSampler::retained(const TerrainPoint &point) const
 bool ValleysBiomeTerrainSampler::seedsRemoval(const TerrainPoint &top,
 		const TerrainChunk &chunk) const
 {
-	const float floor = floaterFloor(top, chunk);
+	const float floor = floaterFloor(top);
 	if (static_cast<float>(top.y) <= floor)
 		return false;
 	s32 y = top.y;

@@ -23,7 +23,6 @@ Licensing changed by permission of Gael de Sailly.
 #define MGVALLEYS_ALT_DRY          0x08
 #if IS_VOPI_ENGINE
 #define MGVALLEYS_SEA_LEVEL_RIVERS 0x10
-#define MGVALLEYS_CARVE_CLIFFS     0x20
 #define MGVALLEYS_REMOVE_FLOATERS  0x40
 #define MGVALLEYS_MOUNTAINS        0x80
 #endif
@@ -102,9 +101,6 @@ struct MapgenValleysParams : public MapgenParams {
 	float river_valley_width = 1.0f;
 	u16 river_bank_height = 2;
 	s16 floor_y = -31000;
-	u16 carve_zero_height = 16;
-	u16 carve_reach = 8;
-	float carve_undercut = 0.3f;
 	float mountain_river_width = 0.4f;
 	float mountain_cap = 1.6f;
 	u16 mountain_cap_height = 44;
@@ -137,7 +133,6 @@ struct MapgenValleysParams : public MapgenParams {
 	NoiseParams np_cavern;
 	NoiseParams np_dungeons;
 #if IS_VOPI_ENGINE
-	NoiseParams np_carve;
 	NoiseParams np_mountain;
 	NoiseParams np_mountain_height;
 #endif
@@ -173,9 +168,6 @@ private:
 	float river_valley_width;
 	float river_bank_height;
 	s16 floor_y;
-	float carve_zero_height;
-	s16 carve_reach;
-	float carve_undercut;
 	float mountain_river_width;
 	float mountain_cap;
 	float mountain_cap_height;
@@ -216,7 +208,6 @@ private:
 	Noise *noise_valley_profile = nullptr;
 
 #if IS_VOPI_ENGINE
-	Noise *noise_carve = nullptr;
 	// Mountain body: a 3D density anchored at the terrain surface, and the
 	// 2D height it fades over, which switches mountains off where it is <= 0
 	Noise *noise_mountain = nullptr;
@@ -229,12 +220,6 @@ private:
 	float mountainGate(const Column &c) const;
 	float mountainFoot(s16 x, s16 z, const Column &c, float gate) const;
 	float spawnFoot(v2s16 p, const Column &c) const;
-	// Per column: final terrain surface and river bank level, for the
-	// cliff carving and the floating piece removal
-	std::vector<float> surface_cache;
-	std::vector<float> bank_cache;
-	void carveCliffs();
-
 	// One mark per node of the mapchunk, reused between mapchunks
 	std::vector<u8> floater_visited;
 	// Per column: level under which the base terrain is solid whatever
