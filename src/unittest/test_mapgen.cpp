@@ -51,6 +51,7 @@ public:
 	void testValleysClimateCorrections();
 	void testValleysClimateContext();
 	void testEffectiveBiomeSelection();
+	void testBiomeShift();
 	void testEffectiveClimateSafety();
 	void testEffectiveClimateContextDemand();
 	void testValleysEffectiveClimate(IGameDef *gamedef);
@@ -94,6 +95,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testValleysClimateCorrections);
 	TEST(testValleysClimateContext);
 	TEST(testEffectiveBiomeSelection);
+	TEST(testBiomeShift);
 	TEST(testEffectiveClimateSafety);
 	TEST(testEffectiveClimateContextDemand);
 	TEST(testValleysEffectiveClimate, gamedef);
@@ -524,6 +526,100 @@ void TestMapgen::testValleysClimateContext()
 	for (size_t i = expected.size(); i-- > 0;)
 		check(*evicted, positions[i], expected[i].river_bank_height,
 			expected[i].column_max_y);
+}
+
+// A constant shift reads every column's climate, form and variant at the
+// column a fixed distance away, while the bank, the reference height and
+// the modeled surface stay the column's own.
+void TestMapgen::testBiomeShift()
+{
+	MockServer server(getTestTempDirectory());
+	MockBiomeManager manager(&server);
+	auto ridge = addTerrainTestBiome(manager, "ridge", 50.0f, 50.0f);
+	ridge->valley_pos_min = 0.5f;
+	auto floor = addTerrainTestBiome(manager, "floor", 50.0f, 50.0f);
+	floor->valley_pos_max = 0.5f;
+	floor->variant_min = 0.0f;
+	auto floor_other = addTerrainTestBiome(manager, "floor_other", 50.0f, 50.0f);
+	floor_other->valley_pos_max = 0.5f;
+	floor_other->variant_max = 0.0f;
+
+	MapgenValleysParams params;
+	params.seed = 4242;
+	// Without the climate corrections, which go by the column's own bank
+	// and surface, the effective climate is the raw one.
+	params.spflags &= ~(MGVALLEYS_ALT_CHILL | MGVALLEYS_ALT_DRY | MGVALLEYS_HUMID_RIVERS);
+	BiomeParamsOriginal plain;
+	plain.seed = params.seed;
+	plain.np_variant = NoiseParams(0.0f, 1.0f, v3f(64.0f), 7717, 2, 0.5f, 2.0f);
+	plain.np_base_blend = NoiseParams(0.0f, 3.0f, v3f(48.0f), 1021, 2, 0.5f, 2.0f);
+	BiomeParamsOriginal shifted = plain;
+	// Seven nodes along both axes everywhere.
+	shifted.np_shift = NoiseParams(7.0f, 0.0f, v3f(32.0f), 0, 1, 0.5f, 2.0f);
+	BiomeGenOriginal reference(&manager, &plain, v3s16(16));
+	BiomeGenOriginal generator(&manager, &shifted, v3s16(16));
+	reference.setValleysClimate(params);
+	generator.setValleysClimate(params);
+
+	for (const v3s16 pos : {v3s16(0, 5, 0), v3s16(-321, 20, 77), v3s16(1000, 0, -2500)}) {
+		const v3s16 read = pos + v3s16(7, 0, 7);
+		UASSERTEQ(float, generator.calcHeatAtPoint(pos), reference.calcHeatAtPoint(read));
+		UASSERTEQ(float, generator.calcHumidityAtPoint(pos),
+			reference.calcHumidityAtPoint(read));
+		UASSERT(generator.calcHeatAtPoint(pos) != reference.calcHeatAtPoint(pos));
+		BiomeTerrainForm form, read_form;
+		UASSERT(generator.getBiomeForm(v2s16(pos.X, pos.Z), form));
+		UASSERT(reference.getBiomeForm(v2s16(read.X, read.Z), read_form));
+		UASSERTEQ(float, form.base, read_form.base);
+		UASSERTEQ(float, form.valley_depth, read_form.valley_depth);
+		UASSERTEQ(float, form.valley_pos, read_form.valley_pos);
+		UASSERTEQ(float, form.mountain, read_form.mountain);
+		EffectiveBiomeData data, read_data, own;
+		UASSERT(generator.getEffectiveBiomeData(pos, data));
+		UASSERT(reference.getEffectiveBiomeData(read, read_data));
+		UASSERT(reference.getEffectiveBiomeData(pos, own));
+		UASSERTEQ(float, data.raw_heat, read_data.raw_heat);
+		UASSERTEQ(float, data.raw_humidity, read_data.raw_humidity);
+		UASSERTEQ(float, data.heat, read_data.heat);
+		UASSERTEQ(float, data.humidity, read_data.humidity);
+		UASSERTEQ(float, data.variant, read_data.variant);
+		UASSERT(data.variant != own.variant);
+		UASSERTEQ(float, data.form.base, read_data.form.base);
+		UASSERTEQ(float, data.form.valley_depth, read_data.form.valley_depth);
+		UASSERTEQ(float, data.form.valley_pos, read_data.form.valley_pos);
+		UASSERTEQ(float, data.form.mountain, read_data.form.mountain);
+		UASSERT(data.form.valley_pos != own.form.valley_pos);
+		UASSERTEQ(biome_t, data.biome, read_data.biome);
+		UASSERTEQ(float, data.river_bank_height, own.river_bank_height);
+		UASSERTEQ(float, data.climate_reference_height, own.climate_reference_height);
+		float height = 0.0f, own_height = 0.0f;
+		UASSERT(generator.getBiomeTerrainHeight(v2s16(pos.X, pos.Z), height));
+		UASSERT(reference.getBiomeTerrainHeight(v2s16(pos.X, pos.Z), own_height));
+		UASSERTEQ(float, height, own_height);
+		// Selection without a known form or variant reads the same column.
+		UASSERTEQ(biome_t, generator.calcBiomeFromNoise(data.heat, data.humidity, pos)->index,
+			data.biome);
+	}
+
+	// Inside a chunk the displacement comes from the map made once per
+	// chunk; with the effective climate the maps are filled per column by
+	// the mapgen, without it they carry the displaced climate.
+	const v3s16 pmin(-8, 0, -8);
+	generator.calcBiomeNoise(pmin);
+	BiomeGenOriginal legacy(&manager, &shifted, v3s16(16));
+	legacy.calcBiomeNoise(pmin);
+	for (s16 zr = 0; zr < 16; zr++)
+	for (s16 xr = 0; xr < 16; xr++) {
+		const v3s16 pos(pmin.X + xr, 0, pmin.Z + zr);
+		const v3s16 read = pos + v3s16(7, 0, 7);
+		EffectiveBiomeData data, read_data;
+		UASSERT(generator.getEffectiveBiomeData(pos, data));
+		UASSERT(reference.getEffectiveBiomeData(read, read_data));
+		UASSERTEQ(float, data.raw_heat, read_data.raw_heat);
+		UASSERTEQ(biome_t, data.biome, read_data.biome);
+		UASSERTEQ(float, legacy.heatmap[zr * 16 + xr], legacy.calcHeatAtPoint(pos));
+		UASSERTEQ(float, legacy.humidmap[zr * 16 + xr], legacy.calcHumidityAtPoint(pos));
+	}
 }
 
 void TestMapgen::testEffectiveBiomeSelection()

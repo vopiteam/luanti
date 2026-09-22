@@ -229,7 +229,8 @@ struct BiomeParamsOriginal : public BiomeParams {
 #if IS_VOPI_ENGINE
 		, np_base_blend(0, 0, v3f(48.0, 48.0, 48.0), 1021, 2, 0.5, 2.0),
 		np_valley_depth_blend(0, 0, v3f(48.0, 48.0, 48.0), 4417, 2, 0.5, 2.0),
-		np_variant(0, 0, v3f(512.0, 512.0, 512.0), 7717, 5, 0.55, 2.0)
+		np_variant(0, 0, v3f(512.0, 512.0, 512.0), 7717, 5, 0.55, 2.0),
+		np_shift(0, 0, v3f(32.0, 32.0, 32.0), 9911, 3, 0.5, 2.0)
 #endif
 	{
 	}
@@ -254,6 +255,14 @@ struct BiomeParamsOriginal : public BiomeParams {
 	// biomes along the zero line of the noise. Scale 0, the default, keeps
 	// the axis at its offset everywhere.
 	NoiseParams np_variant;
+	// Displacement, in nodes, of the point at which the climate, the form
+	// and the variant of a column are read: the noise gives the X
+	// displacement, the same noise with its seed offset the Z displacement.
+	// Every border then moves by the noise wherever it runs, in the shape
+	// of its octaves, without any field being dithered; the column's own
+	// bank, surface and climate corrections stay in place. Scale 0 and
+	// offset 0, the defaults, read every column at its own position.
+	NoiseParams np_shift;
 #endif
 };
 
@@ -319,6 +328,21 @@ private:
 	// The variant axis at a column, scalar noise, the same for selection
 	// and queries.
 	float calcVariantAtPoint(v2s16 pos) const;
+	// The point a column's climate, form and variant are read at: the
+	// column displaced by 'mg_biome_np_shift', or the column itself
+	// without a shift noise. Heat and humidity are read at the fractional
+	// point, the form and the variant at the nearest column. Inside the
+	// chunk of the last calcBiomeNoise the displacement comes from the map
+	// made there, so a column is displaced once per chunk.
+	bool hasShift() const;
+	v2f shiftedColumn(v2s16 pos) const;
+	v2f displace(v2s16 pos) const;
+	static v2s16 nearestColumn(v2f at);
+	float heatAt(v2f at) const;
+	float humidityAt(v2f at) const;
+	bool formAt(v2s16 at, BiomeTerrainForm &form) const;
+	float variantAt(v2s16 at) const;
+	std::vector<v2f> m_shift_map;
 	bool m_valleys_climate = false;
 	int m_climate_water_level = 0;
 	float m_climate_altitude_chill = 1.0f;

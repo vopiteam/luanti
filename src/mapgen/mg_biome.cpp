@@ -92,6 +92,7 @@ void BiomeParamsOriginal::readParams(const Settings *settings)
 	settings->getNoiseParams("mg_biome_np_base_blend",     np_base_blend);
 	settings->getNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
 	settings->getNoiseParams("mg_biome_np_variant",        np_variant);
+	settings->getNoiseParams("mg_biome_np_shift",          np_shift);
 #endif
 }
 
@@ -106,6 +107,7 @@ void BiomeParamsOriginal::writeParams(Settings *settings) const
 	settings->setNoiseParams("mg_biome_np_base_blend",     np_base_blend);
 	settings->setNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
 	settings->setNoiseParams("mg_biome_np_variant",        np_variant);
+	settings->setNoiseParams("mg_biome_np_shift",          np_shift);
 #endif
 }
 
@@ -188,14 +190,22 @@ BiomeGen *BiomeGenOriginal::clone(BiomeManager *biomemgr) const
 
 float BiomeGenOriginal::calcHeatAtPoint(v3s16 pos) const
 {
+#if IS_VOPI_ENGINE
+	return heatAt(shiftedColumn(v2s16(pos.X, pos.Z)));
+#else
 	return NoiseFractal2D(&m_params->np_heat, pos.X, pos.Z, m_params->seed) +
 		NoiseFractal2D(&m_params->np_heat_blend, pos.X, pos.Z, m_params->seed);
+#endif
 }
 
 float BiomeGenOriginal::calcHumidityAtPoint(v3s16 pos) const
 {
+#if IS_VOPI_ENGINE
+	return humidityAt(shiftedColumn(v2s16(pos.X, pos.Z)));
+#else
 	return NoiseFractal2D(&m_params->np_humidity, pos.X, pos.Z, m_params->seed) +
 		NoiseFractal2D(&m_params->np_humidity_blend, pos.X, pos.Z, m_params->seed);
+#endif
 }
 
 Biome *BiomeGenOriginal::calcBiomeAtPoint(v3s16 pos) const
@@ -210,6 +220,28 @@ void BiomeGenOriginal::calcBiomeNoise(v3s16 pmin)
 #if IS_VOPI_ENGINE
 	if (m_terrain_sampler)
 		m_terrain_sampler->beginChunk();
+#endif
+
+#if IS_VOPI_ENGINE
+	m_shift_map.clear();
+	if (hasShift()) {
+		// The displacement of every column of the chunk, once. Bulk noise
+		// cannot be read at a displaced point per column, so the maps take
+		// the scalar climate at the displaced points, unless the effective
+		// climate fills them column by column anyway.
+		m_shift_map.resize(m_csize.X * m_csize.Z);
+		for (s16 zr = 0; zr < m_csize.Z; zr++)
+		for (s16 xr = 0; xr < m_csize.X; xr++) {
+			const s32 i = zr * m_csize.X + xr;
+			const v2f at = displace(v2s16(pmin.X + xr, pmin.Z + zr));
+			m_shift_map[i] = at;
+			if (!hasEffectiveClimate()) {
+				noise_heat->result[i] = heatAt(at);
+				noise_humidity->result[i] = humidityAt(at);
+			}
+		}
+		return;
+	}
 #endif
 
 	noise_heat->noiseMap2D(pmin.X, pmin.Z);
@@ -291,6 +323,17 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		sampled_form = *form;
 	float variant = known_variant ? *known_variant : 0.0f;
 	bool variant_sampled = known_variant != nullptr;
+	// The displaced column both the form and the variant are read at,
+	// found once, when the first candidate needs either.
+	v2s16 read_column;
+	bool read_column_known = false;
+	auto readColumn = [&]() {
+		if (!read_column_known) {
+			read_column = nearestColumn(shiftedColumn(v2s16(pos.X, pos.Z)));
+			read_column_known = true;
+		}
+		return read_column;
+	};
 #endif
 
 	for (size_t i = 1; i < m_bmgr->getNumObjects(); i++) {
@@ -306,7 +349,7 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 			continue;
 		if (b->hasVariantBounds()) {
 			if (!variant_sampled) {
-				variant = calcVariantAtPoint(v2s16(pos.X, pos.Z));
+				variant = variantAt(readColumn());
 				variant_sampled = true;
 			}
 			if (!b->matchesVariant(variant))
@@ -314,7 +357,7 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		}
 		if (b->hasFormConstraints()) {
 			if (!form_sampled) {
-				form_available = getBiomeForm(v2s16(pos.X, pos.Z), sampled_form);
+				form_available = formAt(readColumn(), sampled_form);
 				form_sampled = true;
 			}
 			if (!form_available || !b->matchesForm(sampled_form))
@@ -529,12 +572,14 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 		return false;
 	// Both generation and queries use scalar noise at the exact same X/Z.
 	// Bulk noise has different rounding; it remains the legacy/river-depth input.
-	const v3s16 point(pos.X, 0, pos.Y);
+	const v2f at = shiftedColumn(pos);
 	EffectiveBiomeClimate result{};
-	result.raw_heat = calcHeatAtPoint(point);
-	result.raw_humidity = calcHumidityAtPoint(point);
+	result.raw_heat = heatAt(at);
+	result.raw_humidity = humidityAt(at);
 	if (!std::isfinite(result.raw_heat) || !std::isfinite(result.raw_humidity))
 		return false;
+	// The bank and the surface are the column's own: the corrections and
+	// the reference height describe the place, not the displaced point.
 	BiomeClimateContext context{};
 	if ((include_context || m_climate_flags) &&
 			!m_terrain_sampler->sampleClimate(pos, context))
@@ -545,8 +590,12 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	result.form = context.form;
 	result.variant = 0.0f;
 	if (include_context) {
-		blendForm(pos, result.form);
-		result.variant = calcVariantAtPoint(pos);
+		const v2s16 read = nearestColumn(at);
+		if (read == pos)
+			blendForm(pos, result.form);
+		else if (!formAt(read, result.form))
+			return false;
+		result.variant = variantAt(read);
 	}
 	const auto climate = calcValleysClimate(result.raw_heat, result.raw_humidity,
 		context.river_bank_height, context.column_max_y, m_climate_water_level,
@@ -590,22 +639,79 @@ bool BiomeGenOriginal::getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out)
 
 bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 {
-	if (!m_terrain_sampler)
-		return false;
-	BiomeClimateContext context;
-	if (!m_terrain_sampler->sampleClimate(pos, context))
-		return false;
-	form = context.form;
-	blendForm(pos, form);
-	return true;
+	return formAt(nearestColumn(shiftedColumn(pos)), form);
 }
 
 float BiomeGenOriginal::calcVariantAtPoint(v2s16 pos) const
 {
+	return variantAt(nearestColumn(shiftedColumn(pos)));
+}
+
+bool BiomeGenOriginal::hasShift() const
+{
+	const NoiseParams &np = m_params->np_shift;
+	return np.scale != 0.0f || np.offset != 0.0f;
+}
+
+// The Z displacement reads the shift noise under another seed, so that
+// the two are independent fields rather than one field and its copy.
+static constexpr s32 SHIFT_Z_SEED = 1013;
+
+v2f BiomeGenOriginal::displace(v2s16 pos) const
+{
+	v2f at(pos.X, pos.Y);
+	const NoiseParams &np = m_params->np_shift;
+	at.X += NoiseFractal2D(&np, pos.X, pos.Y, m_params->seed);
+	at.Y += NoiseFractal2D(&np, pos.X, pos.Y, m_params->seed + SHIFT_Z_SEED);
+	return at;
+}
+
+v2f BiomeGenOriginal::shiftedColumn(v2s16 pos) const
+{
+	if (!hasShift())
+		return v2f(pos.X, pos.Y);
+	const s32 xr = pos.X - m_pmin.X, zr = pos.Y - m_pmin.Z;
+	if (!m_shift_map.empty() && xr >= 0 && xr < m_csize.X && zr >= 0 && zr < m_csize.Z)
+		return m_shift_map[zr * m_csize.X + xr];
+	return displace(pos);
+}
+
+v2s16 BiomeGenOriginal::nearestColumn(v2f at)
+{
+	return v2s16(static_cast<s16>(std::lround(at.X)),
+		static_cast<s16>(std::lround(at.Y)));
+}
+
+float BiomeGenOriginal::heatAt(v2f at) const
+{
+	return NoiseFractal2D(&m_params->np_heat, at.X, at.Y, m_params->seed) +
+		NoiseFractal2D(&m_params->np_heat_blend, at.X, at.Y, m_params->seed);
+}
+
+float BiomeGenOriginal::humidityAt(v2f at) const
+{
+	return NoiseFractal2D(&m_params->np_humidity, at.X, at.Y, m_params->seed) +
+		NoiseFractal2D(&m_params->np_humidity_blend, at.X, at.Y, m_params->seed);
+}
+
+bool BiomeGenOriginal::formAt(v2s16 at, BiomeTerrainForm &form) const
+{
+	if (!m_terrain_sampler)
+		return false;
+	BiomeClimateContext context;
+	if (!m_terrain_sampler->sampleClimate(at, context))
+		return false;
+	form = context.form;
+	blendForm(at, form);
+	return true;
+}
+
+float BiomeGenOriginal::variantAt(v2s16 at) const
+{
 	const NoiseParams &np = m_params->np_variant;
 	if (np.scale == 0.0f)
 		return np.offset;
-	return NoiseFractal2D(&np, pos.X, pos.Y, m_params->seed);
+	return NoiseFractal2D(&np, at.X, at.Y, m_params->seed);
 }
 
 void BiomeGenOriginal::blendForm(v2s16 pos, BiomeTerrainForm &form) const

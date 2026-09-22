@@ -223,9 +223,28 @@ a ragged border rather than the smooth contour of the terrain noise. Both
 default to scale 0 and offset 0, which leaves the form as the mapgen
 models it.
 
+A shift noise, `mg_biome_np_shift`, displaces the point at which the
+climate, the form and the variant of a column are read: the noise at the
+column gives the X displacement in nodes, the same noise under another
+seed the Z displacement, and heat and humidity are read at the displaced
+point, the form and the variant at the nearest column there. Every border
+between biomes then moves by the noise wherever it runs, in the shape of
+its octaves, while the column's own bank height, its climate corrections
+and its modeled surface stay in place. The displacement is meant to be a
+few nodes: a form bound on a regional field, the region level, the valley
+depth or the mountain mask, does not notice it, whereas a bound on the
+position in the valley would put a bank biome a few nodes off the water.
+A blend noise adds to a field, so it moves a border by its amplitude
+divided by the slope of the field, far where a field crosses a bound
+slowly, and scatters islands of the neighbouring biome there; the shift
+moves a border by its own amplitude everywhere and leaves no islands. The
+displacement of every column of a mapchunk is found once, when the chunk's
+climate noise is calculated. The default has scale 0 and offset 0, which
+reads every column at its own position.
+
 The form values describe the same column model as
 `get_effective_biome_data`, so a query and generation agree on them, blend
-included.
+and shift included.
 Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
 
 ```lua
