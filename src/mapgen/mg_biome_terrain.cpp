@@ -17,7 +17,7 @@ namespace {
 
 constexpr size_t HEIGHT_CACHE_LIMIT = 4096;
 constexpr size_t COLUMN_CACHE_LIMIT = 32768;
-constexpr size_t CAP_CACHE_LIMIT = 4096;
+constexpr size_t CAP_CACHE_LIMIT = 32768;
 constexpr size_t CAP_ROW_CACHE_LIMIT = 32768;
 constexpr size_t CLIMATE_CACHE_LIMIT = 32768;
 constexpr size_t VOXEL_CACHE_LIMIT = 262144;
@@ -179,6 +179,9 @@ private:
 	{
 	}
 
+	// The form's body stays 0 in the column: it reads the cap, the feet
+	// of the columns within reach, so sampleClimate fills it and caches it
+	// with the climate context.
 	struct Column {
 		float surface;
 		float bank;
@@ -205,6 +208,7 @@ private:
 	void trimSurfaceCaches() const;
 	float capRowAt(s32 x, s32 z) const;
 	float capAt(s32 x, s32 z) const;
+	float capLift(float delta, float foot) const;
 	float bodyHeightAt(s32 x, s32 z, const Column &column) const;
 	const ValleysTerrainParams m_params;
 	mutable std::unordered_map<u64, float> m_heights;
@@ -239,11 +243,9 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 		if (c.mountain_height > 0.0f) {
 			c.mountain_gate = valleysMountainGate(column, p.column.mountain_river_width);
 			c.form.mountain = c.mountain_height * c.mountain_gate;
-			if (c.mountain_gate > 0.0f) {
+			if (c.mountain_gate > 0.0f)
 				c.foot = valleysMountainFoot(p.mountain, x, z, c.surface,
 					c.mountain_gate, p.seed);
-				c.form.body = bodyHeightAt(x, z, c);
-			}
 		}
 	}
 	if (m_columns.size() < COLUMN_CACHE_LIMIT)
@@ -251,23 +253,42 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 	return c;
 }
 
+// The lift of the cap at delta over the ground: the threshold drops by
+// 'mountain_cap' times the tapered foot, most at half 'mountain_cap_height'
+// above the ground, nothing at the ground and at the cap height. The
+// generator's own cap, written a second time here.
+float ValleysBiomeTerrainSampler::capLift(float delta, float foot) const
+{
+	const auto &p = m_params;
+	if (!(delta > 0.0f && delta < p.mountain_cap_height) || p.mountain_cap == 0.0f)
+		return 0.0f;
+	const float t = delta / p.mountain_cap_height;
+	return p.mountain_cap * foot * 4.0f * t * (1.0f - t);
+}
+
 // The height the mountain body reaches over the terrain in a column: its
-// density, the noise through the gate less delta over the mountain height,
-// sampled at eight steps from the highest point it can be positive at down
-// to the terrain, and the topmost positive sample refined by three
-// bisections. Within a few nodes of what the 3D model finds voxel by
-// voxel, at a dozen noise samples, and a function of the noise alone, so
-// selection and queries agree. The cap and the fill relief are not in it.
+// density, the noise with the cap through the gate less delta over the
+// mountain height, sampled at eight steps from the highest point it can
+// be positive at down to the terrain, and the topmost positive sample
+// refined by three bisections. Within a few nodes of what the 3D model
+// finds voxel by voxel, at a dozen noise samples, and a function of the
+// noise alone, so selection and queries agree. The cap is the strongest
+// tapered foot within reach, so the skirt a body spreads over its feet
+// counts; the fill relief does not. Costs the columns of the
+// neighbourhood once per chunk, as the generator's feet do.
 float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) const
 {
 	const auto &p = m_params;
-	const float reach = p.mountain_noise_max * c.mountain_gate * c.mountain_height;
+	const float foot = p.mountain_cap != 0.0f ? capAt(x, z) : 0.0f;
+	const float reach = std::fmax(
+		p.mountain_noise_max * c.mountain_gate * c.mountain_height,
+		foot > 0.0f ? p.mountain_cap_height : 0.0f);
 	if (!(reach > 0.0f))
 		return 0.0f;
 	auto density = [&](float delta) {
 		const float y = std::floor(c.surface + delta + 0.5f);
-		return NoiseFractal3D(&p.mountain, x, y, z, p.seed) * c.mountain_gate -
-			delta / c.mountain_height;
+		return (NoiseFractal3D(&p.mountain, x, y, z, p.seed) + capLift(delta, foot)) *
+			c.mountain_gate - delta / c.mountain_height;
 	};
 	constexpr int STEPS = 8;
 	float below = -1.0f;
@@ -394,11 +415,7 @@ float ValleysBiomeTerrainSampler::densityAt(const TerrainPoint &point,
 		density = c.slope * NoiseFractal3D(&p.fill, x, y, z, p.seed) - delta;
 	if (density <= 0.0f && c.mountain_gate > 0.0f && c.mountain_height > 0.0f &&
 			static_cast<float>(y) > c.surface - 1.5f * std::fabs(c.slope)) {
-		float cap = 0.0f;
-		if (delta > 0.0f && delta < p.mountain_cap_height && p.mountain_cap != 0.0f) {
-			float t = delta / p.mountain_cap_height;
-			cap = p.mountain_cap * capAt(x, z) * 4.0f * t * (1.0f - t);
-		}
+		const float cap = p.mountain_cap != 0.0f ? capLift(delta, capAt(x, z)) : 0.0f;
 		density = (NoiseFractal3D(&p.mountain, x, y, z, p.seed) + cap) *
 			c.mountain_gate - delta / c.mountain_height;
 	}
@@ -579,8 +596,12 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 	const Column c = columnAt(pos.X, pos.Y);
 	if (!std::isfinite(c.surface) || !std::isfinite(c.bank) ||
 			!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
-			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain) ||
-			!std::isfinite(c.form.body))
+			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
+		return false;
+	BiomeTerrainForm form = c.form;
+	if (c.mountain_gate > 0.0f && c.mountain_height > 0.0f)
+		form.body = bodyHeightAt(pos.X, pos.Y, c);
+	if (!std::isfinite(form.body))
 		return false;
 
 	// Clamp before conversion, preserving truncation toward zero even for
@@ -590,7 +611,7 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 	const float low = -MAX_MAP_GENERATION_LIMIT;
 	const float high = MAX_MAP_GENERATION_LIMIT;
 	BiomeClimateContext context{c.bank,
-		static_cast<s16>(std::clamp(c.surface, low, high)), c.form};
+		static_cast<s16>(std::clamp(c.surface, low, high)), form};
 
 	if (m_climates.size() >= CLIMATE_CACHE_LIMIT)
 		m_climates.clear();

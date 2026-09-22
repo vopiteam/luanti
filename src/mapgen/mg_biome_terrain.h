@@ -17,11 +17,11 @@ struct MapgenValleysParams;
 // region level before the river-bank clamp, the valley depth amplitude, the
 // position in the valley profile (0 at the river edge, 1 on the ridge), the
 // mountain mask (0 where no mountain body can rise) and the body: the
-// height the mountain body reaches over the terrain at the column, from
-// the body's density sampled up the column, within a few nodes of the
-// modeled surface, 0 where no body stands on the column. The mask says
-// how tall a body can be in the region, the body whether and how far one
-// rises here.
+// height the mountain body, with the cap it hangs from the feet around
+// the column, reaches over the terrain at the column, from the density
+// sampled up the column, within a few nodes of the modeled surface, 0
+// where no body stands on the column. The mask says how tall a body can
+// be in the region, the body whether and how far one rises here.
 struct BiomeTerrainForm {
 	float base = 0.0f;
 	float valley_depth = 0.0f;

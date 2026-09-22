@@ -474,8 +474,15 @@ void TestMapgen::testValleysClimateContext()
 		UASSERTEQ(float, context.form.mountain, 20.0f);
 		// A constant body noise of 1 through a gate of 1 on the ridge: the
 		// density is positive up to the mountain height, and the sampled
-		// body ends within a few nodes below it
-		UASSERT(context.form.body > 19.0f && context.form.body <= 20.0f);
+		// body ends within a few nodes below it. The cap hangs from the
+		// feet of the whole neighbourhood here and lifts the body over
+		// the mountain height, up to short of the cap height.
+		if (cap == 0.0f) {
+			UASSERT(context.form.body > 19.0f && context.form.body <= 20.0f);
+		} else {
+			UASSERT(context.form.body > 30.0f &&
+				context.form.body < (float)params.mountain_cap_height);
+		}
 		UASSERTEQ(float, context.form.valley_depth, 0.0f);
 		UASSERTEQ(float, context.form.base, 0.0f);
 	}
