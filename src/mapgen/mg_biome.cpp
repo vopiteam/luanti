@@ -227,18 +227,18 @@ void BiomeGenOriginal::calcBiomeNoise(v3s16 pmin)
 	if (hasShift()) {
 		// The displacement of every column of the chunk, once. Bulk noise
 		// cannot be read at a displaced point per column, so the maps take
-		// the scalar climate at the displaced points, unless the effective
-		// climate fills them column by column anyway.
+		// the scalar climate at the displaced points. The maps hold the
+		// raw climate of the chunk after this call whatever the mapgen,
+		// as without a shift: a mapgen with the effective climate reads
+		// them for the river depth before it fills them column by column.
 		m_shift_map.resize(m_csize.X * m_csize.Z);
 		for (s16 zr = 0; zr < m_csize.Z; zr++)
 		for (s16 xr = 0; xr < m_csize.X; xr++) {
 			const s32 i = zr * m_csize.X + xr;
 			const v2f at = displace(v2s16(pmin.X + xr, pmin.Z + zr));
 			m_shift_map[i] = at;
-			if (!hasEffectiveClimate()) {
-				noise_heat->result[i] = heatAt(at);
-				noise_humidity->result[i] = humidityAt(at);
-			}
+			noise_heat->result[i] = heatAt(at);
+			noise_humidity->result[i] = humidityAt(at);
 		}
 		return;
 	}

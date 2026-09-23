@@ -615,8 +615,9 @@ void TestMapgen::testBiomeShift()
 	}
 
 	// Inside a chunk the displacement comes from the map made once per
-	// chunk; with the effective climate the maps are filled per column by
-	// the mapgen, without it they carry the displaced climate.
+	// chunk, and the climate maps carry the displaced raw climate with
+	// and without the effective climate: the mapgen reads them for the
+	// river depth before it fills them column by column.
 	const v3s16 pmin(-8, 0, -8);
 	generator.calcBiomeNoise(pmin);
 	BiomeGenOriginal legacy(&manager, &shifted, v3s16(16));
@@ -630,8 +631,11 @@ void TestMapgen::testBiomeShift()
 		UASSERT(reference.getEffectiveBiomeData(read, read_data));
 		UASSERTEQ(float, data.raw_heat, read_data.raw_heat);
 		UASSERTEQ(biome_t, data.biome, read_data.biome);
-		UASSERTEQ(float, legacy.heatmap[zr * 16 + xr], legacy.calcHeatAtPoint(pos));
-		UASSERTEQ(float, legacy.humidmap[zr * 16 + xr], legacy.calcHumidityAtPoint(pos));
+		for (const BiomeGenOriginal *gen : {&generator, &legacy}) {
+			UASSERTEQ(float, gen->heatmap[zr * 16 + xr], reference.calcHeatAtPoint(read));
+			UASSERTEQ(float, gen->humidmap[zr * 16 + xr],
+				reference.calcHumidityAtPoint(read));
+		}
 	}
 }
 
