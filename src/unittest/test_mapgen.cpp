@@ -2266,6 +2266,13 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 	const content_t river = add_node("mapgen_river_water_source", t_CONTENT_WATER, false);
 	// A walkable lid the biome pass lays on the water of a frozen sea
 	const content_t ice = add_node("test:ice", t_CONTENT_STONE, true);
+	// What a decoration lays: walkable, but not ground
+	const content_t crown = add_node("test:crown", t_CONTENT_STONE, true);
+	{
+		ContentFeatures def = ndef.get(crown);
+		def.is_ground_content = false;
+		ndef.set("test:crown", def);
+	}
 	MockBiomeManager manager(&server);
 	manager.setNodeDefManager(&ndef);
 	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
@@ -2339,6 +2346,7 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 		s16 under_top;      // their heightmap afterwards, absolute
 		biome_t outside;    // biomemap of every other column
 		s16 outside_top;
+		bool is_crown;      // the piece is what a decoration laid, not ground
 	} cases[] = {
 		// The piece over the ground goes; the ground wears its own biome
 		{"removed over the ground", 3, 0, false, 55,
@@ -2361,6 +2369,11 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 		// biome pass selects it, not the lid's
 		{"removed over a frozen bed", 3, 60, true, 55,
 			v3s16(2, 14, 2), v3s16(5, 14, 5), true, ground_id, 60, ground_id, 60},
+		// A tree's crown a neighbouring mapchunk put here is not ground:
+		// it stays, hanging over the ground, the top of its columns, while
+		// the biome pass looks past it to the ground beneath
+		{"a crown over the ground stays", 3, 0, false, 55,
+			v3s16(2, 10, 2), v3s16(5, 11, 5), false, ground_id, 59, ground_id, 52, true},
 	};
 	for (const auto &test : cases) {
 		infostream << "Valleys floater fixture: " << test.name << std::endl;
@@ -2389,7 +2402,7 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 		for (s16 z = piece_min.Z; z <= piece_max.Z; ++z)
 		for (s16 y = piece_min.Y; y <= piece_max.Y; ++y)
 		for (s16 x = piece_min.X; x <= piece_max.X; ++x)
-			node_at(x, y, z) = MapNode(stone);
+			node_at(x, y, z) = MapNode(test.is_crown ? crown : stone);
 		mapgen.makeChunk(&data);
 
 		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
@@ -2407,6 +2420,8 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 			const content_t top_node = node_at(x, top, z).getContent();
 			if (test.frozen && top == test.water_level) {
 				UASSERTEQ(content_t, top_node, ice);
+			} else if (test.is_crown && under) {
+				UASSERTEQ(content_t, top_node, crown);
 			} else {
 				UASSERTEQ(content_t, top_node, biome->c_top);
 			}
@@ -2417,6 +2432,8 @@ void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)
 			const content_t c = node_at(x, y, z).getContent();
 			if (test.removed) {
 				UASSERTEQ(content_t, c, CONTENT_AIR);
+			} else if (test.is_crown) {
+				UASSERTEQ(content_t, c, crown);
 			} else {
 				UASSERT(c == high->c_top || c == stone);
 			}

@@ -796,11 +796,15 @@ int MapgenValleys::getSpawnLevelAtPoint(v2s16 p)
 #if IS_VOPI_ENGINE
 // Removes ground left floating above the terrain by the 3D noise or cut
 // loose by the caves. Every column whose topmost run
-// of solid nodes ends above the column's floor, the level under which the
-// base terrain is solid, seeds a flood fill over connected solid nodes. A
+// of ground nodes ends above the column's floor, the level under which the
+// base terrain is solid, seeds a flood fill over connected ground nodes. A
 // piece that reaches neither that floor nor the edge of the mapchunk is
 // deleted, whatever its size; everything standing on the ground, overhangs
 // included, is kept. Runs after the caves and before ores and decorations.
+// Ground is what is_ground_content says, as for the caves: what a
+// decoration laid is neither a piece nor a foothold, so the crown a
+// neighbouring mapchunk's tree put into this one before it was generated
+// stays as laid, connected to its trunk or not.
 void MapgenValleys::removeFloaters()
 {
 	// Pieces beyond this are kept unexamined, a bound on the work per seed
@@ -829,6 +833,10 @@ void MapgenValleys::removeFloaters()
 		return floater_floor[(size_t)(p.Z - node_min.Z) * csize.X +
 			(p.X - node_min.X)];
 	};
+	auto ground = [&](const MapNode &n) -> bool {
+		const ContentFeatures &f = ndef->get(n);
+		return f.walkable && f.is_ground_content;
+	};
 
 	// Marks: 1 on a node of the piece being filled, 2 on a node of a piece
 	// found grounded. A fill that touches a grounded node is grounded too.
@@ -850,11 +858,15 @@ void MapgenValleys::removeFloaters()
 		if (floater_visited[local_index(v3s16(x, top, z))])
 			continue;
 
-		// Does the topmost run of solid nodes reach the floor?
+		// A top that is not ground, a tree's crown, seeds nothing
 		u32 vi = vm->m_area.index(x, top, z);
+		if (!ground(vm->m_data[vi]))
+			continue;
+
+		// Does the topmost run of ground nodes reach the floor?
 		s16 y = top;
 		while (y >= node_min.Y && (float)y > floor &&
-				ndef->get(vm->m_data[vi]).walkable) {
+				ground(vm->m_data[vi])) {
 			y--;
 			VoxelArea::add_y(em, vi, -1);
 		}
@@ -888,7 +900,7 @@ void MapgenValleys::removeFloaters()
 				}
 				if (mark != 0)
 					continue;
-				if (!ndef->get(vm->m_data[vm->m_area.index(q.X, q.Y, q.Z)]).walkable)
+				if (!ground(vm->m_data[vm->m_area.index(q.X, q.Y, q.Z)]))
 					continue;
 				floater_visited[li] = M_PIECE;
 				stack.push_back(q);

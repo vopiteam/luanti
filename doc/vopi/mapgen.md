@@ -103,7 +103,11 @@ solid nodes ends above that floor seeds a flood fill over connected solid
 nodes. A piece that reaches neither the floor nor the edge of the mapchunk
 is removed, whatever its size; everything standing on the ground, overhangs
 included, is kept. The pass runs before ores and decorations, so nothing is
-placed in or on a removed piece.
+placed in or on a removed piece. Solid means ground here, a walkable node
+with `is_ground_content`, as for the caves: what a decoration laid is
+neither a piece nor a foothold. A tree that a mapchunk places at its top
+puts its crown into the mapchunk above before that one is generated, and
+the crown stays as laid whether or not it is joined to its trunk.
 
 The biome pass runs earlier still: the caves need the biomemap for the
 floors of their entrances, and the removal needs the caves. That pass
