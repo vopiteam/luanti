@@ -614,6 +614,23 @@ void TestMapgen::testBiomeShift()
 			data.biome);
 	}
 
+	// A displacement past the edge of the world reads its last column.
+	BiomeParamsOriginal beyond = plain;
+	beyond.np_shift = NoiseParams(1.0e5f, 0.0f, v3f(32.0f), 0, 1, 0.5f, 2.0f);
+	BiomeGenOriginal beyond_gen(&manager, &beyond, v3s16(16));
+	beyond_gen.setValleysClimate(params);
+	{
+		const s16 edge = MAX_MAP_GENERATION_LIMIT;
+		BiomeTerrainForm form, edge_form;
+		UASSERT(beyond_gen.getBiomeForm(v2s16(0, 0), form));
+		UASSERT(reference.getBiomeForm(v2s16(edge, edge), edge_form));
+		UASSERTEQ(float, form.base, edge_form.base);
+		UASSERTEQ(float, form.valley_pos, edge_form.valley_pos);
+		EffectiveBiomeData data;
+		UASSERT(beyond_gen.getEffectiveBiomeData(v3s16(-edge, 0, -edge), data));
+		UASSERTEQ(float, data.form.valley_pos, edge_form.valley_pos);
+	}
+
 	// Inside a chunk the displacement comes from the map made once per
 	// chunk, and the climate maps carry the displaced raw climate with
 	// and without the effective climate: the mapgen reads them for the

@@ -267,15 +267,17 @@ float ValleysBiomeTerrainSampler::capLift(float delta, float foot) const
 }
 
 // The height the mountain body reaches over the terrain in a column: its
-// density, the noise with the cap through the gate less delta over the
-// mountain height, sampled at eight steps from the highest point it can
-// be positive at down to the terrain, and the topmost positive sample
-// refined by three bisections. Within a few nodes of what the 3D model
-// finds voxel by voxel, at a dozen noise samples, and a function of the
-// noise alone, so selection and queries agree. The cap is the strongest
-// tapered foot within reach, so the skirt a body spreads over its feet
-// counts; the fill relief does not. Costs the columns of the
-// neighbourhood once per chunk, as the generator's feet do.
+// density at the node nearest each sample, the noise with the cap through
+// the gate less the node's height over the terrain divided by the
+// mountain height, as the generator evaluates it, sampled at eight steps
+// from the highest point it can be positive at down to the terrain, and
+// the topmost positive sample refined by three bisections. Within a few
+// nodes of what the 3D model finds voxel by voxel, at a dozen noise
+// samples, and a function of the noise alone, so selection and queries
+// agree. The cap is the strongest tapered foot within reach, so the skirt
+// a body spreads over its feet counts; the fill relief does not. Costs
+// the columns of the neighbourhood once per chunk, as the generator's
+// feet do.
 float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) const
 {
 	const auto &p = m_params;
@@ -287,8 +289,10 @@ float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) co
 		return 0.0f;
 	auto density = [&](float delta) {
 		const float y = std::floor(c.surface + delta + 0.5f);
-		return (NoiseFractal3D(&p.mountain, x, y, z, p.seed) + capLift(delta, foot)) *
-			c.mountain_gate - delta / c.mountain_height;
+		const float node_delta = y - c.surface;
+		return (NoiseFractal3D(&p.mountain, x, y, z, p.seed) +
+			capLift(node_delta, foot)) * c.mountain_gate -
+			node_delta / c.mountain_height;
 	};
 	constexpr int STEPS = 8;
 	float below = -1.0f;

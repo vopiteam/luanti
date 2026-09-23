@@ -677,8 +677,11 @@ v2f BiomeGenOriginal::shiftedColumn(v2s16 pos) const
 
 v2s16 BiomeGenOriginal::nearestColumn(v2f at)
 {
-	return v2s16(static_cast<s16>(std::lround(at.X)),
-		static_cast<s16>(std::lround(at.Y)));
+	// A point displaced past the edge of the world reads its last column:
+	// the conversion never wraps.
+	constexpr long limit = MAX_MAP_GENERATION_LIMIT;
+	return v2s16(static_cast<s16>(std::clamp(std::lround(at.X), -limit, limit)),
+		static_cast<s16>(std::clamp(std::lround(at.Y), -limit, limit)));
 }
 
 float BiomeGenOriginal::heatAt(v2f at) const
