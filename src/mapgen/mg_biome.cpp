@@ -646,11 +646,6 @@ bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 	return formAt(nearestColumn(shiftedColumn(pos)), form);
 }
 
-float BiomeGenOriginal::calcVariantAtPoint(v2s16 pos) const
-{
-	return variantAt(nearestColumn(shiftedColumn(pos)));
-}
-
 bool BiomeGenOriginal::hasShift() const
 {
 	const NoiseParams &np = m_params->np_shift;

@@ -327,9 +327,6 @@ private:
 	// The blend noise of the form, added where selection and queries read
 	// the column form, so both see the same values.
 	void blendForm(v2s16 pos, BiomeTerrainForm &form) const;
-	// The variant axis at a column, scalar noise, the same for selection
-	// and queries.
-	float calcVariantAtPoint(v2s16 pos) const;
 	// The point a column's climate, form and variant are read at: the
 	// column displaced by 'mg_biome_np_shift', or the column itself
 	// without a shift noise. Heat and humidity are read at the fractional
