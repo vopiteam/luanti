@@ -3185,9 +3185,12 @@ void Game::processPlayerInteraction(f32 dtime, bool show_hud)
 	// last reported (not pointed_old, which also drives digging). While a menu
 	// is open or the player is dead they cannot point at a node, so report
 	// "none" — otherwise the frozen crosshair keeps the old selection and a mod
-	// HUD keyed to on_deselectnode sticks.
+	// HUD keyed to on_deselectnode sticks. The player's CAO arrives with the
+	// first active-object packet, a few frames after the game loop starts;
+	// isDead() asserts on a missing CAO, so treat that window as "none" too.
 	{
-		const bool can_select = !isMenuActive() && !player->isDead();
+		const bool can_select = !isMenuActive() && player->getCAO() &&
+			!player->isDead();
 		const bool now_node = can_select && pointed.type == POINTEDTHING_NODE;
 		const v3s16 now_pos = now_node ? pointed.node_undersurface : v3s16();
 		bool selection_changed;
