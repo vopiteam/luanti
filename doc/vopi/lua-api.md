@@ -25,7 +25,7 @@ Documented beside the upstream elements they extend:
 | `ObjectRef:set_camera_yaw_range` / `get_camera_yaw_range` | camera limits |
 | `ObjectRef:set_camera` / `get_camera` | camera control |
 | `ObjectRef:set_view_bobbing` / `get_view_bobbing` | server-side view bobbing control |
-| `heat_min`/`heat_max`, `humidity_min`/`humidity_max`, `base_min`/`base_max`, `valley_depth_min`/`valley_depth_max`, `valley_pos_min`/`valley_pos_max`, `mountain_min`/`mountain_max`, `priority` | biome climate and form bounds and the selection priority, [mapgen.md](mapgen.md#biome-climate-and-form-bounds) |
+| `heat_min`/`heat_max`, `humidity_min`/`humidity_max`, `base_min`/`base_max`, `valley_depth_min`/`valley_depth_max`, `valley_pos_min`/`valley_pos_max`, `mountain_min`/`mountain_max`, `body_min`/`body_max`, `wetland_min`/`wetland_max`, `priority` | biome climate and form bounds and the selection priority, [mapgen.md](mapgen.md#biome-climate-and-form-bounds) |
 | `node_seabed`, `depth_seabed` | biome definition fields, mechanism in [mapgen.md](mapgen.md) |
 | `biome_at_surface` | decoration flag: the biome filter at the surface a floor, ceiling or liquid-surface decoration stands on |
 

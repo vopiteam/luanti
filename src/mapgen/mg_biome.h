@@ -123,6 +123,8 @@ public:
 	float mountain_max = std::numeric_limits<float>::infinity();
 	float body_min = 0.0f;
 	float body_max = std::numeric_limits<float>::infinity();
+	float wetland_min = 0.0f;
+	float wetland_max = 1.0f;
 
 	bool hasClimateBounds() const;
 	bool matchesClimate(float heat, float humidity) const;

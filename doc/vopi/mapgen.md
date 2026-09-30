@@ -1,10 +1,10 @@
 # Mapgen additions
 
-Three flags extend Mapgen Valleys: `sea_level_rivers`, `mountains` and
+Four flags extend Mapgen Valleys: `sea_level_rivers`, `mountains` and
 `remove_floaters`, all part of the default `mgvalleys_spflags` when
-`IS_VOPI_ENGINE` is on. None of them exists in a build without the option,
-which generates the upstream terrain unchanged.
-The code lives in `src/mapgen/mapgen_valleys.cpp`.
+`IS_VOPI_ENGINE` is on, and `wetlands`, off by default. None of them exists
+in a build without the option, which generates the upstream terrain
+unchanged. The code lives in `src/mapgen/mapgen_valleys.cpp`.
 
 ## Climate corrections
 
@@ -125,6 +125,51 @@ mapchunk, at the liquid surface, or none. The nodes stay as laid;
 decorations and dust, which go by the biomemap, follow the surface that is
 there.
 
+## `wetlands`
+
+Low country of Valleys is a gently sloping plain: a marsh biome bounded
+to a band of the region level stood on ground two to twelve nodes over
+the water, dry but for the rivers, and in the shape of that band, a
+strip along the coast. With this flag every column whose valley depth
+is under `mgvalleys_wetland_valley_depth_max`, the flattest lobes of the
+valley depth noise, and whose region level lies between
+`mgvalleys_wetland_base_min` and `mgvalleys_wetland_base_max`, behind the
+coast and not too far up, sinks to `mgvalleys_wetland_height` nodes over
+the water line, and where the 2D noise `mgvalleys_np_wetland_pools` is
+positive, to as much as `mgvalleys_wetland_pool_depth` nodes under it,
+one node for a noise just over zero and the full depth from one up. The
+terrain pass fills the dips with the biome's water as it fills any
+ground under the water line, so the flat holds shallow pools with
+islets between them, and every pool is enclosed: the water stands at the
+water line and the ground around it above. The sinking only lowers: a
+lake or a sea inside the wetland keeps its bed.
+
+The sinking is weighted, 1 deep inside the bounds and 0 at them, with a
+smooth ramp over `mgvalleys_wetland_fade` of each bound's own value, half
+a node at the least: a few nodes at the coast, where the beach keeps its
+strip, a hillside at the inland bound, so the country around keeps every
+node of its height and the wetland meets it on a slope rather than a
+step; a pool in the ramp is a dent that may not reach the water. The
+bank level sinks with the surface, so a river through the wetland runs
+level with the pools, and the 3D relief fades with the weight, so the
+flat is flat. The pool noise is computed for a generation area only once
+one of its columns holds a wetland, and the model is the shared column
+model, so the biome terrain sampler and the spawn search see the same
+surface.
+
+The weight is a field of the column's form, `wetland`, so a biome can be
+bounded to the wetland itself (`wetland_min`, below) rather than to the
+same two ranges: with `wetland_min = 1` it stands on the sunk flat and
+nowhere else, and the ramp around it wears the biomes of the country it
+is cut from. The mapgen does not know biomes, and a cold wetland sinks
+like a warm one. The biome is selected at the column `mg_biome_np_shift`
+displaces to, the surface is the column's own, so the biome's border
+wanders a few nodes across the edge of the flat; the blend noises of the
+form (`mg_biome_np_base_blend`, `mg_biome_np_valley_depth_blend`) dither
+the region level and the valley depth a biome reads, never the weight,
+so a biome bounded to the wetland follows the flat and not a dither of
+it.
+
 ## `mgvalleys_floor_y`
 
 A setting rather than a flag. After the caves are carved, every void and
@@ -180,6 +225,7 @@ order. All are optional; an omitted bound is unrestricted.
 | `valley_pos_min`, `valley_pos_max` | position in the valley profile, 0 at the river edge, 1 on the ridge | 0 to 1 |
 | `mountain_min`, `mountain_max` | mountain mask `max(mountain_height, 0) · gate`, 0 where no body can rise | finite float ≥ 0 |
 | `body_min`, `body_max` | the mountain body: the height it reaches over the terrain at the column, from its density sampled up the column, within a few nodes of the modeled surface, 0 where no body stands on the column. The mask says how tall a body can be in the region, the body whether and how far one rises here | finite float ≥ 0 |
+| `wetland_min`, `wetland_max` | the weight of the wetland (`wetlands` above), 0 outside it and 1 where the ground is sunk to the water line, 0 everywhere without the flag | 0 to 1 |
 | `priority` | among the biomes passing every bound, only the highest priority competes by distance | whole number in the s16 range, default 0 |
 
 An inverted range, nonnumeric value, NaN, infinity, a value outside the float
@@ -341,6 +387,7 @@ For Valleys, the result contains:
 | `valley_pos` | Position in the valley profile, 0 at the river edge, 1 on the ridge. |
 | `mountain` | Mountain mask, 0 where no mountain body can rise. |
 | `body` | The mountain body of the column: the height it reaches over the terrain, 0 where none stands. |
+| `wetland` | The weight of the wetland, 0 outside it and 1 where the ground is sunk to the water line. |
 
 The climate context and the form depend on exact X/Z and the world's frozen
 mapgen parameters, independently of query Y, generated chunks, player edits

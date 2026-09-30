@@ -100,6 +100,7 @@ struct ValleysTerrainParams {
 	NoiseParams valley_profile;
 	NoiseParams mountain;
 	NoiseParams mountain_height;
+	NoiseParams wetland_pools;
 
 	explicit ValleysTerrainParams(const MapgenValleysParams &p) :
 		seed(static_cast<s32>(p.seed)),
@@ -120,7 +121,8 @@ struct ValleysTerrainParams {
 		valley_depth(p.np_valley_depth),
 		valley_profile(p.np_valley_profile),
 		mountain(p.np_mountain),
-		mountain_height(p.np_mountain_height)
+		mountain_height(p.np_mountain_height),
+		wetland_pools(p.np_wetland_pools)
 	{
 		// Match the gate used by MapgenValleys::generateTerrain, including its
 		// disabled-mountain fast path. The more conservative bounds below are
@@ -235,9 +237,12 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 		NoiseFractal2D(&p.rivers, x, z, p.seed),
 		NoiseFractal2D(&p.terrain_height, x, z, p.seed),
 		NoiseFractal2D(&p.valley_depth, x, z, p.seed),
-		NoiseFractal2D(&p.valley_profile, x, z, p.seed));
+		NoiseFractal2D(&p.valley_profile, x, z, p.seed),
+		p.column.wetlands ?
+			NoiseFractal2D(&p.wetland_pools, x, z, p.seed) : 0.0f);
 	Column c{column.surface_y, column.base, column.slope, 0.0f, 0.0f, 0.0f,
-		{column.region_level, column.valley_depth, column.valley_pos, 0.0f, 0.0f}};
+		{column.region_level, column.valley_depth, column.valley_pos, 0.0f, 0.0f,
+			column.wetland}};
 	if (p.mountains) {
 		c.mountain_height = NoiseFractal2D(&p.mountain_height, x, z, p.seed);
 		if (c.mountain_height > 0.0f) {

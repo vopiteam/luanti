@@ -25,6 +25,7 @@ Licensing changed by permission of Gael de Sailly.
 #define MGVALLEYS_SEA_LEVEL_RIVERS 0x10
 #define MGVALLEYS_REMOVE_FLOATERS  0x40
 #define MGVALLEYS_MOUNTAINS        0x80
+#define MGVALLEYS_WETLANDS         0x100
 #endif
 
 class BiomeGenOriginal;
@@ -58,6 +59,17 @@ struct ValleysColumnParams {
 	float river_bank_height;
 	float mountain_river_width;
 	bool sea_level_rivers;
+	// Wetlands: the region level and the valley depth between which flat
+	// low country sinks to the water line, the fraction of each bound
+	// over which the sinking fades in from it, the ground left over the
+	// water and the depth of the pools under it
+	bool wetlands;
+	float wetland_base_min;
+	float wetland_base_max;
+	float wetland_valley_depth_max;
+	float wetland_fade;
+	float wetland_height;
+	float wetland_pool_depth;
 
 	explicit ValleysColumnParams(const MapgenValleysParams &params);
 };
@@ -77,10 +89,20 @@ struct ValleysColumn {
 	float region_level;
 	float valley_depth;
 	float valley_pos;
+	// The weight of the wetland, 0 outside it and 1 deep inside
+	float wetland;
 };
 
+// The weight of the wetland in a column: 1 deep inside its bounds, 0 at
+// them and beyond, a smooth ramp over 'wetland_fade' of each range
+// between, from the two noises that make the region level and the valley
+// depth. 0 whenever wetlands are off
+float valleysWetlandWeight(const ValleysColumnParams &params,
+	float n_terrain_height, float n_valley);
+
 ValleysColumn calcValleysColumn(const ValleysColumnParams &params, float n_slope,
-	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile);
+	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile,
+	float n_wetland);
 
 // The gate of the mountain body in a column: 0 in the river channel and 1
 // beyond 'mountain_river_width' of the valley profile
@@ -105,6 +127,12 @@ struct MapgenValleysParams : public MapgenParams {
 	float mountain_cap = 1.6f;
 	u16 mountain_cap_height = 44;
 	u16 mountain_cap_reach = 14;
+	float wetland_base_min = 3.0f;
+	float wetland_base_max = 25.0f;
+	float wetland_valley_depth_max = 2.0f;
+	float wetland_fade = 0.25f;
+	u16 wetland_height = 1;
+	u16 wetland_pool_depth = 2;
 #endif
 
 	float cave_width = 0.09f;
@@ -135,6 +163,7 @@ struct MapgenValleysParams : public MapgenParams {
 #if IS_VOPI_ENGINE
 	NoiseParams np_mountain;
 	NoiseParams np_mountain_height;
+	NoiseParams np_wetland_pools;
 #endif
 
 	MapgenValleysParams();
@@ -192,8 +221,13 @@ private:
 		bool river_water;     // sea level channel carrying river water
 	};
 #endif
+#if IS_VOPI_ENGINE
+	void terrainColumn(float n_slope, float n_rivers, float n_terrain_height,
+		float n_valley, float n_valley_profile, float n_wetland, Column &c) const;
+#else
 	void terrainColumn(float n_slope, float n_rivers, float n_terrain_height,
 		float n_valley, float n_valley_profile, Column &c) const;
+#endif
 	Column columnAt(s16 x, s16 z) const;
 	// Every column of the generation area: the mapchunk and 'column_reach'
 	// around it, which is how far the 2D terrain noises are computed
@@ -212,6 +246,9 @@ private:
 	// 2D height it fades over, which switches mountains off where it is <= 0
 	Noise *noise_mountain = nullptr;
 	Noise *noise_mountain_height = nullptr;
+	// Wetlands: the 2D pool noise, computed for a generation area only
+	// once a column of it holds a wetland
+	Noise *noise_wetland_pools = nullptr;
 	// Where the body touches the ground, per column of the area, and the
 	// strongest foot within 'mountain_cap_reach' of every mapchunk column
 	std::vector<float> foot;

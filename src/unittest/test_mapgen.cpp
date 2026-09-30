@@ -50,6 +50,7 @@ public:
 	void testValleysClimateParams();
 	void testValleysClimateCorrections();
 	void testValleysClimateContext();
+	void testValleysWetlands();
 	void testEffectiveBiomeSelection();
 	void testBiomeShift();
 	void testEffectiveClimateSafety();
@@ -94,6 +95,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testValleysClimateParams);
 	TEST(testValleysClimateCorrections);
 	TEST(testValleysClimateContext);
+	TEST(testValleysWetlands);
 	TEST(testEffectiveBiomeSelection);
 	TEST(testBiomeShift);
 	TEST(testEffectiveClimateSafety);
@@ -543,6 +545,131 @@ void TestMapgen::testValleysClimateContext()
 // A constant shift reads every column's climate, form and variant at the
 // column a fixed distance away, while the bank, the reference height and
 // the modeled surface stay the column's own.
+// The wetland of Valleys: the weight of a column from the region level
+// and the valley depth, the sinking of the column model to the water
+// line, the pools under it, the ground it leaves alone, and the weight
+// as the biome terrain sampler reports it.
+void TestMapgen::testValleysWetlands()
+{
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	MapgenValleysParams params;
+	params.seed = 4242;
+	params.water_level = 0;
+	params.spflags = MGVALLEYS_SEA_LEVEL_RIVERS | MGVALLEYS_WETLANDS;
+	params.wetland_base_min = 3.0f;
+	params.wetland_base_max = 25.0f;
+	params.wetland_valley_depth_max = 2.0f;
+	params.wetland_fade = 0.25f;
+	params.wetland_height = 1;
+	params.wetland_pool_depth = 2;
+	const ValleysColumnParams column(params);
+
+	// The weight: nothing with the flag off; 1 deep inside the bounds, 0
+	// at them and beyond; half way up a ramp of a quarter of the bound,
+	// three quarters of a node at the coast and six and a quarter inland.
+	// A valley noise of 1 is a valley depth of 1, so the region level is
+	// the terrain noise plus one.
+	MapgenValleysParams off = params;
+	off.spflags = MGVALLEYS_SEA_LEVEL_RIVERS;
+	UASSERTEQ(float, valleysWetlandWeight(ValleysColumnParams(off), 10.0f, 1.0f), 0.0f);
+	UASSERTEQ(float, valleysWetlandWeight(column, 10.0f, 1.0f), 1.0f);
+	UASSERTEQ(float, valleysWetlandWeight(column, 2.0f, 1.0f), 0.0f);
+	UASSERTEQ(float, valleysWetlandWeight(column, 24.0f, 1.0f), 0.0f);
+	UASSERTEQ(float, valleysWetlandWeight(column, 30.0f, 1.0f), 0.0f);
+	UASSERTEQ(float, valleysWetlandWeight(column, 10.0f, 1.5f), 0.0f);
+	float coast = valleysWetlandWeight(column, 2.375f, 1.0f);
+	UASSERT(coast > 0.49f && coast < 0.51f);
+	float inland = valleysWetlandWeight(column, 20.875f, 1.0f);
+	UASSERT(inland > 0.49f && inland < 0.51f);
+	UASSERT(valleysWetlandWeight(column, 22.0f, 1.0f) < valleysWetlandWeight(column, 18.0f, 1.0f));
+
+	// The column, far from any river, on a valley profile of 1 and a slope
+	// noise of a half: the surface is the region level plus the valley
+	// height of one, and the bank clamp of the sea level rivers leaves it
+	// where no river is
+	auto column_at = [&](const ValleysColumnParams &p, float n_terrain_height, float n_wetland) {
+		return calcValleysColumn(p, 0.5f, 100.0f, n_terrain_height, 1.0f, 1.0f, n_wetland);
+	};
+	ValleysColumn outside = column_at(column, 30.0f, 1.0f);
+	UASSERTEQ(float, outside.wetland, 0.0f);
+	UASSERTEQ(float, outside.surface_y, 32.0f);
+	UASSERTEQ(float, outside.slope, 0.5f);
+	// Inside: the surface sinks to the height over the water line plus a
+	// half, so the top node lies at that height; the relief goes; the bank
+	// stays what the clamp made it and the river surface stays the water
+	// line
+	ValleysColumn flat = column_at(column, 10.0f, 0.0f);
+	UASSERTEQ(float, flat.wetland, 1.0f);
+	UASSERTEQ(float, flat.surface_y, 1.5f);
+	UASSERTEQ(float, flat.slope, 0.0f);
+	UASSERTEQ(float, flat.base, 2.0f);
+	UASSERTEQ(float, flat.river_y, 0.0f);
+	UASSERTEQ(float, flat.region_level, 11.0f);
+	// Pools: one node of water for a pool noise just over zero, the full
+	// depth from one up, in between on the way
+	float rim = column_at(column, 10.0f, 0.001f).surface_y;
+	UASSERT(rim < -0.5f && rim > -0.51f);
+	UASSERTEQ(float, column_at(column, 10.0f, 0.5f).surface_y, -1.0f);
+	UASSERTEQ(float, column_at(column, 10.0f, 1.0f).surface_y, -1.5f);
+	UASSERTEQ(float, column_at(column, 10.0f, 3.0f).surface_y, -1.5f);
+	// Half way up the inland ramp the surface is half way down
+	ValleysColumn ramp = column_at(column, 20.875f, 0.0f);
+	UASSERT(ramp.wetland > 0.49f && ramp.wetland < 0.51f);
+	UASSERT(ramp.surface_y > 12.0f && ramp.surface_y < 12.4f);
+	UASSERT(ramp.slope > 0.24f && ramp.slope < 0.26f);
+	// Ground under the level already, a sea inside a wetland whose bounds
+	// reach below the water line, keeps its bed
+	MapgenValleysParams deep = params;
+	deep.wetland_base_min = -10.0f;
+	ValleysColumn sea = column_at(ValleysColumnParams(deep), -5.0f, 1.0f);
+	UASSERTEQ(float, sea.wetland, 1.0f);
+	UASSERTEQ(float, sea.surface_y, -3.0f);
+	UASSERTEQ(float, sea.slope, 0.5f);
+	// Without sea level rivers the bank sinks with the surface and the
+	// river surface follows it to the water line
+	MapgenValleysParams plain = params;
+	plain.spflags = MGVALLEYS_WETLANDS;
+	ValleysColumn banked = column_at(ValleysColumnParams(plain), 10.0f, 0.0f);
+	UASSERTEQ(float, banked.surface_y, 1.5f);
+	UASSERTEQ(float, banked.base, 1.5f);
+	UASSERTEQ(float, banked.river_y, 0.5f);
+
+	// The biome terrain sampler carries the weight in the form and reports
+	// the sunk surface, truncated: the bank one node over the water, a
+	// pool under it, the country outside at its own height
+	params.np_terrain_height = constant_noise(10.0f);
+	params.np_valley_depth = constant_noise(1.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(100.0f);
+	params.np_inter_valley_slope = constant_noise(0.5f);
+	params.np_inter_valley_fill = constant_noise(0.0f);
+	params.np_wetland_pools = constant_noise(0.0f);
+	auto bank = createValleysBiomeTerrainSampler(params);
+	BiomeClimateContext context;
+	UASSERT(bank->sampleClimate(v2s16(7, -3), context));
+	UASSERTEQ(float, context.form.wetland, 1.0f);
+	UASSERTEQ(float, context.form.base, 11.0f);
+	UASSERTEQ(s16, context.column_max_y, 1);
+	params.np_wetland_pools = constant_noise(1.0f);
+	auto pool = createValleysBiomeTerrainSampler(params);
+	UASSERT(pool->sampleClimate(v2s16(7, -3), context));
+	UASSERTEQ(float, context.form.wetland, 1.0f);
+	UASSERT(context.column_max_y < 0);
+	params.np_terrain_height = constant_noise(30.0f);
+	auto dry = createValleysBiomeTerrainSampler(params);
+	UASSERT(dry->sampleClimate(v2s16(7, -3), context));
+	UASSERTEQ(float, context.form.wetland, 0.0f);
+	UASSERTEQ(s16, context.column_max_y, 32);
+	params.spflags = MGVALLEYS_SEA_LEVEL_RIVERS;
+	params.np_terrain_height = constant_noise(10.0f);
+	auto unflagged = createValleysBiomeTerrainSampler(params);
+	UASSERT(unflagged->sampleClimate(v2s16(7, -3), context));
+	UASSERTEQ(float, context.form.wetland, 0.0f);
+	UASSERTEQ(s16, context.column_max_y, 12);
+}
+
 void TestMapgen::testBiomeShift()
 {
 	MockServer server(getTestTempDirectory());
@@ -1384,6 +1511,8 @@ void TestMapgen::testBiomeFormParsing()
 		UASSERT(parsed && parsed->hasClimateBounds() && parsed->hasFormConstraints());
 		UASSERTEQ(float, parsed->body_min, 3.0f);
 		UASSERTEQ(float, parsed->body_max, 6.0f);
+		UASSERTEQ(float, parsed->wetland_min, 0.0f);
+		UASSERTEQ(float, parsed->wetland_max, 1.0f);
 		UASSERTEQ(float, parsed->heat_min, -14.0f);
 		UASSERTEQ(float, parsed->heat_max, 28.0f);
 		UASSERT(std::isinf(parsed->humidity_min) && parsed->humidity_min < 0.0f);
@@ -1447,9 +1576,13 @@ void TestMapgen::testBiomeFormParsing()
 			reject();
 		}
 	}
-	for (const char *name : {"valley_pos_min", "valley_pos_max"}) {
+	for (const char *name : {"valley_pos_min", "valley_pos_max",
+			"wetland_min", "wetland_max"}) {
 		lua_newtable(L);
 		number(name, 1.0001);
+		reject();
+		lua_newtable(L);
+		number(name, -0.5);
 		reject();
 	}
 	lua_newtable(L);
@@ -1460,6 +1593,30 @@ void TestMapgen::testBiomeFormParsing()
 	number("valley_pos_min", 0.5);
 	number("valley_pos_max", 0.25);
 	reject();
+	lua_newtable(L);
+	number("wetland_min", 0.8);
+	number("wetland_max", 0.7);
+	reject();
+
+	// The wetland bound alone is a form constraint, and it holds the
+	// weight of the sunk flat against the form
+	lua_newtable(L);
+	number("wetland_min", 0.75);
+	{
+		std::unique_ptr<Biome> parsed(read_biome_def(L, 1, ndef.get()));
+		UASSERT(parsed && parsed->hasFormConstraints() && !parsed->hasClimateBounds());
+		UASSERTEQ(float, parsed->wetland_min, 0.75f);
+		UASSERTEQ(float, parsed->wetland_max, 1.0f);
+		BiomeTerrainForm form;
+		UASSERT(!parsed->matchesForm(form));
+		form.wetland = 0.75f;
+		UASSERT(parsed->matchesForm(form));
+		form.wetland = 1.0f;
+		UASSERT(parsed->matchesForm(form));
+		form.wetland = 0.7f;
+		UASSERT(!parsed->matchesForm(form));
+	}
+	lua_settop(L, 0);
 
 	// Negative signed bounds, zero and a single unbounded side are accepted.
 	lua_newtable(L);
@@ -1850,6 +2007,9 @@ void TestMapgen::testBiomeFormClone(IGameDef *gamedef)
 	auto biome = addTerrainTestBiome(manager, "bounded", 50.0f, 50.0f);
 	biome->valley_pos_min = 0.5f;
 	biome->valley_depth_max = 20.0f;
+	// A bound the dry form of the fixture passes, so the selection below
+	// still finds the biome
+	biome->wetland_max = 0.5f;
 	biome->heat_max = 60.0f;
 	biome->priority = 2;
 	// Worker cloning happens after node registration. Resolve both the
@@ -1867,6 +2027,7 @@ void TestMapgen::testBiomeFormClone(IGameDef *gamedef)
 	UASSERT(copied_biome != biome);
 	UASSERTEQ(float, copied_biome->valley_pos_min, 0.5f);
 	UASSERTEQ(float, copied_biome->valley_depth_max, 20.0f);
+	UASSERTEQ(float, copied_biome->wetland_max, 0.5f);
 	UASSERTEQ(float, copied_biome->heat_max, 60.0f);
 	UASSERTEQ(int, copied_biome->priority, 2);
 

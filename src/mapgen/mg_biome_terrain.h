@@ -21,13 +21,16 @@ struct MapgenValleysParams;
 // the column, reaches over the terrain at the column, from the density
 // sampled up the column, within a few nodes of the modeled surface, 0
 // where no body stands on the column. The mask says how tall a body can
-// be in the region, the body whether and how far one rises here.
+// be in the region, the body whether and how far one rises here. The
+// wetland is the weight of the wetland in the column (mapgen_valleys.h),
+// 0 outside it and 1 where the ground is sunk to the water line.
 struct BiomeTerrainForm {
 	float base = 0.0f;
 	float valley_depth = 0.0f;
 	float valley_pos = 0.0f;
 	float mountain = 0.0f;
 	float body = 0.0f;
+	float wetland = 0.0f;
 };
 
 // Exact-column context for climate corrections and form selection,

@@ -44,6 +44,7 @@ const FlagDesc flagdesc_mapgen_valleys[] = {
 	{"sea_level_rivers", MGVALLEYS_SEA_LEVEL_RIVERS},
 	{"remove_floaters",  MGVALLEYS_REMOVE_FLOATERS},
 	{"mountains",        MGVALLEYS_MOUNTAINS},
+	{"wetlands",         MGVALLEYS_WETLANDS},
 #endif
 	{NULL,               0}
 };
@@ -188,6 +189,11 @@ MapgenValleys::MapgenValleys(MapgenValleysParams *params, EmergeParams *emerge)
 			(1.0f - np.persist);
 		mountain_noise_max = np.offset + std::fabs(np.scale) * octaves_max;
 	}
+	if (spflags & MGVALLEYS_WETLANDS) {
+		// 2D noise
+		noise_wetland_pools = new Noise(&params->np_wetland_pools,
+			seed, area_x, area_z);
+	}
 	floater_floor.resize((size_t)csize.X * csize.Z);
 #endif
 	// 1-down overgeneraion
@@ -210,6 +216,7 @@ MapgenValleys::~MapgenValleys()
 #if IS_VOPI_ENGINE
 	delete noise_mountain;
 	delete noise_mountain_height;
+	delete noise_wetland_pools;
 #endif
 }
 
@@ -229,6 +236,7 @@ MapgenValleysParams::MapgenValleysParams():
 #if IS_VOPI_ENGINE
 	, np_mountain         (-0.48, 1.0,  v3f(192,  256,  192),  3517,  5, 0.7,  2.0)
 	, np_mountain_height  (128.0, 80.0, v3f(1500, 1500, 1500), 4021,  3, 0.6,  2.0)
+	, np_wetland_pools    (-0.4,  2.0,  v3f(40,   40,   40),   8125,  4, 0.55, 2.0)
 #endif
 {
 }
@@ -257,6 +265,12 @@ void MapgenValleysParams::readParams(const Settings *settings)
 	settings->getFloatNoEx("mgvalleys_mountain_cap",         mountain_cap);
 	settings->getU16NoEx("mgvalleys_mountain_cap_height",    mountain_cap_height);
 	settings->getU16NoEx("mgvalleys_mountain_cap_reach",     mountain_cap_reach);
+	settings->getFloatNoEx("mgvalleys_wetland_base_min",     wetland_base_min);
+	settings->getFloatNoEx("mgvalleys_wetland_base_max",     wetland_base_max);
+	settings->getFloatNoEx("mgvalleys_wetland_valley_depth_max", wetland_valley_depth_max);
+	settings->getFloatNoEx("mgvalleys_wetland_fade",         wetland_fade);
+	settings->getU16NoEx("mgvalleys_wetland_height",         wetland_height);
+	settings->getU16NoEx("mgvalleys_wetland_pool_depth",     wetland_pool_depth);
 #endif
 	settings->getFloatNoEx("mgvalleys_cave_width",         cave_width);
 	settings->getS16NoEx("mgvalleys_cavern_limit",         cavern_limit);
@@ -280,6 +294,7 @@ void MapgenValleysParams::readParams(const Settings *settings)
 #if IS_VOPI_ENGINE
 	settings->getNoiseParams("mgvalleys_np_mountain",           np_mountain);
 	settings->getNoiseParams("mgvalleys_np_mountain_height",    np_mountain_height);
+	settings->getNoiseParams("mgvalleys_np_wetland_pools",      np_wetland_pools);
 #endif
 }
 
@@ -308,6 +323,12 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 	settings->setFloat("mgvalleys_mountain_cap",         mountain_cap);
 	settings->setU16("mgvalleys_mountain_cap_height",    mountain_cap_height);
 	settings->setU16("mgvalleys_mountain_cap_reach",     mountain_cap_reach);
+	settings->setFloat("mgvalleys_wetland_base_min",     wetland_base_min);
+	settings->setFloat("mgvalleys_wetland_base_max",     wetland_base_max);
+	settings->setFloat("mgvalleys_wetland_valley_depth_max", wetland_valley_depth_max);
+	settings->setFloat("mgvalleys_wetland_fade",         wetland_fade);
+	settings->setU16("mgvalleys_wetland_height",         wetland_height);
+	settings->setU16("mgvalleys_wetland_pool_depth",     wetland_pool_depth);
 #endif
 	settings->setFloat("mgvalleys_cave_width",         cave_width);
 	settings->setS16("mgvalleys_cavern_limit",         cavern_limit);
@@ -331,6 +352,7 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 #if IS_VOPI_ENGINE
 	settings->setNoiseParams("mgvalleys_np_mountain",           np_mountain);
 	settings->setNoiseParams("mgvalleys_np_mountain_height",    np_mountain_height);
+	settings->setNoiseParams("mgvalleys_np_wetland_pools",      np_wetland_pools);
 #endif
 }
 
@@ -493,8 +515,47 @@ ValleysColumnParams::ValleysColumnParams(const MapgenValleysParams &params) :
 	river_valley_width(params.river_valley_width),
 	river_bank_height(params.river_bank_height),
 	mountain_river_width(std::fmax(params.mountain_river_width, 0.01f)),
-	sea_level_rivers(params.spflags & MGVALLEYS_SEA_LEVEL_RIVERS)
+	sea_level_rivers(params.spflags & MGVALLEYS_SEA_LEVEL_RIVERS),
+	wetlands(params.spflags & MGVALLEYS_WETLANDS),
+	wetland_base_min(params.wetland_base_min),
+	wetland_base_max(std::fmax(params.wetland_base_max, params.wetland_base_min)),
+	wetland_valley_depth_max(std::fmax(params.wetland_valley_depth_max, 0.0f)),
+	wetland_fade(std::fmin(std::fmax(params.wetland_fade, 0.01f), 1.0f)),
+	wetland_height(params.wetland_height),
+	wetland_pool_depth(std::fmax((float)params.wetland_pool_depth, 1.0f))
 {
+}
+
+
+// The ramp of a bound: 'wetland_fade' of the bound's own value, half a
+// node at the least, so the ramp at the coast, where the bound is a few
+// nodes, is a few nodes wide and the beach keeps its strip, while the ramp
+// at the inland bound, tens of nodes up, is a hillside
+static inline float wetlandRamp(float bound, float fade)
+{
+	return std::fmax(std::fabs(bound) * fade, 0.5f);
+}
+
+float valleysWetlandWeight(const ValleysColumnParams &p, float n_terrain_height,
+	float n_valley)
+{
+	if (!p.wetlands)
+		return 0.0f;
+	float valley_d = n_valley * n_valley;
+	float region_level = n_terrain_height + valley_d;
+	// Distance inside each bound, in fractions of its ramp
+	float t = std::fmin(
+		(p.wetland_base_max - region_level) /
+			wetlandRamp(p.wetland_base_max, p.wetland_fade),
+		(region_level - p.wetland_base_min) /
+			wetlandRamp(p.wetland_base_min, p.wetland_fade));
+	t = std::fmin(t, (p.wetland_valley_depth_max - valley_d) /
+		wetlandRamp(p.wetland_valley_depth_max, p.wetland_fade));
+	if (t <= 0.0f)
+		return 0.0f;
+	if (t >= 1.0f)
+		return 1.0f;
+	return t * t * (3.0f - 2.0f * t);
 }
 
 
@@ -504,7 +565,8 @@ ValleysColumnParams::ValleysColumnParams(const MapgenValleysParams &params) :
 // form of the column. The generator feeds it the bulk noise of the area,
 // the biome terrain sampler the scalar noise of a column: one model.
 ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
-	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile)
+	float n_rivers, float n_terrain_height, float n_valley, float n_valley_profile,
+	float n_wetland)
 {
 	float valley_d = n_valley * n_valley;
 	// 'base' represents the level of the river banks
@@ -530,6 +592,7 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 	c.region_level = base;
 	c.valley_depth = valley_d;
 	c.valley_pos = valley_pos;
+	c.wetland = 0.0f;
 
 	// Sea level river channels carry river water below the water line
 	if (p.sea_level_rivers) {
@@ -550,6 +613,40 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 			// The 3D relief never exceeds the height left above the
 			// bank, so lowered ground does not dip under the sea
 			slope = std::fmin(slope, n_slope * (surface_y - base));
+		}
+	}
+
+	// Wetlands: flat low country sinks to 'wetland_height' over the water
+	// line by the weight of the wetland in the column, and where the pool
+	// noise is positive, to one node of water under it, up to
+	// 'wetland_pool_depth' nodes as the noise rises to 1, so the flat
+	// holds pools the water fills, with islets between them. The bank
+	// level follows, so a river through the wetland runs level with the
+	// pools, and the 3D relief fades with the weight, so the flat is
+	// flat. The weight is 0 at the bounds, so the country around keeps
+	// its height and the wetland meets it on a slope. The sinking only
+	// lowers: ground already under its level, a lake or a sea inside the
+	// wetland, keeps its bed. With sea level rivers the bank clamp above
+	// has set the bank already, and the river through the wetland keeps
+	// the depth of every other. Ground is where the density is positive,
+	// so a surface at Y + 0.5 puts the top node at Y
+	if (p.wetlands) {
+		float wetland = valleysWetlandWeight(p, n_terrain_height, n_valley);
+		c.wetland = wetland;
+		if (wetland > 0.0f) {
+			float bank_level = p.water_level + p.wetland_height + 0.5f;
+			float level = bank_level;
+			if (n_wetland > 0.0f)
+				level = p.water_level - 0.5f -
+					(p.wetland_pool_depth - 1.0f) * std::fmin(n_wetland, 1.0f);
+			if (surface_y > level) {
+				surface_y += (level - surface_y) * wetland;
+				slope *= 1.0f - wetland;
+			}
+			if (!p.sea_level_rivers && base > bank_level) {
+				base += (bank_level - base) * wetland;
+				river_y = base - 1.0f;
+			}
 		}
 	}
 
@@ -599,10 +696,10 @@ float valleysMountainFoot(const NoiseParams &np_mountain, float x, float z,
 
 void MapgenValleys::terrainColumn(float n_slope, float n_rivers,
 	float n_terrain_height, float n_valley, float n_valley_profile,
-	Column &c) const
+	float n_wetland, Column &c) const
 {
 	c = calcValleysColumn(column_params, n_slope, n_rivers, n_terrain_height,
-		n_valley, n_valley_profile);
+		n_valley, n_valley_profile, n_wetland);
 }
 #else
 // The terrain of one column from its 2D noise values: the river bank
@@ -659,7 +756,12 @@ MapgenValleys::Column MapgenValleys::columnAt(s16 x, s16 z) const
 		NoiseFractal2D(&noise_rivers->np, x, z, seed),
 		NoiseFractal2D(&noise_terrain_height->np, x, z, seed),
 		NoiseFractal2D(&noise_valley_depth->np, x, z, seed),
-		NoiseFractal2D(&noise_valley_profile->np, x, z, seed), c);
+		NoiseFractal2D(&noise_valley_profile->np, x, z, seed),
+#if IS_VOPI_ENGINE
+		noise_wetland_pools ?
+			NoiseFractal2D(&noise_wetland_pools->np, x, z, seed) : 0.0f,
+#endif
+		c);
 	return c;
 }
 
@@ -994,11 +1096,29 @@ int MapgenValleys::generateTerrain()
 
 	noise_inter_valley_fill->noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
 
+#if IS_VOPI_ENGINE
+	// Wetlands: the pool noise only once a column of the area holds one
+	const float *wetland_pools = nullptr;
+	if (noise_wetland_pools) {
+		for (s32 i = 0; i < area_x * area_z; i++) {
+			if (valleysWetlandWeight(column_params, noise_terrain_height->result[i],
+					noise_valley_depth->result[i]) > 0.0f) {
+				noise_wetland_pools->noiseMap2D(area_min_x, area_min_z);
+				wetland_pools = noise_wetland_pools->result;
+				break;
+			}
+		}
+	}
+#endif
+
 	columns.resize((size_t)area_x * area_z);
 	for (s32 i = 0; i < area_x * area_z; i++)
 		terrainColumn(noise_inter_valley_slope->result[i],
 			noise_rivers->result[i], noise_terrain_height->result[i],
 			noise_valley_depth->result[i], noise_valley_profile->result[i],
+#if IS_VOPI_ENGINE
+			wetland_pools ? wetland_pools[i] : 0.0f,
+#endif
 			columns[i]);
 
 #if IS_VOPI_ENGINE
