@@ -90,6 +90,11 @@ public:
 	// node_filler as before.
 	content_t c_seabed = CONTENT_IGNORE;
 	s16 depth_seabed = 0;
+	// Top node of a surface standing at the water level under air, the
+	// wet ground at the water's edge that neither rises over the water
+	// nor lies under it, in place of node_top. CONTENT_IGNORE leaves it
+	// to node_top as before.
+	content_t c_waterline = CONTENT_IGNORE;
 #endif
 
 	v3s16 min_pos = -MAX_MAP_GENERATION_LIMIT_V3;
@@ -259,11 +264,11 @@ struct BiomeParamsOriginal : public BiomeParams {
 	// biomes along the zero line of the noise. Scale 0, the default, keeps
 	// the axis at its offset everywhere.
 	NoiseParams np_variant;
-	// Displacement, in nodes, of the point at which the climate, the form
-	// and the variant of a column are read: the noise gives the X
-	// displacement, the same noise with its seed offset the Z displacement.
-	// Every border then moves by the noise wherever it runs, in the shape
-	// of its octaves, without any field being dithered; the column's own
+	// Displacement, in nodes, of the point at which the climate and the
+	// variant of a column are read: the noise gives the X displacement,
+	// the same noise with its seed offset the Z displacement. Every climate
+	// border then moves by the noise wherever it runs, in the shape of its
+	// octaves, without any field being dithered; the form and the column's own
 	// bank, surface and climate corrections stay in place. Scale 0 and
 	// offset 0, the defaults, read every column at its own position.
 	NoiseParams np_shift;
@@ -329,12 +334,13 @@ private:
 	// The blend noise of the form, added where selection and queries read
 	// the column form, so both see the same values.
 	void blendForm(v2s16 pos, BiomeTerrainForm &form) const;
-	// The point a column's climate, form and variant are read at: the
-	// column displaced by 'mg_biome_np_shift', or the column itself
-	// without a shift noise. Heat and humidity are read at the fractional
-	// point, the form and the variant at the nearest column. Inside the
-	// chunk of the last calcBiomeNoise the displacement comes from the map
-	// made there, so a column is displaced once per chunk.
+	// The point a column's climate and variant are read at: the column
+	// displaced by 'mg_biome_np_shift', or the column itself without a
+	// shift noise. Heat and humidity are read at the fractional point,
+	// the variant at the nearest column; the form, like the bank and the
+	// surface, is the column's own. Inside the chunk of the last
+	// calcBiomeNoise the displacement comes from the map made there, so a
+	// column is displaced once per chunk.
 	bool hasShift() const;
 	v2f shiftedColumn(v2s16 pos) const;
 	v2f displace(v2s16 pos) const;

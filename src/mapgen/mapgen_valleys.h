@@ -62,7 +62,8 @@ struct ValleysColumnParams {
 	// Wetlands: the region level and the valley depth between which flat
 	// low country sinks to the water line, the fraction of each bound
 	// over which the sinking fades in from it, the ground left over the
-	// water and the depth of the pools under it
+	// water, the depth of the pools under it and the band of the pool
+	// noise over which a bank shelves down into a pool
 	bool wetlands;
 	float wetland_base_min;
 	float wetland_base_max;
@@ -70,6 +71,7 @@ struct ValleysColumnParams {
 	float wetland_fade;
 	float wetland_height;
 	float wetland_pool_depth;
+	float wetland_pool_edge;
 
 	explicit ValleysColumnParams(const MapgenValleysParams &params);
 };
@@ -127,12 +129,13 @@ struct MapgenValleysParams : public MapgenParams {
 	float mountain_cap = 1.6f;
 	u16 mountain_cap_height = 44;
 	u16 mountain_cap_reach = 14;
-	float wetland_base_min = 3.0f;
+	float wetland_base_min = -1.0f;
 	float wetland_base_max = 25.0f;
 	float wetland_valley_depth_max = 2.0f;
 	float wetland_fade = 0.25f;
 	u16 wetland_height = 1;
 	u16 wetland_pool_depth = 2;
+	float wetland_pool_edge = 0.5f;
 #endif
 
 	float cave_width = 0.09f;

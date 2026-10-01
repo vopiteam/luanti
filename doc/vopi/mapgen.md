@@ -75,7 +75,10 @@ of Mapgen v7, stone where
 - The gate is the rise of the valley itself: 0 in the river channel and 1
   beyond `mgvalleys_mountain_river_width` of the valley profile, so
   mountains grow where the ground climbs out of the valley and never dam a
-  river.
+  river. With `wetlands` it is also the dry share of the column, 1 minus
+  the wetland's weight: no body rises from a sunk flat, and one crossing
+  the ramp around the flat tapers with the weight, so the mask (`mountain`)
+  and the body (`body`) read 0 on the flat.
 - The cap. Where the body touches the ground it has a foot, the noise at
   the surface. In the band up to `mgvalleys_mountain_cap_height` above the
   ground the threshold drops by `mgvalleys_mountain_cap` times the strongest
@@ -136,23 +139,29 @@ valley depth noise, and whose region level lies between
 `mgvalleys_wetland_base_min` and `mgvalleys_wetland_base_max`, behind the
 coast and not too far up, sinks to `mgvalleys_wetland_height` nodes over
 the water line, and where the 2D noise `mgvalleys_np_wetland_pools` is
-positive, to as much as `mgvalleys_wetland_pool_depth` nodes under it,
-one node for a noise just over zero and the full depth from one up. The
-terrain pass fills the dips with the biome's water as it fills any
-ground under the water line, so the flat holds shallow pools with
-islets between them, and every pool is enclosed: the water stands at the
-water line and the ground around it above. The sinking only lowers: a
-lake or a sea inside the wetland keeps its bed.
+positive, into a pool: over `mgvalleys_wetland_pool_edge` of the noise
+the bank shelves down to the first node of water, through a shelf at the
+water line, and from there the pool deepens to as much as
+`mgvalleys_wetland_pool_depth` nodes under the water line as the noise
+rises to one. The terrain pass fills the dips with the biome's water as
+it fills any ground under the water line, so the flat holds shallow
+pools with islets between them and shallows at their edges, and every
+pool is enclosed: the water stands at the water line and the ground
+around it above. The sinking only lowers: a lake or a sea inside the
+wetland keeps its bed.
 
 The sinking is weighted, 1 deep inside the bounds and 0 at them, with a
 smooth ramp over `mgvalleys_wetland_fade` of each bound's own value, half
-a node at the least: a few nodes at the coast, where the beach keeps its
-strip, a hillside at the inland bound, so the country around keeps every
-node of its height and the wetland meets it on a slope rather than a
-step; a pool in the ramp is a dent that may not reach the water. The
-bank level sinks with the surface, so a river through the wetland runs
-level with the pools, and the 3D relief fades with the weight, so the
-flat is flat. The pool noise is computed for a generation area only once
+a node at the least: a node at a coast bound under the water line, so
+the shore inside the wetland sinks with it to a flat at the water line,
+a hillside at the inland bound, so the country around keeps every node
+of its height and the wetland meets it on a slope rather than a step; a
+pool in the ramp is a dent that may not reach the water. The bank level
+sinks with the surface, so a river through the wetland runs level with
+the pools; the 3D relief stays, a node or two of it in a flat lobe, so
+the flat is low but not a plane; and no mountain body rises on it, the
+gate of the `mountains` being the dry share of the column (above). The
+pool noise is computed for a generation area only once
 one of its columns holds a wetland, and the model is the shared column
 model, so the biome terrain sampler and the spawn search see the same
 surface.
@@ -162,13 +171,13 @@ bounded to the wetland itself (`wetland_min`, below) rather than to the
 same two ranges: with `wetland_min = 1` it stands on the sunk flat and
 nowhere else, and the ramp around it wears the biomes of the country it
 is cut from. The mapgen does not know biomes, and a cold wetland sinks
-like a warm one. The biome is selected at the column `mg_biome_np_shift`
-displaces to, the surface is the column's own, so the biome's border
-wanders a few nodes across the edge of the flat; the blend noises of the
-form (`mg_biome_np_base_blend`, `mg_biome_np_valley_depth_blend`) dither
-the region level and the valley depth a biome reads, never the weight,
-so a biome bounded to the wetland follows the flat and not a dither of
-it.
+like a warm one. The weight, like the rest of the form, is read at the
+column itself, whatever `mg_biome_np_shift` does to the climate, so the
+biome's border sits on the edge of the flat and never climbs the relief
+beside it; the blend noises of the form (`mg_biome_np_base_blend`,
+`mg_biome_np_valley_depth_blend`) dither the region level and the valley
+depth a biome reads, never the weight, so a biome bounded to the wetland
+follows the flat and not a dither of it.
 
 ## `mgvalleys_floor_y`
 
@@ -196,6 +205,19 @@ deep and is followed by the biome's `node_stone`; it mirrors
 `node_riverbed`, which upstream already applies under river water. A biome
 without the field behaves as before. Caves are carved after the biome
 layers, so cave floors are untouched by either field.
+
+## Biome `node_waterline`
+
+A field of the biome definition, read by every mapgen that uses the biome
+API. Upstream gives every surface under air the biome's `node_top`,
+whether it stands a hill over the water or exactly at the water level. A
+surface whose top node lies at the water level with air above it is the
+wet ground at the water's edge: it neither rises over the water nor lies
+under it. With `node_waterline` set, that node takes it in place of
+`node_top`, and the filler below follows as usual, so a biome can ring
+its pools and line its rivers with mud and keep its grass for the banks
+above. A biome without the field behaves as before; a surface under
+water still takes `node_seabed` or `node_riverbed`.
 
 ## Schematic decorations draw from the decoration's generator
 
@@ -275,17 +297,18 @@ default to scale 0 and offset 0, which leaves the form as the mapgen
 models it.
 
 A shift noise, `mg_biome_np_shift`, displaces the point at which the
-climate, the form and the variant of a column are read: the noise at the
-column gives the X displacement in nodes, the same noise under another
-seed the Z displacement, and heat and humidity are read at the displaced
-point, the form and the variant at the nearest column there. Every border
-between biomes then moves by the noise wherever it runs, in the shape of
-its octaves, while the column's own bank height, its climate corrections
-and its modeled surface stay in place. The displacement is meant to be a
-few nodes: a form bound on a regional field, the region level, the valley
-depth or the mountain mask, does not notice it, whereas a bound on the
-position in the valley would put a bank biome a few nodes off the water.
-A blend noise adds to a field, so it moves a border by its amplitude
+climate and the variant of a column are read: the noise at the column
+gives the X displacement in nodes, the same noise under another seed the
+Z displacement, and heat and humidity are read at the displaced point,
+the variant at the nearest column there. Every border between climates
+then moves by the noise wherever it runs, in the shape of its octaves,
+while the column's own bank height, its climate corrections, its modeled
+surface and its form stay in place: a bound on the form holds where the
+relief stands, so a biome bounded to a wetland ends at the edge of its
+flat and a biome bounded to a mountain body at the foot of the body,
+however sharp the relief there, and a border between two form bounds
+takes its shape from the relief and the blend noises rather than from the
+shift. A blend noise adds to a field, so it moves a border by its amplitude
 divided by the slope of the field, far where a field crosses a bound
 slowly, and scatters islands of the neighbouring biome there; the shift
 moves a border by its own amplitude everywhere and leaves no islands. The
@@ -295,7 +318,7 @@ reads every column at its own position.
 
 The form values describe the same column model as
 `get_effective_biome_data`, so a query and generation agree on them, blend
-and shift included.
+included.
 Combined with `y_min`/`y_max`, they let a definition say where a biome lives:
 
 ```lua

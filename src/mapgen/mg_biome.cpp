@@ -43,6 +43,7 @@ BiomeManager::BiomeManager(Server *server) :
 	b->m_nodenames.emplace_back("ignore");
 #if IS_VOPI_ENGINE
 	b->m_nodenames.emplace_back("ignore");
+	b->m_nodenames.emplace_back("ignore");
 #endif
 	m_ndef->pendNodeResolve(b);
 
@@ -323,8 +324,10 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		sampled_form = *form;
 	float variant = known_variant ? *known_variant : 0.0f;
 	bool variant_sampled = known_variant != nullptr;
-	// The displaced column both the form and the variant are read at,
-	// found once, when the first candidate needs either.
+	// The displaced column the variant is read at, found once, when the
+	// first candidate needs it. The form is the column's own: a bound on
+	// the relief must hold where the relief stands, or a wetland biome
+	// climbs the cliff beside its flat and a flank biome lies in the flat.
 	v2s16 read_column;
 	bool read_column_known = false;
 	auto readColumn = [&]() {
@@ -357,7 +360,7 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 		}
 		if (b->hasFormConstraints()) {
 			if (!form_sampled) {
-				form_available = formAt(readColumn(), sampled_form);
+				form_available = formAt(v2s16(pos.X, pos.Z), sampled_form);
 				form_sampled = true;
 			}
 			if (!form_available || !b->matchesForm(sampled_form))
@@ -468,6 +471,7 @@ ObjDef *Biome::clone() const
 #if IS_VOPI_ENGINE
 	obj->c_seabed = c_seabed;
 	obj->depth_seabed = depth_seabed;
+	obj->c_waterline = c_waterline;
 #endif
 
 	obj->min_pos = min_pos;
@@ -586,8 +590,9 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	result.raw_humidity = humidityAt(at);
 	if (!std::isfinite(result.raw_heat) || !std::isfinite(result.raw_humidity))
 		return false;
-	// The bank and the surface are the column's own: the corrections and
-	// the reference height describe the place, not the displaced point.
+	// The bank, the surface and the form are the column's own: the
+	// corrections, the reference height and the relief describe the
+	// place, not the displaced point.
 	BiomeClimateContext context{};
 	if ((include_context || m_climate_flags) &&
 			!m_terrain_sampler->sampleClimate(pos, context))
@@ -598,12 +603,8 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	result.form = context.form;
 	result.variant = 0.0f;
 	if (include_context) {
-		const v2s16 read = nearestColumn(at);
-		if (read == pos)
-			blendForm(pos, result.form);
-		else if (!formAt(read, result.form))
-			return false;
-		result.variant = variantAt(read);
+		blendForm(pos, result.form);
+		result.variant = variantAt(nearestColumn(at));
 	}
 	const auto climate = calcValleysClimate(result.raw_heat, result.raw_humidity,
 		context.river_bank_height, context.column_max_y, m_climate_water_level,
@@ -647,7 +648,7 @@ bool BiomeGenOriginal::getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out)
 
 bool BiomeGenOriginal::getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const
 {
-	return formAt(nearestColumn(shiftedColumn(pos)), form);
+	return formAt(pos, form);
 }
 
 bool BiomeGenOriginal::hasShift() const
@@ -758,5 +759,6 @@ void Biome::resolveNodeNames()
 	getIdFromNrBacklog(&c_dungeon_stair, "ignore",                    CONTENT_IGNORE, false);
 #if IS_VOPI_ENGINE
 	getIdFromNrBacklog(&c_seabed,        "ignore",                    CONTENT_IGNORE, false);
+	getIdFromNrBacklog(&c_waterline,     "ignore",                    CONTENT_IGNORE, false);
 #endif
 }

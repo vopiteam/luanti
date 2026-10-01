@@ -271,6 +271,7 @@ void MapgenValleysParams::readParams(const Settings *settings)
 	settings->getFloatNoEx("mgvalleys_wetland_fade",         wetland_fade);
 	settings->getU16NoEx("mgvalleys_wetland_height",         wetland_height);
 	settings->getU16NoEx("mgvalleys_wetland_pool_depth",     wetland_pool_depth);
+	settings->getFloatNoEx("mgvalleys_wetland_pool_edge",    wetland_pool_edge);
 #endif
 	settings->getFloatNoEx("mgvalleys_cave_width",         cave_width);
 	settings->getS16NoEx("mgvalleys_cavern_limit",         cavern_limit);
@@ -329,6 +330,7 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 	settings->setFloat("mgvalleys_wetland_fade",         wetland_fade);
 	settings->setU16("mgvalleys_wetland_height",         wetland_height);
 	settings->setU16("mgvalleys_wetland_pool_depth",     wetland_pool_depth);
+	settings->setFloat("mgvalleys_wetland_pool_edge",    wetland_pool_edge);
 #endif
 	settings->setFloat("mgvalleys_cave_width",         cave_width);
 	settings->setS16("mgvalleys_cavern_limit",         cavern_limit);
@@ -522,7 +524,8 @@ ValleysColumnParams::ValleysColumnParams(const MapgenValleysParams &params) :
 	wetland_valley_depth_max(std::fmax(params.wetland_valley_depth_max, 0.0f)),
 	wetland_fade(std::fmin(std::fmax(params.wetland_fade, 0.01f), 1.0f)),
 	wetland_height(params.wetland_height),
-	wetland_pool_depth(std::fmax((float)params.wetland_pool_depth, 1.0f))
+	wetland_pool_depth(std::fmax((float)params.wetland_pool_depth, 1.0f)),
+	wetland_pool_edge(std::fmin(std::fmax(params.wetland_pool_edge, 0.01f), 1.0f))
 {
 }
 
@@ -618,31 +621,34 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 
 	// Wetlands: flat low country sinks to 'wetland_height' over the water
 	// line by the weight of the wetland in the column, and where the pool
-	// noise is positive, to one node of water under it, up to
-	// 'wetland_pool_depth' nodes as the noise rises to 1, so the flat
-	// holds pools the water fills, with islets between them. The bank
-	// level follows, so a river through the wetland runs level with the
-	// pools, and the 3D relief fades with the weight, so the flat is
-	// flat. The weight is 0 at the bounds, so the country around keeps
-	// its height and the wetland meets it on a slope. The sinking only
-	// lowers: ground already under its level, a lake or a sea inside the
-	// wetland, keeps its bed. With sea level rivers the bank clamp above
-	// has set the bank already, and the river through the wetland keeps
-	// the depth of every other. Ground is where the density is positive,
-	// so a surface at Y + 0.5 puts the top node at Y
+	// noise is positive, into a pool: the bank shelves down to the first
+	// node of water over 'wetland_pool_edge' of the noise, and the pool
+	// deepens to 'wetland_pool_depth' nodes as the noise rises to 1, so
+	// the flat holds pools the water fills, with islets between them and
+	// shallows at their edges. The bank level follows, so a river
+	// through the wetland runs level with the pools. The 3D relief stays,
+	// a node or two of it, so the flat is low but not a plane. The weight
+	// is 0 at the bounds, so the country around keeps its height and the
+	// wetland meets it on a slope. The sinking only lowers: ground
+	// already under its level, a lake or a sea inside the wetland, keeps
+	// its bed. With sea level rivers the bank clamp above has set the
+	// bank already, and the river through the wetland keeps the depth of
+	// every other. Ground is where the density is positive, so a surface
+	// at Y + 0.5 puts the top node at Y
 	if (p.wetlands) {
 		float wetland = valleysWetlandWeight(p, n_terrain_height, n_valley);
 		c.wetland = wetland;
 		if (wetland > 0.0f) {
 			float bank_level = p.water_level + p.wetland_height + 0.5f;
 			float level = bank_level;
-			if (n_wetland > 0.0f)
-				level = p.water_level - 0.5f -
+			if (n_wetland > 0.0f) {
+				float pool_top = p.water_level - 0.5f;
+				level = bank_level + (pool_top - bank_level) *
+						std::fmin(n_wetland / p.wetland_pool_edge, 1.0f) -
 					(p.wetland_pool_depth - 1.0f) * std::fmin(n_wetland, 1.0f);
-			if (surface_y > level) {
-				surface_y += (level - surface_y) * wetland;
-				slope *= 1.0f - wetland;
 			}
+			if (surface_y > level)
+				surface_y += (level - surface_y) * wetland;
 			if (!p.sea_level_rivers && base > bank_level) {
 				base += (bank_level - base) * wetland;
 				river_y = base - 1.0f;
@@ -677,11 +683,15 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 }
 
 
+// The rise of the valley, 0 in the river channel and 1 beyond
+// 'mountain_river_width' of the valley profile, times the dry share of
+// the column: no body rises from a wetland's sunk flat, and one crossing
+// the ramp around it tapers with the weight, as it does at a river
 float valleysMountainGate(const ValleysColumn &c, float mountain_river_width)
 {
 	float tm = std::fmax(c.river /
 		(c.valley_profile * mountain_river_width), 0.0f);
-	return 1.0f - std::exp(-tm * tm);
+	return (1.0f - std::exp(-tm * tm)) * (1.0f - c.wetland);
 }
 
 
@@ -770,7 +780,7 @@ MapgenValleys::Column MapgenValleys::columnAt(s16 x, s16 z) const
 // How much of the mountain body a column may carry: the rise of the valley
 // itself, 0 in the river channel and 1 beyond 'mountain_river_width' of
 // the valley profile, so mountains grow where the ground climbs out of the
-// valley and never dam a river.
+// valley and never dam a river, and nothing of it on a wetland's flat.
 float MapgenValleys::mountainGate(const Column &c) const
 {
 	return valleysMountainGate(c, mountain_river_width);

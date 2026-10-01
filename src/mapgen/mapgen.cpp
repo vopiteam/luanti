@@ -748,6 +748,15 @@ void MapgenBasic::generateBiomes()
 					}
 #endif
 				} else if (nplaced < depth_top) {
+#if IS_VOPI_ENGINE
+					// A surface at the water level under air is the wet
+					// ground at the water's edge: the biome's waterline
+					// node where it names one, the top node otherwise.
+					if (nplaced == 0 && air_above && y == water_level &&
+							biome->c_waterline != CONTENT_IGNORE)
+						vm->m_data[vi] = MapNode(biome->c_waterline);
+					else
+#endif
 					vm->m_data[vi] = MapNode(biome->c_top);
 					nplaced++;
 				} else if (nplaced < base_filler) {

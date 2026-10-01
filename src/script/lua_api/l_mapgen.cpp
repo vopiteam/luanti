@@ -496,6 +496,7 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	nn.push_back(getstringfield_default(L, index, "node_dungeon_stair", ""));
 #if IS_VOPI_ENGINE
 	nn.push_back(getstringfield_default(L, index, "node_seabed",        ""));
+	nn.push_back(getstringfield_default(L, index, "node_waterline",     ""));
 #endif
 	ndef->pendNodeResolve(b);
 

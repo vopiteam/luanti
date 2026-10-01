@@ -542,9 +542,9 @@ void TestMapgen::testValleysClimateContext()
 			expected[i].column_max_y);
 }
 
-// A constant shift reads every column's climate, form and variant at the
-// column a fixed distance away, while the bank, the reference height and
-// the modeled surface stay the column's own.
+// A constant shift reads every column's climate and variant at the
+// column a fixed distance away, while the form, the bank, the reference
+// height and the modeled surface stay the column's own.
 // The wetland of Valleys: the weight of a column from the region level
 // and the valley depth, the sinking of the column model to the water
 // line, the pools under it, the ground it leaves alone, and the weight
@@ -596,29 +596,47 @@ void TestMapgen::testValleysWetlands()
 	UASSERTEQ(float, outside.wetland, 0.0f);
 	UASSERTEQ(float, outside.surface_y, 32.0f);
 	UASSERTEQ(float, outside.slope, 0.5f);
+	// The gate of the mountains, 1 this far from a river, is the dry share
+	// of the column: 1 outside, 0 on the flat, half on the ramp, and 1
+	// again with wetlands off
+	UASSERTEQ(float, valleysMountainGate(outside, 0.5f), 1.0f);
+	UASSERTEQ(float, valleysMountainGate(column_at(column, 10.0f, 0.0f), 0.5f), 0.0f);
+	{
+		ValleysColumn ramp = column_at(column, 20.875f, 0.0f);
+		float gate = valleysMountainGate(ramp, 0.5f);
+		UASSERT(gate > 0.49f && gate < 0.51f);
+		ValleysColumnParams dry = column;
+		dry.wetlands = false;
+		UASSERTEQ(float, valleysMountainGate(column_at(dry, 10.0f, 0.0f), 0.5f), 1.0f);
+	}
 	// Inside: the surface sinks to the height over the water line plus a
-	// half, so the top node lies at that height; the relief goes; the bank
-	// stays what the clamp made it and the river surface stays the water
-	// line
+	// half, so the top node lies at that height; the relief stays; the
+	// bank stays what the clamp made it and the river surface stays the
+	// water line
 	ValleysColumn flat = column_at(column, 10.0f, 0.0f);
 	UASSERTEQ(float, flat.wetland, 1.0f);
 	UASSERTEQ(float, flat.surface_y, 1.5f);
-	UASSERTEQ(float, flat.slope, 0.0f);
+	UASSERTEQ(float, flat.slope, 0.5f);
 	UASSERTEQ(float, flat.base, 2.0f);
 	UASSERTEQ(float, flat.river_y, 0.0f);
 	UASSERTEQ(float, flat.region_level, 11.0f);
-	// Pools: one node of water for a pool noise just over zero, the full
-	// depth from one up, in between on the way
+	// Pools: the bank shelves down over the pool edge of the noise, a
+	// half here, a shelf at the water line on the way, to the first node
+	// of water at the edge, then the full depth from one up
+	auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
 	float rim = column_at(column, 10.0f, 0.001f).surface_y;
-	UASSERT(rim < -0.5f && rim > -0.51f);
-	UASSERTEQ(float, column_at(column, 10.0f, 0.5f).surface_y, -1.0f);
+	UASSERT(rim < 1.5f && rim > 1.49f);
+	UASSERT(near(column_at(column, 10.0f, 0.25f).surface_y, 0.25f));
+	UASSERT(near(column_at(column, 10.0f, 0.4f).surface_y, -0.5f));
+	UASSERT(near(column_at(column, 10.0f, 0.5f).surface_y, -1.0f));
 	UASSERTEQ(float, column_at(column, 10.0f, 1.0f).surface_y, -1.5f);
 	UASSERTEQ(float, column_at(column, 10.0f, 3.0f).surface_y, -1.5f);
-	// Half way up the inland ramp the surface is half way down
+	// Half way up the inland ramp the surface is half way down and the
+	// relief whole
 	ValleysColumn ramp = column_at(column, 20.875f, 0.0f);
 	UASSERT(ramp.wetland > 0.49f && ramp.wetland < 0.51f);
 	UASSERT(ramp.surface_y > 12.0f && ramp.surface_y < 12.4f);
-	UASSERT(ramp.slope > 0.24f && ramp.slope < 0.26f);
+	UASSERTEQ(float, ramp.slope, 0.5f);
 	// Ground under the level already, a sea inside a wetland whose bounds
 	// reach below the water line, keeps its bed
 	MapgenValleysParams deep = params;
@@ -706,14 +724,14 @@ void TestMapgen::testBiomeShift()
 		UASSERTEQ(float, generator.calcHumidityAtPoint(pos),
 			reference.calcHumidityAtPoint(read));
 		UASSERT(generator.calcHeatAtPoint(pos) != reference.calcHeatAtPoint(pos));
-		BiomeTerrainForm form, read_form;
+		BiomeTerrainForm form, own_form;
 		UASSERT(generator.getBiomeForm(v2s16(pos.X, pos.Z), form));
-		UASSERT(reference.getBiomeForm(v2s16(read.X, read.Z), read_form));
-		UASSERTEQ(float, form.base, read_form.base);
-		UASSERTEQ(float, form.valley_depth, read_form.valley_depth);
-		UASSERTEQ(float, form.valley_pos, read_form.valley_pos);
-		UASSERTEQ(float, form.mountain, read_form.mountain);
-		UASSERTEQ(float, form.body, read_form.body);
+		UASSERT(reference.getBiomeForm(v2s16(pos.X, pos.Z), own_form));
+		UASSERTEQ(float, form.base, own_form.base);
+		UASSERTEQ(float, form.valley_depth, own_form.valley_depth);
+		UASSERTEQ(float, form.valley_pos, own_form.valley_pos);
+		UASSERTEQ(float, form.mountain, own_form.mountain);
+		UASSERTEQ(float, form.body, own_form.body);
 		EffectiveBiomeData data, read_data, own;
 		UASSERT(generator.getEffectiveBiomeData(pos, data));
 		UASSERT(reference.getEffectiveBiomeData(read, read_data));
@@ -724,12 +742,17 @@ void TestMapgen::testBiomeShift()
 		UASSERTEQ(float, data.humidity, read_data.humidity);
 		UASSERTEQ(float, data.variant, read_data.variant);
 		UASSERT(data.variant != own.variant);
-		UASSERTEQ(float, data.form.base, read_data.form.base);
-		UASSERTEQ(float, data.form.valley_depth, read_data.form.valley_depth);
-		UASSERTEQ(float, data.form.valley_pos, read_data.form.valley_pos);
-		UASSERTEQ(float, data.form.mountain, read_data.form.mountain);
-		UASSERT(data.form.valley_pos != own.form.valley_pos);
-		UASSERTEQ(biome_t, data.biome, read_data.biome);
+		// The form is the column's own, blend included, not the displaced
+		// column's.
+		UASSERTEQ(float, data.form.base, own.form.base);
+		UASSERTEQ(float, data.form.valley_depth, own.form.valley_depth);
+		UASSERTEQ(float, data.form.valley_pos, own.form.valley_pos);
+		UASSERTEQ(float, data.form.mountain, own.form.mountain);
+		UASSERT(data.form.valley_pos != read_data.form.valley_pos);
+		// So the biome is the one the displaced climate and variant pick
+		// on the column's own relief.
+		UASSERTEQ(biome_t, data.biome, reference.calcBiomeFromNoise(data.heat,
+			data.humidity, pos, &own.form, &data.variant)->index);
 		UASSERTEQ(float, data.river_bank_height, own.river_bank_height);
 		UASSERTEQ(float, data.climate_reference_height, own.climate_reference_height);
 		float height = 0.0f, own_height = 0.0f;
@@ -741,21 +764,27 @@ void TestMapgen::testBiomeShift()
 			data.biome);
 	}
 
-	// A displacement past the edge of the world reads its last column.
+	// A displacement past the edge of the world reads its last column;
+	// the form stays the column's own there too.
 	BiomeParamsOriginal beyond = plain;
 	beyond.np_shift = NoiseParams(1.0e5f, 0.0f, v3f(32.0f), 0, 1, 0.5f, 2.0f);
 	BiomeGenOriginal beyond_gen(&manager, &beyond, v3s16(16));
 	beyond_gen.setValleysClimate(params);
 	{
 		const s16 edge = MAX_MAP_GENERATION_LIMIT;
-		BiomeTerrainForm form, edge_form;
-		UASSERT(beyond_gen.getBiomeForm(v2s16(0, 0), form));
-		UASSERT(reference.getBiomeForm(v2s16(edge, edge), edge_form));
-		UASSERTEQ(float, form.base, edge_form.base);
-		UASSERTEQ(float, form.valley_pos, edge_form.valley_pos);
-		EffectiveBiomeData data;
-		UASSERT(beyond_gen.getEffectiveBiomeData(v3s16(-edge, 0, -edge), data));
-		UASSERTEQ(float, data.form.valley_pos, edge_form.valley_pos);
+		const v3s16 pos(-edge, 0, -edge);
+		EffectiveBiomeData data, edge_data, own;
+		UASSERT(beyond_gen.getEffectiveBiomeData(pos, data));
+		UASSERT(reference.getEffectiveBiomeData(v3s16(edge, 0, edge), edge_data));
+		UASSERT(reference.getEffectiveBiomeData(pos, own));
+		// Heat is read at the fractional point, past the edge; the variant
+		// at the nearest column, the edge's.
+		UASSERTEQ(float, data.variant, edge_data.variant);
+		UASSERTEQ(float, data.form.valley_pos, own.form.valley_pos);
+		BiomeTerrainForm form;
+		UASSERT(beyond_gen.getBiomeForm(v2s16(pos.X, pos.Z), form));
+		UASSERTEQ(float, form.base, own.form.base);
+		UASSERTEQ(float, form.valley_pos, own.form.valley_pos);
 	}
 
 	// Inside a chunk the displacement comes from the map made once per
@@ -770,11 +799,13 @@ void TestMapgen::testBiomeShift()
 	for (s16 xr = 0; xr < 16; xr++) {
 		const v3s16 pos(pmin.X + xr, 0, pmin.Z + zr);
 		const v3s16 read = pos + v3s16(7, 0, 7);
-		EffectiveBiomeData data, read_data;
+		EffectiveBiomeData data, read_data, own;
 		UASSERT(generator.getEffectiveBiomeData(pos, data));
 		UASSERT(reference.getEffectiveBiomeData(read, read_data));
+		UASSERT(reference.getEffectiveBiomeData(pos, own));
 		UASSERTEQ(float, data.raw_heat, read_data.raw_heat);
-		UASSERTEQ(biome_t, data.biome, read_data.biome);
+		UASSERTEQ(float, data.variant, read_data.variant);
+		UASSERTEQ(float, data.form.valley_pos, own.form.valley_pos);
 		for (const BiomeGenOriginal *gen : {&generator, &legacy}) {
 			UASSERTEQ(float, gen->heatmap[zr * 16 + xr], reference.calcHeatAtPoint(read));
 			UASSERTEQ(float, gen->humidmap[zr * 16 + xr],
@@ -2022,9 +2053,13 @@ void TestMapgen::testBiomeFormClone(IGameDef *gamedef)
 	ndef->setNodeRegistrationStatus(true);
 	ndef->runNodeResolveCallbacks();
 	UASSERT(default_biome->isResolveDone() && biome->isResolveDone());
+	// Unnamed, the waterline node resolves to none; a named one is cloned
+	UASSERTEQ(content_t, biome->c_waterline, CONTENT_IGNORE);
+	biome->c_waterline = biome->c_stone;
 	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
 	auto copied_biome = static_cast<Biome *>(copied_manager->getRaw(biome->index));
 	UASSERT(copied_biome != biome);
+	UASSERTEQ(content_t, copied_biome->c_waterline, biome->c_stone);
 	UASSERTEQ(float, copied_biome->valley_pos_min, 0.5f);
 	UASSERTEQ(float, copied_biome->valley_depth_max, 20.0f);
 	UASSERTEQ(float, copied_biome->wetland_max, 0.5f);
