@@ -461,6 +461,8 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 	getintfield(L,    index, "depth_riverbed",  b->depth_riverbed);
 #if IS_VOPI_ENGINE
 	getintfield(L,    index, "depth_seabed",    b->depth_seabed);
+	getfloatfield(L,  index, "top_patch_min",     b->top_patch_min);
+	getfloatfield(L,  index, "top_patch_alt_max", b->top_patch_alt_max);
 #endif
 	getfloatfield(L,  index, "heat_point",      b->heat_point);
 	getfloatfield(L,  index, "humidity_point",  b->humidity_point);
@@ -497,6 +499,8 @@ Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef)
 #if IS_VOPI_ENGINE
 	nn.push_back(getstringfield_default(L, index, "node_seabed",        ""));
 	nn.push_back(getstringfield_default(L, index, "node_waterline",     ""));
+	nn.push_back(getstringfield_default(L, index, "node_top_patch",     ""));
+	nn.push_back(getstringfield_default(L, index, "node_top_patch_alt", ""));
 #endif
 	ndef->pendNodeResolve(b);
 

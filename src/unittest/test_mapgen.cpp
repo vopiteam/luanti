@@ -12,6 +12,7 @@
 
 #if IS_VOPI_ENGINE
 #include "mapgen/mapgen_valleys.h"
+#include "mapgen/cavegen.h"
 #include "mapgen/mg_biome_terrain.h"
 #include "mapgen/mg_decoration.h"
 #include "script/common/c_types.h"
@@ -59,6 +60,7 @@ public:
 	void testValleysFormGeneration(IGameDef *gamedef);
 	void testValleysFloaterBiomes(IGameDef *gamedef);
 	void testDecorationBiomeAtSurface(IGameDef *gamedef);
+	void testCaveSurfaceNodes(IGameDef *gamedef);
 #endif
 };
 
@@ -104,6 +106,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testValleysFormGeneration, gamedef);
 	TEST(testValleysFloaterBiomes, gamedef);
 	TEST(testDecorationBiomeAtSurface, gamedef);
+	TEST(testCaveSurfaceNodes, gamedef);
 #endif
 }
 
@@ -1334,6 +1337,8 @@ void TestMapgen::testValleysFormGeneration(IGameDef *gamedef)
 	ridge->mountain_max = 5.0f;
 	auto floor = add_biome("floor");
 	floor->valley_pos_max = 0.5f;
+	const content_t patch = add_node("test:patch", t_CONTENT_GRASS);
+	const content_t patch_alt = add_node("test:patch_alt", t_CONTENT_GRASS);
 	ndef.setNodeRegistrationStatus(true);
 	ndef.runNodeResolveCallbacks();
 
@@ -1415,6 +1420,219 @@ void TestMapgen::testValleysFormGeneration(IGameDef *gamedef)
 			UASSERTEQ(biome_t, query.biome, test.expected->index);
 			UASSERT(source.getEffectiveBiomeData(v3s16(x, top, z), query));
 			UASSERTEQ(biome_t, query.biome, test.expected->index);
+		}
+	}
+
+	// The patch nodes of a biome through the same path, the ridge under a
+	// patch noise of 0.5 everywhere: its patch node at or above the lower
+	// bound, its other patch node at or below the upper bound, the first
+	// where both hold, and its top node between the bounds or where a
+	// bound names no node.
+	UASSERT(patch != ridge->c_top && patch_alt != ridge->c_top && patch != patch_alt);
+	const float inf = std::numeric_limits<float>::infinity();
+	climate.np_top_patch = constant_noise(0.5f);
+	params.spflags = 0;
+	params.np_rivers = constant_noise(100.0f);
+	const struct {
+		content_t node;
+		float min;
+		content_t node_alt;
+		float alt_max;
+		content_t expected;
+	} patches[] = {
+		{patch, 0.5f, CONTENT_IGNORE, -inf, patch},
+		{patch, 0.51f, CONTENT_IGNORE, -inf, ridge->c_top},
+		{CONTENT_IGNORE, inf, patch_alt, 0.5f, patch_alt},
+		{CONTENT_IGNORE, inf, patch_alt, 0.49f, ridge->c_top},
+		{patch, 0.4f, patch_alt, 0.6f, patch},
+		{patch, 0.7f, patch_alt, 0.6f, patch_alt},
+		{CONTENT_IGNORE, 0.4f, CONTENT_IGNORE, 0.6f, ridge->c_top},
+	};
+	for (const auto &test : patches) {
+		ridge->c_top_patch = test.node;
+		ridge->top_patch_min = test.min;
+		ridge->c_top_patch_alt = test.node_alt;
+		ridge->top_patch_alt_max = test.alt_max;
+		UASSERTEQ(content_t, BiomeGenOriginal::topNodeFor(*ridge, 0.5f), test.expected);
+		BiomeGenOriginal source(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+		source.setValleysClimate(params);
+		MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		const v3s16 node_min(-16, 3 * MAP_BLOCKSIZE, 16);
+		const v3s16 node_max = node_min + v3s16(MAP_BLOCKSIZE - 1);
+		BlockMakeData data;
+		data.blockpos_min = data.blockpos_max = v3s16(-1, 3, 1);
+		data.seed = params.seed;
+		data.nodedef = &ndef;
+		data.vmanip = new MapgenTestVManip(VoxelArea(
+			node_min - v3s16(MAP_BLOCKSIZE), node_max + v3s16(MAP_BLOCKSIZE)));
+		mapgen.makeChunk(&data);
+		for (s16 z = node_min.Z; z <= node_max.Z; ++z)
+		for (s16 x = node_min.X; x <= node_max.X; ++x) {
+			const size_t index = (z - node_min.Z) * MAP_BLOCKSIZE + x - node_min.X;
+			UASSERTEQ(biome_t, mapgen.biomemap[index], ridge->index);
+			s16 top = node_max.Y;
+			while (top >= node_min.Y && data.vmanip->m_data[
+					data.vmanip->m_area.index(x, top, z)].getContent() == CONTENT_AIR)
+				--top;
+			UASSERT(top >= node_min.Y);
+			UASSERTEQ(content_t, data.vmanip->m_data[
+				data.vmanip->m_area.index(x, top, z)].getContent(), test.expected);
+			// Only the surface takes the patch: the node under it is the
+			// biome's stone, as under its top node.
+			UASSERTEQ(content_t, data.vmanip->m_data[
+				data.vmanip->m_area.index(x, top - 1, z)].getContent(), stone);
+		}
+	}
+}
+
+void TestMapgen::testCaveSurfaceNodes(IGameDef *gamedef)
+{
+	// The tunnels of the noise caves lay a floor where they open to the
+	// surface and turn a top or filler node left as their roof into stone.
+	// Both go by the surface nodes of the biome as the biome pass lays
+	// them: the floor takes the waterline node at the water level and a
+	// patch node in the biome's patch, and either is a top node for a roof.
+	MockServer server(getTestTempDirectory());
+	NodeDefManager ndef;
+	auto add_node = [&](const char *name, bool ground_content) {
+		ContentFeatures def = gamedef->ndef()->get(t_CONTENT_STONE);
+		def.name = name;
+		def.is_ground_content = ground_content;
+		return ndef.set(name, def);
+	};
+	// Only ground content is excavated, so with a cave noise that is a
+	// tunnel everywhere the soft node is the tunnel and every other node
+	// stays for the generator to judge.
+	const content_t hard = add_node("mapgen_stone", false);
+	add_node("mapgen_water_source", false);
+	add_node("mapgen_river_water_source", false);
+	const content_t soft = add_node("test:soft", true);
+	const content_t top = add_node("test:top", false);
+	const content_t filler = add_node("test:filler", false);
+	const content_t patch = add_node("test:patch", false);
+	const content_t waterline = add_node("test:waterline", false);
+	const content_t other = add_node("test:other", false);
+	MockBiomeManager manager(&server);
+	manager.setNodeDefManager(&ndef);
+	auto default_biome = static_cast<Biome *>(manager.getRaw(BIOME_NONE));
+	server.ndef()->cancelNodeResolveCallback(default_biome);
+	ndef.pendNodeResolve(default_biome);
+	auto biome = addTerrainTestBiome(manager, "ground", 50.0f, 50.0f);
+	biome->m_nodenames = default_biome->m_nodenames;
+	biome->m_nnlistsizes = default_biome->m_nnlistsizes;
+	ndef.pendNodeResolve(biome);
+	ndef.setNodeRegistrationStatus(true);
+	ndef.runNodeResolveCallbacks();
+	biome->c_stone = hard;
+	biome->c_top = top;
+	biome->depth_top = 1;
+	biome->c_filler = filler;
+	biome->depth_filler = 1;
+	biome->c_waterline = waterline;
+	biome->c_top_patch = patch;
+
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	BiomeParamsOriginal climate;
+	climate.seed = 12345;
+	climate.np_heat = climate.np_humidity = constant_noise(50.0f);
+	climate.np_heat_blend = climate.np_humidity_blend = constant_noise(0.0f);
+	climate.np_top_patch = constant_noise(0.5f);
+	BiomeGenOriginal biomegen(&manager, &climate, v3s16(MAP_BLOCKSIZE));
+	NoiseParams tunnel = constant_noise(0.0f);
+	const s16 water_level = 6;
+	const v3s16 nmin(0, 0, 0);
+	const v3s16 nmax(MAP_BLOCKSIZE - 1);
+	std::vector<biome_t> biomemap(MAP_BLOCKSIZE * MAP_BLOCKSIZE, biome->index);
+
+	// One column per case: from 'surface' down, 'tunnel' soft nodes under
+	// an optional node left over them, then stone.
+	const struct {
+		s16 surface;       // Y of the highest solid node
+		content_t cap;     // node left at the surface over the tunnel, or CONTENT_IGNORE
+		s16 tunnel;        // soft nodes under it
+	} columns[] = {
+		{11, CONTENT_IGNORE, 3},  // 0: a floor over the water level
+		{9, CONTENT_IGNORE, 3},   // 1: a floor at the water level
+		{10, patch, 2},           // 2: a patch node as the roof
+		{6, waterline, 2},        // 3: a waterline node as the roof
+		{10, top, 2},             // 4: the top node as the roof
+		{10, other, 2},           // 5: a node the biome does not lay as the roof
+	};
+	auto generate = [&]() {
+		auto vm = std::make_unique<MapgenTestVManip>(VoxelArea(
+			nmin - v3s16(MAP_BLOCKSIZE), nmax + v3s16(MAP_BLOCKSIZE)));
+		std::fill(vm->m_data, vm->m_data + vm->m_area.getVolume(), MapNode(CONTENT_AIR));
+		for (s16 z = nmin.Z; z <= nmax.Z; ++z)
+		for (s16 x = nmin.X; x <= nmax.X; ++x) {
+			const auto &column = columns[x % ARRLEN(columns)];
+			s16 y = column.surface;
+			if (column.cap != CONTENT_IGNORE)
+				vm->m_data[vm->m_area.index(x, y--, z)] = MapNode(column.cap);
+			for (s16 i = 0; i < column.tunnel; ++i)
+				vm->m_data[vm->m_area.index(x, y--, z)] = MapNode(soft);
+			for (; y >= nmin.Y - MAP_BLOCKSIZE; --y)
+				vm->m_data[vm->m_area.index(x, y, z)] = MapNode(hard);
+		}
+		CavesNoiseIntersection caves(&ndef, &manager, &biomegen,
+			v3s16(MAP_BLOCKSIZE), &tunnel, &tunnel, 0, 0.09f);
+		caves.generateCaves(vm.get(), nmin, nmax, biomemap.data(), water_level);
+		return vm;
+	};
+	auto node = [](const MapgenTestVManip &vm, s16 x, s16 y, s16 z) {
+		return vm.m_data[vm.m_area.index(x, y, z)].getContent();
+	};
+
+	const struct {
+		float patch_min;
+		content_t floor;   // the floor over the water level
+	} cases[] = {
+		{0.4f, patch},     // the patch noise of 0.5 is in the patch
+		{0.6f, top},       // and outside it
+	};
+	for (const auto &test : cases) {
+		biome->top_patch_min = test.patch_min;
+		auto vm = generate();
+		for (s16 z = nmin.Z; z <= nmax.Z; ++z)
+		for (s16 x = nmin.X; x <= nmax.X; ++x) {
+			switch (x % ARRLEN(columns)) {
+			case 0:
+				// The tunnel is open, its floor the surface node of the
+				// column, the filler under it, then stone
+				UASSERTEQ(content_t, node(*vm, x, 9, z), CONTENT_AIR);
+				UASSERTEQ(content_t, node(*vm, x, 8, z), test.floor);
+				UASSERTEQ(content_t, node(*vm, x, 7, z), filler);
+				UASSERTEQ(content_t, node(*vm, x, 6, z), hard);
+				break;
+			case 1:
+				// At the water level the waterline node, patch or no patch
+				UASSERTEQ(content_t, node(*vm, x, 7, z), CONTENT_AIR);
+				UASSERTEQ(content_t, node(*vm, x, water_level, z), waterline);
+				UASSERTEQ(content_t, node(*vm, x, 5, z), filler);
+				break;
+			case 2:
+			case 4:
+				// A node the biome lays on top, left as a roof one node
+				// thick, becomes stone; no floor under a closed tunnel
+				UASSERTEQ(content_t, node(*vm, x, 10, z), hard);
+				UASSERTEQ(content_t, node(*vm, x, 9, z), CONTENT_AIR);
+				UASSERTEQ(content_t, node(*vm, x, 8, z), CONTENT_AIR);
+				UASSERTEQ(content_t, node(*vm, x, 7, z), hard);
+				break;
+			case 3:
+				UASSERTEQ(content_t, node(*vm, x, 6, z), hard);
+				UASSERTEQ(content_t, node(*vm, x, 5, z), CONTENT_AIR);
+				UASSERTEQ(content_t, node(*vm, x, 3, z), hard);
+				break;
+			case 5:
+				// Any other node stays as it was
+				UASSERTEQ(content_t, node(*vm, x, 10, z), other);
+				UASSERTEQ(content_t, node(*vm, x, 9, z), CONTENT_AIR);
+				break;
+			}
 		}
 	}
 }
@@ -2056,10 +2274,20 @@ void TestMapgen::testBiomeFormClone(IGameDef *gamedef)
 	// Unnamed, the waterline node resolves to none; a named one is cloned
 	UASSERTEQ(content_t, biome->c_waterline, CONTENT_IGNORE);
 	biome->c_waterline = biome->c_stone;
+	// So do the patch nodes, with their bounds on the patch noise
+	UASSERTEQ(content_t, biome->c_top_patch, CONTENT_IGNORE);
+	UASSERTEQ(content_t, biome->c_top_patch_alt, CONTENT_IGNORE);
+	biome->c_top_patch = biome->c_stone;
+	biome->top_patch_min = 0.25f;
+	biome->top_patch_alt_max = -0.25f;
 	std::unique_ptr<BiomeManager> copied_manager(manager.clone());
 	auto copied_biome = static_cast<Biome *>(copied_manager->getRaw(biome->index));
 	UASSERT(copied_biome != biome);
 	UASSERTEQ(content_t, copied_biome->c_waterline, biome->c_stone);
+	UASSERTEQ(content_t, copied_biome->c_top_patch, biome->c_stone);
+	UASSERTEQ(content_t, copied_biome->c_top_patch_alt, CONTENT_IGNORE);
+	UASSERTEQ(float, copied_biome->top_patch_min, 0.25f);
+	UASSERTEQ(float, copied_biome->top_patch_alt_max, -0.25f);
 	UASSERTEQ(float, copied_biome->valley_pos_min, 0.5f);
 	UASSERTEQ(float, copied_biome->valley_depth_max, 20.0f);
 	UASSERTEQ(float, copied_biome->wetland_max, 0.5f);

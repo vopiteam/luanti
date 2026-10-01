@@ -749,12 +749,14 @@ void MapgenBasic::generateBiomes()
 #endif
 				} else if (nplaced < depth_top) {
 #if IS_VOPI_ENGINE
-					// A surface at the water level under air is the wet
-					// ground at the water's edge: the biome's waterline
-					// node where it names one, the top node otherwise.
-					if (nplaced == 0 && air_above && y == water_level &&
-							biome->c_waterline != CONTENT_IGNORE)
-						vm->m_data[vi] = MapNode(biome->c_waterline);
+					// The first node of a surface under air is the one
+					// the biome generator chooses for it: the biome's
+					// waterline node at the water level, the wet ground at
+					// the water's edge, a patch node of the biome in its
+					// patch, and the top node otherwise.
+					if (nplaced == 0 && air_above)
+						vm->m_data[vi] = MapNode(biomegen->getSurfaceNode(
+							biome, v3s16(x, y, z), water_level));
 					else
 #endif
 					vm->m_data[vi] = MapNode(biome->c_top);
@@ -888,7 +890,11 @@ void MapgenBasic::generateCavesNoiseIntersection(s16 max_stone_y)
 	CavesNoiseIntersection caves_noise(ndef, m_bmgr, biomegen, csize,
 		&np_cave1, &np_cave2, seed, cave_width);
 
+#if IS_VOPI_ENGINE
+	caves_noise.generateCaves(vm, node_min, node_max, biomemap, water_level);
+#else
 	caves_noise.generateCaves(vm, node_min, node_max, biomemap);
+#endif
 }
 
 

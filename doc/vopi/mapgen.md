@@ -219,6 +219,48 @@ its pools and line its rivers with mud and keep its grass for the banks
 above. A biome without the field behaves as before; a surface under
 water still takes `node_seabed` or `node_riverbed`.
 
+## Biome patch nodes
+
+Four fields of the biome definition, read by every mapgen that uses the
+biome API: `node_top_patch` with `top_patch_min`, and `node_top_patch_alt`
+with `top_patch_alt_max`. Upstream gives every surface of a biome the one
+`node_top`. With these fields a biome lays up to two more top nodes in
+patches among it, by one 2D noise for the whole world,
+`mg_biome_np_top_patch`, read at the column: where the noise is at or
+above `top_patch_min` the surface takes `node_top_patch`, where it is at
+or below `top_patch_alt_max` it takes `node_top_patch_alt`, the first
+where both hold, and `node_top` everywhere else. The two nodes sit at the
+two ends of the noise, so their patches never meet as long as the bounds
+do not cross.
+
+Only the top node of a surface under air is replaced: the rest of a top
+layer deeper than one node, the filler, the surfaces under water and a
+surface that takes `node_waterline` stay as they were. The noise does not
+depend on the height, so a patch keeps its outline up a slope and across
+the mapchunks stacked there, and it is one field for every biome, so a
+patch runs on across the border of two biomes that both lay patches, each
+in its own node. A bound is a value of the noise, not a share of the
+ground: with the default noise of offset 0, scale 1 and three octaves at
+persistence 0.5 the values spread about zero within -1.75 to 1.75, and
+the share of ground over a bound is for the game to measure for the
+noise it sets.
+
+The noise is read only in the columns whose biome names a patch node, at
+the surface under air, so a world without the fields pays nothing for
+them. A biome without them behaves as before.
+
+### The tunnels follow the surface nodes
+
+The noise caves lay a floor where a tunnel opens to the surface, and turn
+a top or filler node left as a roof one node thick over a tunnel into
+stone. Upstream does both by `node_top` alone. With `IS_VOPI_ENGINE` the
+first node of such a floor is chosen as the biome pass chooses a surface
+under air, the waterline node at the water level and a patch node in the
+biome's patch, and a waterline or patch node counts as a top node for the
+roof. A tunnel that opens in a patch then has a floor of the patch, and no
+waterline or patch node is left hanging over a tunnel. The seabed and the
+river bed are as upstream: a bed left over a tunnel stays.
+
 ## Schematic decorations draw from the decoration's generator
 
 Upstream rolls the placement probability of every schematic node, and of

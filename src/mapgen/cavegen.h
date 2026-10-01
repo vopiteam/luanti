@@ -33,7 +33,15 @@ public:
 		NoiseParams *np_cave2, s32 seed, float cave_width);
 	~CavesNoiseIntersection();
 
+#if IS_VOPI_ENGINE
+	// The floor of a tunnel open to the surface is laid as the biome pass
+	// lays a surface under air, so it needs the water level that pass
+	// goes by: a floor standing at it takes the biome's waterline node.
+	void generateCaves(MMVManip *vm, v3s16 nmin, v3s16 nmax, biome_t *biomemap,
+		s16 water_level);
+#else
 	void generateCaves(MMVManip *vm, v3s16 nmin, v3s16 nmax, biome_t *biomemap);
+#endif
 
 private:
 	const NodeDefManager *m_ndef;

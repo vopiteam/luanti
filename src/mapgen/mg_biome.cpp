@@ -44,6 +44,8 @@ BiomeManager::BiomeManager(Server *server) :
 #if IS_VOPI_ENGINE
 	b->m_nodenames.emplace_back("ignore");
 	b->m_nodenames.emplace_back("ignore");
+	b->m_nodenames.emplace_back("ignore");
+	b->m_nodenames.emplace_back("ignore");
 #endif
 	m_ndef->pendNodeResolve(b);
 
@@ -94,6 +96,7 @@ void BiomeParamsOriginal::readParams(const Settings *settings)
 	settings->getNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
 	settings->getNoiseParams("mg_biome_np_variant",        np_variant);
 	settings->getNoiseParams("mg_biome_np_shift",          np_shift);
+	settings->getNoiseParams("mg_biome_np_top_patch",      np_top_patch);
 #endif
 }
 
@@ -109,6 +112,7 @@ void BiomeParamsOriginal::writeParams(Settings *settings) const
 	settings->setNoiseParams("mg_biome_np_valley_depth_blend", np_valley_depth_blend);
 	settings->setNoiseParams("mg_biome_np_variant",        np_variant);
 	settings->setNoiseParams("mg_biome_np_shift",          np_shift);
+	settings->setNoiseParams("mg_biome_np_top_patch",      np_top_patch);
 #endif
 }
 
@@ -472,6 +476,10 @@ ObjDef *Biome::clone() const
 	obj->c_seabed = c_seabed;
 	obj->depth_seabed = depth_seabed;
 	obj->c_waterline = c_waterline;
+	obj->c_top_patch = c_top_patch;
+	obj->c_top_patch_alt = c_top_patch_alt;
+	obj->top_patch_min = top_patch_min;
+	obj->top_patch_alt_max = top_patch_alt_max;
 #endif
 
 	obj->min_pos = min_pos;
@@ -734,6 +742,32 @@ void BiomeGenOriginal::blendForm(v2s16 pos, BiomeTerrainForm &form) const
 			&m_params->np_valley_depth_blend, pos.X, pos.Y, m_params->seed));
 }
 
+content_t BiomeGen::getTopNode(const Biome *biome, v2s16 column) const
+{
+	return biome->c_top;
+}
+
+content_t BiomeGenOriginal::topNodeFor(const Biome &biome, float patch_noise)
+{
+	if (biome.c_top_patch != CONTENT_IGNORE && patch_noise >= biome.top_patch_min)
+		return biome.c_top_patch;
+	if (biome.c_top_patch_alt != CONTENT_IGNORE &&
+			patch_noise <= biome.top_patch_alt_max)
+		return biome.c_top_patch_alt;
+	return biome.c_top;
+}
+
+content_t BiomeGenOriginal::getTopNode(const Biome *biome, v2s16 column) const
+{
+	// The noise is read only where a biome lays patches, so a world
+	// without them pays nothing for the field.
+	if (biome->c_top_patch == CONTENT_IGNORE &&
+			biome->c_top_patch_alt == CONTENT_IGNORE)
+		return biome->c_top;
+	return topNodeFor(*biome, NoiseFractal2D(&m_params->np_top_patch,
+		column.X, column.Y, m_params->seed));
+}
+
 bool BiomeGenOriginal::getBiomeTerrainHeight(v2s16 pos, float &height) const
 {
 	if (!m_terrain_sampler)
@@ -760,5 +794,7 @@ void Biome::resolveNodeNames()
 #if IS_VOPI_ENGINE
 	getIdFromNrBacklog(&c_seabed,        "ignore",                    CONTENT_IGNORE, false);
 	getIdFromNrBacklog(&c_waterline,     "ignore",                    CONTENT_IGNORE, false);
+	getIdFromNrBacklog(&c_top_patch,     "ignore",                    CONTENT_IGNORE, false);
+	getIdFromNrBacklog(&c_top_patch_alt, "ignore",                    CONTENT_IGNORE, false);
 #endif
 }

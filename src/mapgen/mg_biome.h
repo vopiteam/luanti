@@ -95,6 +95,24 @@ public:
 	// nor lies under it, in place of node_top. CONTENT_IGNORE leaves it
 	// to node_top as before.
 	content_t c_waterline = CONTENT_IGNORE;
+	// Two more top nodes, laid in patches among node_top on the surfaces
+	// under air. The 2D noise 'mg_biome_np_top_patch' is one field for
+	// the whole world; where it is at or above top_patch_min the surface
+	// takes c_top_patch, where it is at or below top_patch_alt_max it
+	// takes c_top_patch_alt, and node_top between them. CONTENT_IGNORE
+	// leaves that end of the noise to node_top as before.
+	content_t c_top_patch = CONTENT_IGNORE;
+	content_t c_top_patch_alt = CONTENT_IGNORE;
+	float top_patch_min = std::numeric_limits<float>::infinity();
+	float top_patch_alt_max = -std::numeric_limits<float>::infinity();
+
+	// True for a node this biome lays on top of a surface under air: its
+	// top node, its waterline node or one of its patch nodes.
+	bool isTopNode(content_t c) const
+	{
+		return c == c_top || (c != CONTENT_IGNORE && (c == c_waterline ||
+			c == c_top_patch || c == c_top_patch_alt));
+	}
 #endif
 
 	v3s16 min_pos = -MAX_MAP_GENERATION_LIMIT_V3;
@@ -205,6 +223,22 @@ public:
 	// Same as above, but uses a raw numeric index correlating to the (x,z) position.
 	virtual Biome *getBiomeAtIndex(size_t index, v3s16 pos) const = 0;
 
+#if IS_VOPI_ENGINE
+	// The top node of a surface under air in the given column: the biome's
+	// node_top, or one of its patch nodes where the generator lays patches.
+	virtual content_t getTopNode(const Biome *biome, v2s16 column) const;
+	// The first node of a surface under air at pos, for every pass that
+	// lays one, the biome pass and the floors of the tunnels alike: the
+	// biome's waterline node for a surface at the water level, where it
+	// names one, and the top node of the column otherwise.
+	content_t getSurfaceNode(const Biome *biome, v3s16 pos, s16 water_level) const
+	{
+		if (pos.Y == water_level && biome->c_waterline != CONTENT_IGNORE)
+			return biome->c_waterline;
+		return getTopNode(biome, v2s16(pos.X, pos.Z));
+	}
+#endif
+
 	// Returns the next lower y position at which the biome could change.
 	// You can use this to optimize calls to getBiomeAtIndex().
 	virtual s16 getNextTransitionY(s16 y) const {
@@ -239,7 +273,8 @@ struct BiomeParamsOriginal : public BiomeParams {
 		, np_base_blend(0, 0, v3f(48.0, 48.0, 48.0), 1021, 2, 0.5, 2.0),
 		np_valley_depth_blend(0, 0, v3f(48.0, 48.0, 48.0), 4417, 2, 0.5, 2.0),
 		np_variant(0, 0, v3f(512.0, 512.0, 512.0), 7717, 5, 0.55, 2.0),
-		np_shift(0, 0, v3f(32.0, 32.0, 32.0), 9911, 3, 0.5, 2.0)
+		np_shift(0, 0, v3f(32.0, 32.0, 32.0), 9911, 3, 0.5, 2.0),
+		np_top_patch(0, 1, v3f(24.0, 24.0, 24.0), 3391, 3, 0.5, 2.0)
 #endif
 	{
 	}
@@ -272,6 +307,12 @@ struct BiomeParamsOriginal : public BiomeParams {
 	// bank, surface and climate corrections stay in place. Scale 0 and
 	// offset 0, the defaults, read every column at its own position.
 	NoiseParams np_shift;
+	// The field the patch nodes of the biomes are laid by: a biome's
+	// 'top_patch_min' and 'top_patch_alt_max' are bounds on this noise at
+	// the column. One field for every biome, so a patch runs on across a
+	// border between two biomes that both lay patches, and it is read
+	// only in the columns of the biomes that name a patch node.
+	NoiseParams np_top_patch;
 #endif
 };
 
@@ -320,6 +361,9 @@ public:
 	// Climate-only consumers do not need column heights when corrections are off.
 	bool getEffectiveClimate(v2s16 pos, ValleysClimate &out) const;
 	bool getEffectiveBiomeData(v3s16 pos, EffectiveBiomeData &out) const;
+	content_t getTopNode(const Biome *biome, v2s16 column) const;
+	// The choice itself, for a known value of the patch noise.
+	static content_t topNodeFor(const Biome &biome, float patch_noise);
 #endif
 
 	float *heatmap;

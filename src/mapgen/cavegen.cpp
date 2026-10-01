@@ -52,8 +52,13 @@ CavesNoiseIntersection::~CavesNoiseIntersection()
 }
 
 
+#if IS_VOPI_ENGINE
+void CavesNoiseIntersection::generateCaves(MMVManip *vm,
+	v3s16 nmin, v3s16 nmax, biome_t *biomemap, s16 water_level)
+#else
 void CavesNoiseIntersection::generateCaves(MMVManip *vm,
 	v3s16 nmin, v3s16 nmax, biome_t *biomemap)
+#endif
 {
 	assert(vm);
 	assert(biomemap);
@@ -144,6 +149,16 @@ void CavesNoiseIntersection::generateCaves(MMVManip *vm,
 						is_under_tunnel = false;
 					}
 				} else if (nplaced < depth_top) {
+#if IS_VOPI_ENGINE
+					// The floor is a surface under air like those the
+					// biome pass lays, so its first node is chosen the
+					// same way: the waterline node at the water level, a
+					// patch node in the biome's patch.
+					if (nplaced == 0)
+						vm->m_data[vi] = MapNode(m_bmgn->getSurfaceNode(
+							biome, v3s16(x, y, z), water_level));
+					else
+#endif
 					vm->m_data[vi] = MapNode(biome->c_top);
 					is_top_filler_above = true;
 					nplaced++;
@@ -159,7 +174,12 @@ void CavesNoiseIntersection::generateCaves(MMVManip *vm,
 			} else {
 				// Not tunnel or tunnel entrance floor
 				// Check node for possible replacing with stone for tunnel roof
+#if IS_VOPI_ENGINE
+				// A waterline or patch node is a top node as well
+				if (biome->isTopNode(c) || c == biome->c_filler)
+#else
 				if (c == biome->c_top || c == biome->c_filler)
+#endif
 					is_top_filler_above = true;
 
 				column_is_open = false;
