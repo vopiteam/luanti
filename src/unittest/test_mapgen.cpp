@@ -19,11 +19,14 @@
 #include "settings.h"
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <map>
 extern "C" {
 #include <lauxlib.h>
 }
 Biome *read_biome_def(lua_State *L, int index, const NodeDefManager *ndef);
+std::string read_deco_spacing(lua_State *L, int index, Decoration *deco);
 #endif
 
 class TestMapgen : public TestBase
@@ -60,6 +63,7 @@ public:
 	void testValleysFormGeneration(IGameDef *gamedef);
 	void testValleysFloaterBiomes(IGameDef *gamedef);
 	void testDecorationBiomeAtSurface(IGameDef *gamedef);
+	void testDecorationSpacing(IGameDef *gamedef);
 	void testCaveSurfaceNodes(IGameDef *gamedef);
 #endif
 };
@@ -106,6 +110,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testValleysFormGeneration, gamedef);
 	TEST(testValleysFloaterBiomes, gamedef);
 	TEST(testDecorationBiomeAtSurface, gamedef);
+	TEST(testDecorationSpacing, gamedef);
 	TEST(testCaveSurfaceNodes, gamedef);
 #endif
 }
@@ -1484,6 +1489,273 @@ void TestMapgen::testValleysFormGeneration(IGameDef *gamedef)
 			UASSERTEQ(content_t, data.vmanip->m_data[
 				data.vmanip->m_area.index(x, top - 1, z)].getContent(), stone);
 		}
+	}
+}
+
+void TestMapgen::testDecorationSpacing(IGameDef *gamedef)
+{
+	// The cell of a coordinate floors below zero as above it
+	UASSERTEQ(s32, DecoLattice::cellOf(0, 32), 0);
+	UASSERTEQ(s32, DecoLattice::cellOf(31, 32), 0);
+	UASSERTEQ(s32, DecoLattice::cellOf(32, 32), 1);
+	UASSERTEQ(s32, DecoLattice::cellOf(-1, 32), -1);
+	UASSERTEQ(s32, DecoLattice::cellOf(-32, 32), -1);
+	UASSERTEQ(s32, DecoLattice::cellOf(-33, 32), -2);
+
+	// The lattice. Every slot lies in its own cell, and no two lie within
+	// the distance of each other along both axes, whatever its shape.
+	const s32 span = 20;
+	const struct { s32 cell, apart; } shapes[] = {
+		{32, 24}, {28, 24}, {25, 24}, {40, 16}, {9, 1}, {2, 1},
+	};
+	for (const auto &shape : shapes) {
+		DecoLattice lattice(12345, 1, shape.cell, shape.apart);
+		std::vector<v2s32> slots;
+		for (s32 cz = -span; cz < span; cz++)
+		for (s32 cx = -span; cx < span; cx++) {
+			v2s32 pos;
+			if (!lattice.getSlot(cx, cz, &pos))
+				continue;
+			UASSERTEQ(s32, DecoLattice::cellOf(pos.X, shape.cell), cx);
+			UASSERTEQ(s32, DecoLattice::cellOf(pos.Y, shape.cell), cz);
+			slots.push_back(pos);
+		}
+		for (size_t i = 0; i < slots.size(); i++)
+		for (size_t j = i + 1; j < slots.size(); j++) {
+			UASSERT(std::abs(slots[i].X - slots[j].X) > shape.apart ||
+				std::abs(slots[i].Y - slots[j].Y) > shape.apart);
+		}
+
+		// A slot is the same whichever cell is asked first, and one cell
+		// asked alone answers as it does among the rest
+		DecoLattice backwards(12345, 1, shape.cell, shape.apart);
+		size_t found = 0;
+		for (s32 cz = span - 1; cz >= -span; cz--)
+		for (s32 cx = span - 1; cx >= -span; cx--) {
+			v2s32 pos, again;
+			const bool taken = backwards.getSlot(cx, cz, &pos);
+			DecoLattice alone(12345, 1, shape.cell, shape.apart);
+			UASSERT(alone.getSlot(cx, cz, &again) == taken);
+			if (!taken)
+				continue;
+			UASSERT(pos == again);
+			UASSERT(std::find(slots.begin(), slots.end(), pos) != slots.end());
+			found++;
+		}
+		UASSERTEQ(size_t, found, slots.size());
+
+		// The fill is the share of the cells that hold a slot. A cell of
+		// the first colour always does.
+		const float fill = DecoLattice::measureFill(shape.cell, shape.apart);
+		UASSERT(fill >= 0.25f && fill <= 1.0f);
+		UASSERT(std::fabs(fill - slots.size() / (4.0f * span * span)) < 0.03f);
+		UASSERTEQ(float, fill, DecoLattice::measureFill(shape.cell, shape.apart));
+	}
+	// A cell far wider than the distance nearly always finds its slot, one
+	// barely wider seldom past the first colours
+	UASSERT(DecoLattice::measureFill(40, 16) > 0.95f);
+	UASSERT(DecoLattice::measureFill(25, 24) < 0.7f);
+
+	// Another map seed and another lattice id are other lattices, and the
+	// rolls spread over [0, 1)
+	{
+		DecoLattice lattice(12345, 1, 32, 16);
+		DecoLattice other_seed(12346, 1, 32, 16);
+		DecoLattice other_id(12345, 2, 32, 16);
+		u32 same_seed = 0, same_id = 0, low = 0, total = 0;
+		for (s32 cz = -span; cz < span; cz++)
+		for (s32 cx = -span; cx < span; cx++) {
+			v2s32 pos, other;
+			if (!lattice.getSlot(cx, cz, &pos))
+				continue;
+			total++;
+			if (other_seed.getSlot(cx, cz, &other) && pos == other)
+				same_seed++;
+			if (other_id.getSlot(cx, cz, &other) && pos == other)
+				same_id++;
+			const float roll = lattice.getRoll(cx, cz);
+			UASSERT(roll >= 0.0f && roll < 1.0f);
+			if (roll < 0.3f)
+				low++;
+		}
+		UASSERT(total > 1500);
+		UASSERT(same_seed < total / 50 && same_id < total / 50);
+		UASSERT(std::fabs((float)low / total - 0.3f) < 0.05f);
+	}
+
+	// The definition's table
+	{
+		std::unique_ptr<lua_State, decltype(&lua_close)> state(luaL_newstate(), lua_close);
+		UASSERT(state);
+		lua_State *L = state.get();
+		auto parse = [&](const char *table, u32 flags, DecoSpacing *spacing) {
+			UASSERT(luaL_dostring(L, (std::string("return ") + table).c_str()) == 0);
+			DecoSimple deco;
+			deco.flags = flags;
+			const std::string problem = read_deco_spacing(L, -1, &deco);
+			lua_settop(L, 0);
+			if (spacing)
+				*spacing = deco.spacing;
+			return problem;
+		};
+		DecoSpacing spacing;
+		UASSERT(parse("{cell = 28, apart = 24}", 0, &spacing).empty());
+		UASSERTEQ(s32, spacing.cell, 28);
+		UASSERTEQ(s32, spacing.apart, 24);
+		UASSERTEQ(u32, spacing.seed, 0);
+		UASSERTEQ(float, spacing.from, 0.0f);
+		UASSERTEQ(float, spacing.to, 1.0f);
+		UASSERT(parse("{cell = 32, apart = 1, seed = 4294967295, from = 0.25, to = 0.5}",
+			DECO_PLACE_CENTER_X | DECO_LIQUID_SURFACE, &spacing).empty());
+		UASSERTEQ(u32, spacing.seed, 4294967295U);
+		UASSERTEQ(float, spacing.from, 0.25f);
+		UASSERTEQ(float, spacing.to, 0.5f);
+
+		const char *const refused[] = {
+			"7", "{}", "{cell = 28}", "{apart = 24}",
+			"{cell = 1, apart = 1}", "{cell = 32768, apart = 24}",
+			"{cell = 28.5, apart = 24}", "{cell = '28', apart = 24}",
+			"{cell = 28, apart = 0}", "{cell = 28, apart = 28}",
+			"{cell = 28, apart = 23.5}", "{cell = 0/0, apart = 24}",
+			"{cell = 28, apart = 24, seed = -1}",
+			"{cell = 28, apart = 24, seed = 4294967296}",
+			"{cell = 28, apart = 24, seed = 1.5}",
+			"{cell = 28, apart = 24, from = -0.1}",
+			"{cell = 28, apart = 24, to = 1.1}",
+			"{cell = 28, apart = 24, from = 0.5, to = 0.5}",
+			"{cell = 28, apart = 24, from = 0.6, to = 0.5}",
+			"{cell = 28, apart = 24, from = 0/0}",
+			"{cell = 28, apart = 24, to = 'half'}",
+		};
+		for (const char *table : refused) {
+			spacing = DecoSpacing();
+			UASSERT(!parse(table, 0, &spacing).empty());
+			// A refused table leaves the decoration without a lattice
+			UASSERTEQ(s32, spacing.cell, 0);
+		}
+		UASSERT(!parse("{cell = 28, apart = 24}", DECO_ALL_FLOORS, nullptr).empty());
+		UASSERT(!parse("{cell = 28, apart = 24}", DECO_ALL_CEILINGS, nullptr).empty());
+	}
+
+	// Placement. A flat floor of stone, generated as nine areas of 80 nodes
+	// a side, in one order and in the reverse: two decorations share a
+	// lattice, each with a part of the roll.
+	const s32 map_seed = 777;
+	const s32 cell = 28, apart = 24;
+	const float split = 0.6f;
+	const s16 side = 80, areas = 3, floor_y = 0;
+	const s16 edge_min = -side, edge_max = (areas - 1) * side - 1;
+	const content_t grass = t_CONTENT_GRASS, brick = t_CONTENT_BRICK;
+	UASSERT(gamedef->ndef()->get(t_CONTENT_STONE).walkable);
+
+	auto add_deco = [&](DecorationManager &decorations, content_t node,
+			float from, float to) {
+		auto deco = static_cast<DecoSimple *>(DecorationManager::create(DECO_SIMPLE));
+		deco->c_place_on.push_back(t_CONTENT_STONE);
+		deco->c_decos.push_back(node);
+		deco->deco_height = 1;
+		deco->deco_height_max = 0;
+		deco->deco_param2 = 0;
+		deco->deco_param2_max = 0;
+		// Not read with a lattice: the scatter of a build without one
+		deco->sidelen = 8;
+		deco->fill_ratio = 10.0f;
+		deco->y_min = -MAX_MAP_GENERATION_LIMIT;
+		deco->y_max = MAX_MAP_GENERATION_LIMIT;
+		deco->nspawnby = -1;
+		deco->spacing.cell = cell;
+		deco->spacing.apart = apart;
+		deco->spacing.seed = 1;
+		deco->spacing.from = from;
+		deco->spacing.to = to;
+		UASSERT(decorations.add(deco) != OBJDEF_INVALID_HANDLE);
+		return deco;
+	};
+	MockServer server(getTestTempDirectory());
+	DecorationManager decorations(&server);
+	auto first = add_deco(decorations, grass, 0.0f, split);
+	add_deco(decorations, brick, split, 1.0f);
+
+	// A copy keeps the lattice
+	{
+		std::unique_ptr<ObjDef> copy(first->clone());
+		const DecoSpacing &copied = static_cast<Decoration *>(copy.get())->spacing;
+		UASSERTEQ(s32, copied.cell, cell);
+		UASSERTEQ(s32, copied.apart, apart);
+		UASSERTEQ(u32, copied.seed, 1);
+		UASSERTEQ(float, copied.from, 0.0f);
+		UASSERTEQ(float, copied.to, split);
+	}
+
+	// What was placed over the whole of the nine areas, by node
+	typedef std::map<std::pair<s16, s16>, content_t> Placed;
+	auto generate = [&](bool reverse) {
+		MapgenTestVManip vm(VoxelArea(
+			v3s16(edge_min - MAP_BLOCKSIZE, floor_y - 2, edge_min - MAP_BLOCKSIZE),
+			v3s16(edge_max + MAP_BLOCKSIZE, floor_y + 5, edge_max + MAP_BLOCKSIZE)));
+		for (s16 z = vm.m_area.MinEdge.Z; z <= vm.m_area.MaxEdge.Z; z++)
+		for (s16 y = vm.m_area.MinEdge.Y; y <= vm.m_area.MaxEdge.Y; y++)
+		for (s16 x = vm.m_area.MinEdge.X; x <= vm.m_area.MaxEdge.X; x++) {
+			vm.m_data[vm.m_area.index(x, y, z)] =
+				MapNode(y <= floor_y ? t_CONTENT_STONE : (content_t)CONTENT_AIR);
+		}
+		Mapgen mapgen;
+		mapgen.seed = map_seed;
+		mapgen.ndef = gamedef->ndef();
+		mapgen.vm = &vm;
+		for (s16 i = 0; i < areas * areas; i++) {
+			const s16 n = reverse ? areas * areas - 1 - i : i;
+			const v3s16 nmin(edge_min + (n % areas) * side, floor_y - 2,
+				edge_min + (n / areas) * side);
+			const v3s16 nmax(nmin.X + side - 1, floor_y + 5, nmin.Z + side - 1);
+			decorations.placeAllDecos(&mapgen,
+				Mapgen::getBlockSeed(nmin, map_seed), nmin, nmax);
+		}
+		mapgen.vm = nullptr;
+
+		Placed placed;
+		for (s16 z = vm.m_area.MinEdge.Z; z <= vm.m_area.MaxEdge.Z; z++)
+		for (s16 x = vm.m_area.MinEdge.X; x <= vm.m_area.MaxEdge.X; x++) {
+			const content_t c = vm.m_data[vm.m_area.index(x, floor_y + 1, z)].getContent();
+			if (c != CONTENT_AIR)
+				placed[{x, z}] = c;
+		}
+		return placed;
+	};
+	const Placed placed = generate(false);
+	// The order the areas generate in changes nothing
+	UASSERT(generate(true) == placed);
+
+	// Every slot of the lattice inside the areas holds the decoration its
+	// roll names, and nothing stands anywhere else
+	DecoLattice lattice(map_seed, 1, cell, apart);
+	size_t expected = 0, of_first = 0;
+	for (s32 cz = DecoLattice::cellOf(edge_min, cell);
+			cz <= DecoLattice::cellOf(edge_max, cell); cz++)
+	for (s32 cx = DecoLattice::cellOf(edge_min, cell);
+			cx <= DecoLattice::cellOf(edge_max, cell); cx++) {
+		v2s32 pos;
+		if (!lattice.getSlot(cx, cz, &pos) || pos.X < edge_min || pos.X > edge_max ||
+				pos.Y < edge_min || pos.Y > edge_max)
+			continue;
+		expected++;
+		const bool to_first = lattice.getRoll(cx, cz) < split;
+		of_first += to_first;
+		const auto it = placed.find({(s16)pos.X, (s16)pos.Y});
+		UASSERT(it != placed.end());
+		UASSERTEQ(content_t, it->second, to_first ? grass : brick);
+	}
+	UASSERTEQ(size_t, placed.size(), expected);
+	// The areas cover some 73 cells, and two thirds of this lattice's cells
+	// hold a slot
+	UASSERT(expected > 35 && expected < 65);
+	UASSERT(of_first > 0 && of_first < expected);
+
+	// The distance holds across the borders of the areas
+	for (auto a = placed.begin(); a != placed.end(); ++a)
+	for (auto b = std::next(a); b != placed.end(); ++b) {
+		UASSERT(std::abs(a->first.first - b->first.first) > apart ||
+			std::abs(a->first.second - b->first.second) > apart);
 	}
 }
 

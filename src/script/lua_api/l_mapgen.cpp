@@ -97,6 +97,9 @@ bool read_schematic_def(lua_State *L, int index,
 bool read_deco_simple(lua_State *L, DecoSimple *deco);
 bool read_deco_schematic(lua_State *L, SchematicManager *schemmgr, DecoSchematic *deco);
 bool read_deco_lsystem(lua_State *L, const NodeDefManager *ndef, DecoLSystem *deco);
+#if IS_VOPI_ENGINE
+std::string read_deco_spacing(lua_State *L, int index, Decoration *deco);
+#endif
 
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -1355,6 +1358,110 @@ int ModApiMapgen::l_register_biome(lua_State *L)
 }
 
 
+#if IS_VOPI_ENGINE
+// A whole number of a spacing table or of the fill query, within bounds
+static bool read_spacing_number(lua_State *L, int index, double min, double max,
+	double *value)
+{
+	if (lua_type(L, index) != LUA_TNUMBER)
+		return false;
+	const double number = lua_tonumber(L, index);
+	if (!(number >= min && number <= max) || number != std::floor(number))
+		return false;
+	*value = number;
+	return true;
+}
+
+// The cell and the distance of a lattice, of a spacing table or of the fill
+// query. Returns what is wrong with them, nothing when they are in order.
+static std::string check_spacing_lattice(lua_State *L, int cell_index,
+	int apart_index, s32 *cell, s32 *apart)
+{
+	double number;
+	if (!read_spacing_number(L, cell_index, 2, DecoLattice::CELL_MAX, &number))
+		return "spacing cell must be a whole number from 2 to " +
+			std::to_string(DecoLattice::CELL_MAX);
+	*cell = (s32)number;
+	if (!read_spacing_number(L, apart_index, 1, *cell - 1, &number))
+		return "spacing apart must be a whole number from 1 to below the cell";
+	*apart = (s32)number;
+	return "";
+}
+
+// spacing = {cell = 28, apart = 24, seed = 1, from = 0, to = 0.3}
+// Returns what is wrong with the table, nothing when it is in order.
+std::string read_deco_spacing(lua_State *L, int index, Decoration *deco)
+{
+	if (!lua_istable(L, index))
+		return "spacing must be a table";
+	if (index < 0)
+		index = lua_gettop(L) + index + 1;
+	if (deco->flags & (DECO_ALL_FLOORS | DECO_ALL_CEILINGS))
+		return "spacing places on the surface of a column and "
+			"takes neither all_floors nor all_ceilings";
+
+	DecoSpacing spacing;
+	lua_getfield(L, index, "cell");
+	lua_getfield(L, index, "apart");
+	std::string problem = check_spacing_lattice(L, -2, -1,
+		&spacing.cell, &spacing.apart);
+	lua_pop(L, 2);
+	if (!problem.empty())
+		return problem;
+
+	lua_getfield(L, index, "seed");
+	if (!lua_isnil(L, -1)) {
+		double number;
+		if (!read_spacing_number(L, -1, 0, U32_MAX, &number)) {
+			lua_pop(L, 1);
+			return "spacing seed must be a whole number from 0 to 4294967295";
+		}
+		spacing.seed = (u32)number;
+	}
+	lua_pop(L, 1);
+
+	// The part of a slot's roll, the whole of it by default
+	double part[2] = {0.0, 1.0};
+	const char *const part_names[2] = {"from", "to"};
+	for (int i = 0; i < 2; i++) {
+		lua_getfield(L, index, part_names[i]);
+		if (!lua_isnil(L, -1)) {
+			if (lua_type(L, -1) != LUA_TNUMBER) {
+				lua_pop(L, 1);
+				return std::string("spacing ") + part_names[i] + " must be a number";
+			}
+			part[i] = lua_tonumber(L, -1);
+		}
+		lua_pop(L, 1);
+	}
+	if (!(part[0] >= 0.0 && part[0] < part[1] && part[1] <= 1.0))
+		return "spacing needs 0 <= from < to <= 1";
+	spacing.from = (float)part[0];
+	spacing.to = (float)part[1];
+	// A part too narrow to tell its ends apart would hold no slot
+	if (!(spacing.from < spacing.to))
+		return "spacing needs 0 <= from < to <= 1";
+
+	deco->spacing = spacing;
+	return "";
+}
+
+
+// get_decoration_spacing_fill(cell, apart)
+// The share of a lattice's cells that hold a slot
+int ModApiMapgen::l_get_decoration_spacing_fill(lua_State *L)
+{
+	NO_MAP_LOCK_REQUIRED;
+	s32 cell, apart;
+	const std::string problem = check_spacing_lattice(L, 1, 2, &cell, &apart);
+	if (!problem.empty())
+		throw LuaError("get_decoration_spacing_fill: " + problem);
+	lua_pushnumber(L, DecoLattice::measureFill(cell, apart));
+	return 1;
+}
+#endif
+
+
 // register_decoration({lots of stuff})
 int ModApiMapgen::l_register_decoration(lua_State *L)
 {
@@ -1424,6 +1531,19 @@ int ModApiMapgen::l_register_decoration(lua_State *L)
 		delete deco;
 		luaL_error(L, "register_decoration: check_offset out of range!  Allowed values: [-1, 0, 1]");
 	}
+
+#if IS_VOPI_ENGINE
+	//// Get the lattice the decoration is placed on (if any)
+	lua_getfield(L, index, "spacing");
+	if (!lua_isnil(L, -1)) {
+		const std::string problem = read_deco_spacing(L, -1, deco);
+		if (!problem.empty()) {
+			delete deco;
+			throw LuaError("register_decoration: " + problem);
+		}
+	}
+	lua_pop(L, 1);
+#endif
 
 	//// Handle decoration type-specific parameters
 	bool success = false;
@@ -2276,6 +2396,7 @@ void ModApiMapgen::Initialize(lua_State *L, int top)
 #if IS_VOPI_ENGINE
 	API_FCT(get_biome_terrain);
 	API_FCT(get_effective_biome_data);
+	API_FCT(get_decoration_spacing_fill);
 #endif
 	API_FCT(get_mapgen_object);
 	API_FCT(get_spawn_level);

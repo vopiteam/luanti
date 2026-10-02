@@ -272,6 +272,86 @@ positions and rotation, and a seed reproduces the world node for node.
 Schematics placed from Lua with `core.place_schematic` and
 `core.place_schematic_on_vmanip` keep the upstream behaviour.
 
+## Decoration spacing
+
+Upstream rolls every decoration on its own, a random point per `sidelen`
+cell from a generator seeded by the mapchunk, so nothing keeps two
+decorations apart: neither two placements of one, nor the several a game
+registers for the shapes of one tree. A free scatter leaves a good part
+of them in pairs whatever the density. With `IS_VOPI_ENGINE` a
+decoration may be placed on a lattice of slots instead:
+
+```lua
+core.register_decoration({
+    deco_type = "schematic",
+    -- ...
+    spacing = {
+        cell = 28,   -- the side of a cell of the lattice, in nodes
+        apart = 24,  -- no two slots within this of each other along both axes
+        seed = 1,    -- which lattice, 0 by default
+        from = 0,    -- this decoration's part of a slot's roll,
+        to = 0.3,    -- the whole of it by default
+    },
+})
+```
+
+The XZ plane of the world is cut into cells of `cell` nodes a side,
+aligned to world coordinates and not to the mapchunk, and a cell holds
+one slot at most. The cells are coloured two by two, so the eight cells
+around a cell all have another colour than it has. A cell of the first
+colour takes a point anywhere inside itself. A cell of a later colour
+tries sixteen points inside itself and takes the first that lies further
+than `apart` nodes, along one axis at least, from the slot of every cell
+around it of an earlier colour; when none does, the cell stays empty.
+Two cells that do not touch are a whole cell apart and `apart` is less
+than `cell`, so for no two slots of a lattice are both the X distance
+and the Z distance `apart` or less. The points come from a hash of the
+map seed, `seed`, `cell`, `apart` and the cell's coordinates, so a slot
+is the same whichever mapchunk asks, in whatever order the mapchunks
+generate: the distance holds across their borders by construction, with
+nothing remembered and nothing asked of a neighbour.
+
+Every cell has a roll in 0..1 as well, from the same hash. A decoration
+is placed at the slot of a cell when the roll lies in `[from, to)` and
+the slot lies in the area being generated. Decorations with the same
+`seed`, `cell` and `apart` share a lattice, and each takes its part of
+the roll: the three shapes of a tree as three decorations with the parts
+0..0.2, 0.2..0.4 and 0.4..0.6 never stand closer than `apart` to each
+other, and four slots in ten stay empty. Parts that overlap put both
+decorations on the slots they share. From the slot on the decoration
+is placed as a point of the scatter is: the surface of the column, or of
+its liquid with `liquid_surface`, the Y range, the biome filter with or
+without `biome_at_surface`, `place_on` and `spawn_by`. A slot that any
+of these refuses stays empty. The distance is between slots: a
+schematic's own size, and the offsets of its centring flags, are for the
+definition to allow for.
+
+`cell` is a whole number from 2 to 32767 and `apart` a whole number from
+1 to below `cell`; `seed` is a whole number from 0 to 4294967295;
+`0 <= from < to <= 1`. Any other value is a registration error, and so
+is `spacing` together with `all_floors` or `all_ceilings`, which place
+on the surfaces inside a column. With `spacing` set, `fill_ratio`,
+`noise_params` and `sidelen` are not read; a build without the option
+ignores the table and scatters by them, so keep them meaningful. A
+definition without the table is placed exactly as before.
+
+Not every cell holds a slot. `core.get_decoration_spacing_fill(cell,
+apart)`, in the server environment, returns the share that does,
+measured on a lattice of its own and so the same for every map seed:
+close to 1 where the cell is twice the distance, about 0.8 for 32 and
+24, about 0.5 where the cell is one node over the distance. For a
+density of `d` decorations per node the parts of a lattice add up to
+`d * cell * cell / fill`, which cannot pass 1: a lattice holds
+`fill / (cell * cell)` slots per node at most, and for a given `apart`
+no `cell` raises that past some 0.5 slots per `(apart + 1)` nodes
+squared.
+
+The decoration's generator still rolls a schematic's rotation and
+probabilities, and the cells of an area are walked in one order, so a
+slot gets the same tree whenever its mapchunk generates. The number of
+points a cell tries and the hash are part of what a world is: changing
+either moves every slot.
+
 ## Biome climate and form bounds
 
 With `IS_VOPI_ENGINE`, `core.register_biome` accepts inclusive bounds on the

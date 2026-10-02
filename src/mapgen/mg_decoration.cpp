@@ -11,6 +11,9 @@
 #include "map.h"
 #include <algorithm>
 #include <vector>
+#if IS_VOPI_ENGINE
+#include <cstdlib>
+#endif
 #include "mapgen/treegen.h"
 
 
@@ -80,6 +83,104 @@ bool Decoration::filtersAtSurface(const Mapgen *mg) const
 {
 	return (flags & DECO_BIOME_AT_SURFACE) && !biomes.empty() &&
 		mg->biomegen && (mg->flags & MG_BIOMES);
+}
+
+
+// One step of a stateless integer hash, in whole 64-bit arithmetic, so the
+// same on every platform
+static inline u64 lattice_mix(u64 h, u64 v)
+{
+	h ^= v;
+	h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+	h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+	return h ^ (h >> 31);
+}
+
+
+DecoLattice::DecoLattice(s32 mapseed, u32 id, s32 cell, s32 apart) :
+	m_cell(cell), m_apart(apart)
+{
+	u64 h = 0x9E3779B97F4A7C15ULL;
+	h = lattice_mix(h, (u64)(s64)mapseed);
+	h = lattice_mix(h, id);
+	h = lattice_mix(h, (u64)cell);
+	m_base = lattice_mix(h, (u64)apart);
+}
+
+
+u64 DecoLattice::hash(s32 cx, s32 cz, u32 n) const
+{
+	u64 h = lattice_mix(m_base, (u64)(s64)cx);
+	h = lattice_mix(h, (u64)(s64)cz);
+	return lattice_mix(h, n);
+}
+
+
+float DecoLattice::getRoll(s32 cx, s32 cz) const
+{
+	// Beyond the numbers of the points a cell tries
+	return (hash(cx, cz, 0xFFFFFFFFU) & 0xFFFFFF) / 16777216.0f;
+}
+
+
+bool DecoLattice::getSlot(s32 cx, s32 cz, v2s32 *pos)
+{
+	const u64 key = ((u64)(u32)cx << 32) | (u32)cz;
+	auto it = m_slots.find(key);
+	if (it == m_slots.end())
+		it = m_slots.emplace(key, findSlot(cx, cz)).first;
+	if (it->second.taken)
+		*pos = it->second.pos;
+	return it->second.taken;
+}
+
+
+DecoLattice::Slot DecoLattice::findSlot(s32 cx, s32 cz)
+{
+	// The colour of a cell is the parity of its coordinates, 0 to 3. A cell
+	// of colour 0 looks at no other, and each later colour at the earlier
+	// ones alone, so a slot depends on the cells within three of its own.
+	auto colour_of = [](s32 x, s32 z) { return (u32)(x & 1) | ((u32)(z & 1) << 1); };
+	const u32 colour = colour_of(cx, cz);
+
+	v2s32 earlier[8];
+	u32 count = 0;
+	for (s32 dz = -1; dz <= 1; dz++)
+	for (s32 dx = -1; dx <= 1; dx++) {
+		if (colour_of(cx + dx, cz + dz) < colour &&
+				getSlot(cx + dx, cz + dz, &earlier[count]))
+			count++;
+	}
+
+	for (u32 n = 0; n < TRIES; n++) {
+		const u64 h = hash(cx, cz, n);
+		const v2s32 p(cx * m_cell + (s32)((h & 0xFFFFFFFFU) % (u32)m_cell),
+			cz * m_cell + (s32)((h >> 32) % (u32)m_cell));
+		bool clear = true;
+		for (u32 i = 0; i < count && clear; i++) {
+			clear = std::abs(p.X - earlier[i].X) > m_apart ||
+				std::abs(p.Y - earlier[i].Y) > m_apart;
+		}
+		if (clear)
+			return {true, p};
+	}
+	return {false, v2s32()};
+}
+
+
+float DecoLattice::measureFill(s32 cell, s32 apart)
+{
+	// Every colour in equal number
+	const s32 side = 128;
+	DecoLattice lattice(0, 0, cell, apart);
+	u32 taken = 0;
+	v2s32 pos;
+	for (s32 cz = 0; cz < side; cz++)
+	for (s32 cx = 0; cx < side; cx++) {
+		if (lattice.getSlot(cx, cz, &pos))
+			taken++;
+	}
+	return (float)taken / (side * side);
 }
 #endif
 
@@ -151,6 +252,12 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 	const bool at_surface = filtersAtSurface(mg);
 #endif
 	PcgRandom ps(blockseed + 53);
+#if IS_VOPI_ENGINE
+	if (spacing.cell > 0) {
+		placeSpaced(mg, &ps, nmin, nmax, at_surface);
+		return;
+	}
+#endif
 	int carea_size = nmax.X - nmin.X + 1;
 	if (nmax.Z - nmin.Z + 1 != carea_size) {
 		// TODO: this is a stupid restriction, which we should lift
@@ -296,6 +403,9 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 					}
 				}
 			} else { // Heightmap decorations
+#if IS_VOPI_ENGINE
+				placeOnHeightmap(mg, &ps, nmin, nmax, x, z, mapindex, at_surface);
+#else
 				s16 y = -MAX_MAP_GENERATION_LIMIT;
 				if (flags & DECO_LIQUID_SURFACE)
 					y = mg->findLiquidSurface(v2s16(x, z), nmin.Y, nmax.Y);
@@ -307,15 +417,6 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 				if (y < y_min || y > y_max || y < nmin.Y || y > nmax.Y)
 					continue;
 
-#if IS_VOPI_ENGINE
-				if (at_surface) {
-					// The top walkable node of the column, or the liquid
-					const Biome *biome = mg->biomegen->getBiomeAtIndex(
-						mapindex, v3s16(x, y, z));
-					if (!biome || biomes.find(biome->index) == biomes.end())
-						continue;
-				} else
-#endif
 				if (mg->biomemap && !biomes.empty()) {
 					auto iter = biomes.find(mg->biomemap[mapindex]);
 					if (iter == biomes.end())
@@ -325,12 +426,84 @@ void Decoration::placeDeco(Mapgen *mg, u32 blockseed, v3s16 nmin, v3s16 nmax)
 				v3s16 pos(x, y, z);
 				if (generate(mg->vm, &ps, pos, false))
 					mg->gennotify.addDecorationEvent(pos, index);
+#endif
 			}
 		}
 	}
 
 	return;
 }
+
+
+#if IS_VOPI_ENGINE
+// One decoration on the surface of the column at X and Z, where the Y range
+// and the biome filter admit it: the heightmap placement, for a point of the
+// scatter and for a slot of the lattice alike.
+void Decoration::placeOnHeightmap(Mapgen *mg, PcgRandom *ps, v3s16 nmin,
+	v3s16 nmax, s16 x, s16 z, int mapindex, bool at_surface)
+{
+	s16 y = -MAX_MAP_GENERATION_LIMIT;
+	if (flags & DECO_LIQUID_SURFACE)
+		y = mg->findLiquidSurface(v2s16(x, z), nmin.Y, nmax.Y);
+	else if (mg->heightmap)
+		y = mg->heightmap[mapindex];
+	else
+		y = mg->findGroundLevel(v2s16(x, z), nmin.Y, nmax.Y);
+
+	if (y < y_min || y > y_max || y < nmin.Y || y > nmax.Y)
+		return;
+
+	if (at_surface) {
+		// The top walkable node of the column, or the liquid
+		const Biome *biome = mg->biomegen->getBiomeAtIndex(
+			mapindex, v3s16(x, y, z));
+		if (!biome || biomes.find(biome->index) == biomes.end())
+			return;
+	} else if (mg->biomemap && !biomes.empty()) {
+		auto iter = biomes.find(mg->biomemap[mapindex]);
+		if (iter == biomes.end())
+			return;
+	}
+
+	v3s16 pos(x, y, z);
+	if (generate(mg->vm, ps, pos, false))
+		mg->gennotify.addDecorationEvent(pos, index);
+}
+
+
+// The decorations of a lattice: the slots of the cells the area overlaps
+// that lie inside it and whose roll falls in this decoration's part. The
+// cells are walked in one order, so the decoration's generator, which rolls
+// a schematic's rotation and probabilities, gives every slot the same
+// numbers whenever the area generates. A slot the ground or the biome
+// refuses stays empty.
+void Decoration::placeSpaced(Mapgen *mg, PcgRandom *ps, v3s16 nmin, v3s16 nmax,
+	bool at_surface)
+{
+	const int width = nmax.X - nmin.X + 1;
+	DecoLattice lattice(mg->seed, spacing.seed, spacing.cell, spacing.apart);
+	const s32 cx_max = DecoLattice::cellOf(nmax.X, spacing.cell);
+	const s32 cz_max = DecoLattice::cellOf(nmax.Z, spacing.cell);
+
+	for (s32 cz = DecoLattice::cellOf(nmin.Z, spacing.cell); cz <= cz_max; cz++)
+	for (s32 cx = DecoLattice::cellOf(nmin.X, spacing.cell); cx <= cx_max; cx++) {
+		const float roll = lattice.getRoll(cx, cz);
+		if (roll < spacing.from || roll >= spacing.to)
+			continue;
+
+		v2s32 slot;
+		if (!lattice.getSlot(cx, cz, &slot))
+			continue;
+		// A cell on the edge of the area may hold its slot outside it
+		if (slot.X < nmin.X || slot.X > nmax.X ||
+				slot.Y < nmin.Z || slot.Y > nmax.Z)
+			continue;
+
+		placeOnHeightmap(mg, ps, nmin, nmax, slot.X, slot.Y,
+			width * (slot.Y - nmin.Z) + (slot.X - nmin.X), at_surface);
+	}
+}
+#endif
 
 
 void Decoration::cloneTo(Decoration *def) const
@@ -349,6 +522,9 @@ void Decoration::cloneTo(Decoration *def) const
 	def->nspawnby = nspawnby;
 	def->place_offset_y = place_offset_y;
 	def->biomes = biomes;
+#if IS_VOPI_ENGINE
+	def->spacing = spacing;
+#endif
 }
 
 
