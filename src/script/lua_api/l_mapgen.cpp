@@ -700,6 +700,11 @@ int ModApiMapgen::l_get_biome_terrain(lua_State *L)
 int ModApiMapgen::l_get_effective_biome_data(lua_State *L)
 {
 	NO_MAP_LOCK_REQUIRED;
+	// Timed while the profiler prints: the average call and the slowest,
+	// a column the sampler has not seen
+	const bool profile = g_settings->getFloat("profiler_print_interval") > 0.0f;
+	MapgenPhaseTimer timer(profile, "API: get_effective_biome_data [ms]");
+	MapgenPhaseTimer peak(profile, "API: get_effective_biome_data max [ms]", true);
 	const v3s16 pos = read_query_position(L, 1, "get_effective_biome_data");
 
 	const BiomeGen *biomegen = getBiomeGen(L);

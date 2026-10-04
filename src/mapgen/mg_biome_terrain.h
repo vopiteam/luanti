@@ -61,6 +61,11 @@ public:
 	// Called once before a mapchunk is generated. A sampler may make room so
 	// that every column of the chunk stays cached from terrain to biomes.
 	virtual void beginChunk() {}
+	// The counts of a mapchunk for the profiler: zeroed before a mapchunk
+	// that is profiled, reported and zeroed after it. Between profiled
+	// mapchunks they keep counting and mean nothing.
+	virtual void resetProfile() const {}
+	virtual void profileChunk() const {}
 };
 
 std::unique_ptr<BiomeTerrainSampler> createValleysBiomeTerrainSampler(

@@ -13,6 +13,7 @@
 #include <algorithm>
 #if IS_VOPI_ENGINE
 #include "mapgen_valleys.h"
+#include "profiler.h"
 #include <cmath>
 #endif
 
@@ -321,6 +322,7 @@ Biome *BiomeGenOriginal::calcBiomeFromNoise(float heat, float humidity, v3s16 po
 	float dist_min_blend = FLT_MAX;
 #endif
 #if IS_VOPI_ENGINE
+	m_profile_selections++;
 	BiomeTerrainForm sampled_form;
 	bool form_sampled = form != nullptr;
 	bool form_available = form != nullptr;
@@ -713,6 +715,7 @@ bool BiomeGenOriginal::formAt(v2s16 at, BiomeTerrainForm &form) const
 {
 	if (!m_terrain_sampler)
 		return false;
+	m_profile_form_reads++;
 	BiomeClimateContext context;
 	if (!m_terrain_sampler->sampleClimate(at, context))
 		return false;
@@ -726,6 +729,7 @@ float BiomeGenOriginal::variantAt(v2s16 at) const
 	const NoiseParams &np = m_params->np_variant;
 	if (np.scale == 0.0f)
 		return np.offset;
+	m_profile_variant_reads++;
 	return NoiseFractal2D(&np, at.X, at.Y, m_params->seed);
 }
 
@@ -774,6 +778,25 @@ bool BiomeGenOriginal::getBiomeTerrainHeight(v2s16 pos, float &height) const
 		return false;
 	height = m_terrain_sampler->sampleHeight(pos);
 	return std::isfinite(height);
+}
+
+void BiomeGenOriginal::resetProfile() const
+{
+	m_profile_selections = 0;
+	m_profile_form_reads = 0;
+	m_profile_variant_reads = 0;
+	if (m_terrain_sampler)
+		m_terrain_sampler->resetProfile();
+}
+
+void BiomeGenOriginal::profileChunk() const
+{
+	g_profiler->avg("Biomes: selections [#]", m_profile_selections);
+	g_profiler->avg("Biomes: form reads [#]", m_profile_form_reads);
+	g_profiler->avg("Biomes: variant reads [#]", m_profile_variant_reads);
+	if (m_terrain_sampler)
+		m_terrain_sampler->profileChunk();
+	resetProfile();
 }
 #endif
 

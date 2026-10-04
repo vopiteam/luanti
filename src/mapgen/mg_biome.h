@@ -364,6 +364,11 @@ public:
 	content_t getTopNode(const Biome *biome, v2s16 column) const;
 	// The choice itself, for a known value of the patch noise.
 	static content_t topNodeFor(const Biome &biome, float patch_noise);
+	// The counts of a mapchunk for the profiler, the sampler's included:
+	// zeroed before a mapchunk that is profiled, reported and zeroed after
+	// it. The mapgen calls both while the profiler prints.
+	void resetProfile() const;
+	void profileChunk() const;
 #endif
 
 	float *heatmap;
@@ -394,6 +399,10 @@ private:
 	bool formAt(v2s16 at, BiomeTerrainForm &form) const;
 	float variantAt(v2s16 at) const;
 	std::vector<v2f> m_shift_map;
+	// Counted on paths that already pay for a selection or a noise read
+	mutable u32 m_profile_selections = 0;
+	mutable u32 m_profile_form_reads = 0;
+	mutable u32 m_profile_variant_reads = 0;
 	bool m_valleys_climate = false;
 	int m_climate_water_level = 0;
 	float m_climate_altitude_chill = 1.0f;

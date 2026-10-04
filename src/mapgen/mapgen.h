@@ -41,6 +41,41 @@ class EmergeParams;
 struct BlockMakeData;
 class VoxelArea;
 
+// Times one phase of mapchunk generation for the profiler, when a mapgen
+// profiles its phases. Off, the constructor and the destructor cost a
+// branch each: no clock is read, no name is copied, no lock is taken.
+class MapgenPhaseTimer {
+public:
+	// With 'max' the profiler keeps the slowest phase instead of the average
+	MapgenPhaseTimer(bool on, const char *name, bool max = false) :
+		m_name(on ? name : nullptr), m_max(max)
+	{
+		if (m_name)
+			start();
+	}
+	~MapgenPhaseTimer()
+	{
+		if (m_name)
+			stop();
+	}
+	// Ends the phase here rather than at the end of the scope
+	void finish()
+	{
+		if (m_name) {
+			stop();
+			m_name = nullptr;
+		}
+	}
+	DISABLE_CLASS_COPY(MapgenPhaseTimer);
+
+private:
+	void start();
+	void stop();
+	const char *m_name;
+	u64 m_start = 0;
+	bool m_max;
+};
+
 enum MapgenObject {
 	MGOBJ_VMANIP,
 	MGOBJ_HEIGHTMAP,
@@ -152,6 +187,9 @@ public:
 	int mapgen_limit = 0;
 	u32 flags = 0;
 	bool generating = false;
+	// Whether makeChunk times its phases for the profiler, read from the
+	// settings once per mapchunk by the mapgens that do
+	bool profile_phases = false;
 	int id = -1;
 
 	MMVManip *vm = nullptr;

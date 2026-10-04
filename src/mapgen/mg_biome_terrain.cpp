@@ -8,6 +8,7 @@
 #include "mapgen_valleys.h"
 #include "constants.h"
 #include "noise.h"
+#include "profiler.h"
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
@@ -175,6 +176,9 @@ public:
 			m_caps.clear();
 	}
 
+	void resetProfile() const override;
+	void profileChunk() const override;
+
 private:
 	explicit ValleysBiomeTerrainSampler(const ValleysTerrainParams &params) :
 		m_params(params)
@@ -220,6 +224,14 @@ private:
 	mutable std::unordered_map<u64, BiomeClimateContext> m_climates;
 	mutable std::unordered_map<TerrainPoint, Voxel, TerrainPointHash> m_voxels;
 	mutable std::unordered_map<TerrainPoint, s32, TerrainPointHash> m_tops;
+	// Counted where a cache misses or a body is modeled, paths that
+	// already pay for noise
+	mutable u32 m_profile_columns = 0;
+	mutable u32 m_profile_cap_rows = 0;
+	mutable u32 m_profile_caps = 0;
+	mutable u32 m_profile_bodies = 0;
+	mutable u32 m_profile_climates = 0;
+	mutable u32 m_profile_heights = 0;
 };
 
 ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s32 z) const
@@ -228,6 +240,7 @@ ValleysBiomeTerrainSampler::Column ValleysBiomeTerrainSampler::columnAt(s32 x, s
 	auto found = m_columns.find(key);
 	if (found != m_columns.end())
 		return found->second;
+	m_profile_columns++;
 
 	// The generator's own column model on the scalar noise of this column.
 	// No node data, climate adjustments or mapgen noise buffers enter.
@@ -285,6 +298,7 @@ float ValleysBiomeTerrainSampler::capLift(float delta, float foot) const
 // feet do.
 float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) const
 {
+	m_profile_bodies++;
 	const auto &p = m_params;
 	const float foot = p.mountain_cap != 0.0f ? capAt(x, z) : 0.0f;
 	const float reach = std::fmax(
@@ -328,6 +342,7 @@ float ValleysBiomeTerrainSampler::capRowAt(s32 x, s32 z) const
 	auto found = m_cap_rows.find(key);
 	if (found != m_cap_rows.end())
 		return found->second;
+	m_profile_cap_rows++;
 
 	const s32 reach = m_params.mountain_cap_reach;
 	float taper = 1.0f / static_cast<float>(reach + 1);
@@ -346,6 +361,7 @@ float ValleysBiomeTerrainSampler::capAt(s32 x, s32 z) const
 	auto found = m_caps.find(key);
 	if (found != m_caps.end())
 		return found->second;
+	m_profile_caps++;
 
 	const s32 reach = m_params.mountain_cap_reach;
 	float taper = 1.0f / static_cast<float>(reach + 1);
@@ -600,6 +616,7 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 		out = found->second;
 		return true;
 	}
+	m_profile_climates++;
 
 	trimColumnCaches();
 	const Column c = columnAt(pos.X, pos.Y);
@@ -631,6 +648,7 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 
 float ValleysBiomeTerrainSampler::modelHeight(s32 x, s32 z) const
 {
+	m_profile_heights++;
 	trimSurfaceCaches();
 	const s32 floor = std::clamp(m_params.floor_y,
 		-MAX_MAP_GENERATION_LIMIT, MAX_MAP_GENERATION_LIMIT);
@@ -654,6 +672,33 @@ float ValleysBiomeTerrainSampler::sampleHeight(v2s16 pos) const
 		m_heights.clear();
 	m_heights.emplace(key, height);
 	return height;
+}
+
+void ValleysBiomeTerrainSampler::resetProfile() const
+{
+	m_profile_columns = 0;
+	m_profile_cap_rows = 0;
+	m_profile_caps = 0;
+	m_profile_bodies = 0;
+	m_profile_climates = 0;
+	m_profile_heights = 0;
+}
+
+void ValleysBiomeTerrainSampler::profileChunk() const
+{
+	g_profiler->avg("Sampler: column misses [#]", m_profile_columns);
+	g_profiler->avg("Sampler: cap row misses [#]", m_profile_cap_rows);
+	g_profiler->avg("Sampler: cap misses [#]", m_profile_caps);
+	g_profiler->avg("Sampler: bodies modeled [#]", m_profile_bodies);
+	g_profiler->avg("Sampler: climate misses [#]", m_profile_climates);
+	g_profiler->avg("Sampler: heights modeled [#]", m_profile_heights);
+	g_profiler->avg("Sampler: columns cached [#]", m_columns.size());
+	g_profiler->avg("Sampler: cap rows cached [#]", m_cap_rows.size());
+	g_profiler->avg("Sampler: caps cached [#]", m_caps.size());
+	g_profiler->avg("Sampler: climates cached [#]", m_climates.size());
+	g_profiler->avg("Sampler: voxels cached [#]", m_voxels.size());
+	g_profiler->avg("Sampler: tops cached [#]", m_tops.size());
+	resetProfile();
 }
 
 } // namespace

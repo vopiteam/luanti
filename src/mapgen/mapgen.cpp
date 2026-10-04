@@ -16,6 +16,7 @@
 #include "emerge.h"
 #include "voxelalgorithms.h"
 #include "profiler.h"
+#include "porting.h"
 #include "settings.h"
 #include "treegen.h"
 #include "util/numeric.h"
@@ -625,6 +626,22 @@ MapgenBasic::~MapgenBasic()
 }
 
 
+void MapgenPhaseTimer::start()
+{
+	m_start = porting::getTimeUs();
+}
+
+
+void MapgenPhaseTimer::stop()
+{
+	const float ms = (float)(porting::getTimeUs() - m_start) / 1000.0f;
+	if (m_max)
+		g_profiler->max(m_name, ms);
+	else
+		g_profiler->avg(m_name, ms);
+}
+
+
 void MapgenBasic::generateBiomes()
 {
 	// can't generate biomes without a biome generator!
@@ -633,6 +650,8 @@ void MapgenBasic::generateBiomes()
 
 	const v3s32 &em = vm->m_area.getExtent();
 	u32 index = 0;
+	// The time of the biome selections, for the profiler
+	u64 select_us = 0;
 
 	noise_filler_depth->noiseMap2D(node_min.X, node_min.Z);
 
@@ -685,7 +704,10 @@ void MapgenBasic::generateBiomes()
 			if (is_stone_surface || is_water_surface) {
 				if (biome_outdated) {
 					// (Re)calculate biome
+					const u64 select_start = profile_phases ? porting::getTimeUs() : 0;
 					biome = biomegen->getBiomeAtIndex(index, v3s16(x, y, z));
+					if (profile_phases)
+						select_us += porting::getTimeUs() - select_start;
 					biome_y_next = biomegen->getNextTransitionY(y);
 
 					if (x == node_min.X && z == node_min.Z && false) {
@@ -813,6 +835,8 @@ void MapgenBasic::generateBiomes()
 		if (biomemap[index] == BIOME_NONE && water_biome_index != 0)
 			biomemap[index] = water_biome_index;
 	}
+	if (profile_phases)
+		g_profiler->avg("Biomes: selection [ms]", (float)select_us / 1000.0f);
 }
 
 

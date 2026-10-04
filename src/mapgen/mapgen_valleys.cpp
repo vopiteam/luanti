@@ -19,7 +19,8 @@ Licensing changed by permission of Gael de Sailly.
 #include "map.h"
 #include "nodedef.h"
 #include "voxelalgorithms.h"
-//#include "profiler.h" // For TimeTaker
+#include "profiler.h"
+#include "porting.h"
 #include "settings.h" // For g_settings
 #include "emerge.h"
 #include "dungeongen.h"
@@ -388,6 +389,15 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	this->generating = true;
 	this->vm = data->vmanip;
 	this->ndef = data->nodedef;
+	// The phases are timed for the profiler while it prints, and the counts
+	// of the biome generator start from zero for a mapchunk that is
+#if IS_VOPI_ENGINE
+	profile_phases = g_settings->getFloat("profiler_print_interval") > 0.0f;
+	if (profile_phases)
+		m_bgen->resetProfile();
+#else
+	profile_phases = g_settings->getFloat("profiler_print_interval") > 0.0f;
+#endif
 
 	v3s16 blockpos_min = data->blockpos_min;
 	v3s16 blockpos_max = data->blockpos_max;
@@ -401,16 +411,23 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	// Generate biome noises. Note this must be executed strictly before
 	// generateTerrain, because generateTerrain depends on intermediate
 	// biome-related noises.
+	MapgenPhaseTimer timer_biome_noise(profile_phases, "Mapgen: 01 biome noise [ms]");
 	m_bgen->calcBiomeNoise(node_min);
+	timer_biome_noise.finish();
 
 	// Generate terrain
+	MapgenPhaseTimer timer_terrain(profile_phases, "Mapgen: 02 terrain [ms]");
 	s16 stone_surface_max_y = generateTerrain();
+	timer_terrain.finish();
 
 	// Create heightmap
+	MapgenPhaseTimer timer_heightmap(profile_phases, "Mapgen: 03 heightmap [ms]");
 	updateHeightmap(node_min, node_max);
+	timer_heightmap.finish();
 
 	// Place biome-specific nodes and build biomemap
 	if (flags & MG_BIOMES) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 04 biomes [ms]");
 		generateBiomes();
 #if IS_VOPI_ENGINE
 		// The top of every column as the biome pass leaves it, lids on
@@ -428,12 +445,17 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	// Generate tunnels, caverns and large randomwalk caves
 	if (flags & MG_CAVES) {
 		// Generate tunnels first as caverns confuse them
+		MapgenPhaseTimer timer_tunnels(profile_phases, "Mapgen: 05 caves tunnels [ms]");
 		generateCavesNoiseIntersection(stone_surface_max_y);
+		timer_tunnels.finish();
 
 		// Generate caverns
+		MapgenPhaseTimer timer_caverns(profile_phases, "Mapgen: 06 caves caverns [ms]");
 		bool near_cavern = generateCavernsNoise(stone_surface_max_y);
+		timer_caverns.finish();
 
 		// Generate large randomwalk caves
+		MapgenPhaseTimer timer_random_walk(profile_phases, "Mapgen: 07 caves random walk [ms]");
 		if (near_cavern)
 			// Disable large randomwalk caves in this mapchunk by setting
 			// 'large cave depth' to world base. Avoids excessive liquid in
@@ -446,6 +468,7 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 
 #if IS_VOPI_ENGINE
 	if (floor_y >= vm->m_area.MinEdge.Y) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 08 floor [ms]");
 		// Solid floor: every void and liquid at or below 'floor_y' is stone
 		// again, so the tunnels, caves and caverns carved above end there.
 		// Done over the whole generation area, border included: the random
@@ -468,6 +491,7 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	}
 
 	if (spflags & MGVALLEYS_REMOVE_FLOATERS) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 09 floaters [ms]");
 		// After the caves, which cut pieces loose, and before anything is
 		// placed in or on them
 		updateHeightmap(node_min, node_max);
@@ -476,32 +500,52 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	// The caves, the floor and the removal moved surfaces the biomemap was
 	// selected at: the heightmap and the biomemap follow the surface left,
 	// for the ores, the decorations and the dust placed from here on
+	MapgenPhaseTimer timer_reselect(profile_phases, "Mapgen: 10 reselect biomes [ms]");
 	updateHeightmap(node_min, node_max);
 	if (flags & MG_BIOMES)
 		reselectBiomes();
+	timer_reselect.finish();
 #endif
 
 	// Generate the registered ores
-	if (flags & MG_ORES)
+	if (flags & MG_ORES) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 11 ores [ms]");
 		m_emerge->oremgr->placeAllOres(this, blockseed, node_min, node_max);
+	}
 
 	// Dungeon creation
-	if (flags & MG_DUNGEONS)
+	if (flags & MG_DUNGEONS) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 12 dungeons [ms]");
 		generateDungeons(stone_surface_max_y);
+	}
 
 	// Generate the registered decorations
-	if (flags & MG_DECORATIONS)
+	if (flags & MG_DECORATIONS) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 13 decorations [ms]");
 		m_emerge->decomgr->placeAllDecos(this, blockseed, node_min, node_max);
+	}
 
 	// Sprinkle some dust on top after everything else was generated
-	if (flags & MG_BIOMES)
+	if (flags & MG_BIOMES) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 14 dust [ms]");
 		dustTopNodes();
+	}
 
+	MapgenPhaseTimer timer_liquid(profile_phases, "Mapgen: 15 liquid [ms]");
 	updateLiquid(&data->transforming_liquid, full_node_min, full_node_max);
+	timer_liquid.finish();
 
-	if (flags & MG_LIGHT)
+	if (flags & MG_LIGHT) {
+		MapgenPhaseTimer timer(profile_phases, "Mapgen: 16 light [ms]");
 		calcLighting(node_min - v3s16(0, 1, 0), node_max + v3s16(0, 1, 0),
 			full_node_min, full_node_max);
+	}
+
+#if IS_VOPI_ENGINE
+	// The counts of the biome generator and its sampler for this mapchunk
+	if (profile_phases)
+		m_bgen->profileChunk();
+#endif
 
 	this->generating = false;
 
@@ -1098,18 +1142,23 @@ int MapgenValleys::generateTerrain()
 	const s32 area_min_x = node_min.X - reach;
 	const s32 area_min_z = node_min.Z - reach;
 
+	MapgenPhaseTimer timer_noise_2d(profile_phases, "Terrain: 1 noise 2D [ms]");
 	noise_inter_valley_slope->noiseMap2D(area_min_x, area_min_z);
 	noise_rivers->noiseMap2D(area_min_x, area_min_z);
 	noise_terrain_height->noiseMap2D(area_min_x, area_min_z);
 	noise_valley_depth->noiseMap2D(area_min_x, area_min_z);
 	noise_valley_profile->noiseMap2D(area_min_x, area_min_z);
+	timer_noise_2d.finish();
 
+	MapgenPhaseTimer timer_fill(profile_phases, "Terrain: 2 fill noise 3D [ms]");
 	noise_inter_valley_fill->noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
+	timer_fill.finish();
 
 #if IS_VOPI_ENGINE
 	// Wetlands: the pool noise only once a column of the area holds one
 	const float *wetland_pools = nullptr;
 	if (noise_wetland_pools) {
+		MapgenPhaseTimer timer(profile_phases, "Terrain: 3 wetland noise [ms]");
 		for (s32 i = 0; i < area_x * area_z; i++) {
 			if (valleysWetlandWeight(column_params, noise_terrain_height->result[i],
 					noise_valley_depth->result[i]) > 0.0f) {
@@ -1121,6 +1170,7 @@ int MapgenValleys::generateTerrain()
 	}
 #endif
 
+	MapgenPhaseTimer timer_columns(profile_phases, "Terrain: 4 columns [ms]");
 	columns.resize((size_t)area_x * area_z);
 	for (s32 i = 0; i < area_x * area_z; i++)
 		terrainColumn(noise_inter_valley_slope->result[i],
@@ -1130,6 +1180,7 @@ int MapgenValleys::generateTerrain()
 			wetland_pools ? wetland_pools[i] : 0.0f,
 #endif
 			columns[i]);
+	timer_columns.finish();
 
 #if IS_VOPI_ENGINE
 	// Mountains: the 2D height and the feet now, the 3D noise once a column
@@ -1140,6 +1191,7 @@ int MapgenValleys::generateTerrain()
 	bool mountain_noise_ready = false;
 	bool feet_ready = false;
 	if (gen_mountains) {
+		MapgenPhaseTimer timer(profile_phases, "Terrain: 5 mountain height 2D [ms]");
 		noise_mountain_height->noiseMap2D(area_min_x, area_min_z);
 		// The feet matter only where the cap band, 'mountain_cap_height'
 		// above the ground, reaches into this mapchunk in some column of
@@ -1156,6 +1208,7 @@ int MapgenValleys::generateTerrain()
 			s_min < (float)(node_max.Y + 1);
 	}
 	if (feet_ready) {
+		MapgenPhaseTimer timer(profile_phases, "Terrain: 6 mountain feet [ms]");
 		// The foot of the body in every column of the area, then the
 		// strongest foot within reach of every column of the mapchunk,
 		// tapering with the distance so a cap is widest over its foot and
@@ -1198,6 +1251,11 @@ int MapgenValleys::generateTerrain()
 	const v3s32 &em = vm->m_area.getExtent();
 	s16 surface_max_y = -MAX_MAP_GENERATION_LIMIT;
 	u32 index_2d = 0;
+	// The column loop, and the climate of the columns within it
+	MapgenPhaseTimer timer_density(profile_phases, "Terrain: 8 density [ms]");
+#if IS_VOPI_ENGINE
+	u64 climate_us = 0;
+#endif
 
 	for (s16 z = node_min.Z; z <= node_max.Z; z++)
 	for (s16 x = node_min.X; x <= node_max.X; x++, index_2d++) {
@@ -1244,6 +1302,7 @@ int MapgenValleys::generateTerrain()
 			}
 		}
 		if (column_mountains && !mountain_noise_ready) {
+			MapgenPhaseTimer timer(profile_phases, "Terrain: 7 mountain noise 3D [ms]");
 			noise_mountain->noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
 			mountain_noise_ready = true;
 		}
@@ -1320,12 +1379,15 @@ int MapgenValleys::generateTerrain()
 		}
 
 #if IS_VOPI_ENGINE
+		const u64 climate_start = profile_phases ? porting::getTimeUs() : 0;
 		ValleysClimate climate;
 		if (!m_bgen->getEffectiveClimate(v2s16(x, z), climate))
 			throw InvalidNoiseParamsException("Cannot sample effective biome climate at (" +
 				std::to_string(x) + ", " + std::to_string(z) + ")");
 		m_bgen->heatmap[index_2d] = climate.heat;
 		m_bgen->humidmap[index_2d] = climate.humidity;
+		if (profile_phases)
+			climate_us += porting::getTimeUs() - climate_start;
 #else
 		// Optionally increase humidity around rivers
 		if (spflags & MGVALLEYS_HUMID_RIVERS) {
@@ -1361,6 +1423,11 @@ int MapgenValleys::generateTerrain()
 		}
 #endif
 	}
+	timer_density.finish();
+#if IS_VOPI_ENGINE
+	if (profile_phases)
+		g_profiler->avg("Terrain: 9 climate (in density) [ms]", (float)climate_us / 1000.0f);
+#endif
 
 	return surface_max_y;
 }
