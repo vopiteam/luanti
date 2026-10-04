@@ -1380,12 +1380,23 @@ int MapgenValleys::generateTerrain()
 
 #if IS_VOPI_ENGINE
 		const u64 climate_start = profile_phases ? porting::getTimeUs() : 0;
-		ValleysClimate climate;
-		if (!m_bgen->getEffectiveClimate(v2s16(x, z), climate))
+		// The maps hold the scalar raw climate of the column since the
+		// biome noise was calculated. The corrections, where their flags
+		// are on, need the column's bank and surface and go through the
+		// biome generator; without them the raw climate stands, checked
+		// as a query checks it before the selector takes it.
+		if (m_bgen->hasClimateCorrections()) {
+			ValleysClimate climate;
+			if (!m_bgen->getEffectiveClimate(v2s16(x, z), climate))
+				throw InvalidNoiseParamsException("Cannot sample effective biome climate at (" +
+					std::to_string(x) + ", " + std::to_string(z) + ")");
+			m_bgen->heatmap[index_2d] = climate.heat;
+			m_bgen->humidmap[index_2d] = climate.humidity;
+		} else if (!BiomeGenOriginal::isSelectableClimate(
+				m_bgen->heatmap[index_2d], m_bgen->humidmap[index_2d])) {
 			throw InvalidNoiseParamsException("Cannot sample effective biome climate at (" +
 				std::to_string(x) + ", " + std::to_string(z) + ")");
-		m_bgen->heatmap[index_2d] = climate.heat;
-		m_bgen->humidmap[index_2d] = climate.humidity;
+		}
 		if (profile_phases)
 			climate_us += porting::getTimeUs() - climate_start;
 #else

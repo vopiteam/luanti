@@ -230,19 +230,24 @@ void BiomeGenOriginal::calcBiomeNoise(v3s16 pmin)
 
 #if IS_VOPI_ENGINE
 	m_shift_map.clear();
-	if (hasShift()) {
-		// The displacement of every column of the chunk, once. Bulk noise
-		// cannot be read at a displaced point per column, so the maps take
-		// the scalar climate at the displaced points. The maps hold the
-		// raw climate of the chunk after this call whatever the mapgen,
-		// as without a shift: a mapgen with the effective climate reads
-		// them for the river depth before it fills them column by column.
-		m_shift_map.resize(m_csize.X * m_csize.Z);
+	if (hasShift() || m_valleys_climate) {
+		// The scalar climate of every column of the chunk, once: at the
+		// displaced point with a shift noise, at the column itself without
+		// one. Bulk noise cannot be read at a displaced point, and a mapgen
+		// with the effective climate selects and answers queries by the
+		// scalar noise, so its maps hold the scalar raw climate from here
+		// on and its terrain pass corrects them in place where its flags
+		// say, without reading the noise a second time.
+		const bool shift = hasShift();
+		if (shift)
+			m_shift_map.resize(m_csize.X * m_csize.Z);
 		for (s16 zr = 0; zr < m_csize.Z; zr++)
 		for (s16 xr = 0; xr < m_csize.X; xr++) {
 			const s32 i = zr * m_csize.X + xr;
-			const v2f at = displace(v2s16(pmin.X + xr, pmin.Z + zr));
-			m_shift_map[i] = at;
+			const v2s16 column(pmin.X + xr, pmin.Z + zr);
+			const v2f at = shift ? displace(column) : v2f(column.X, column.Y);
+			if (shift)
+				m_shift_map[i] = at;
 			noise_heat->result[i] = heatAt(at);
 			noise_humidity->result[i] = humidityAt(at);
 		}
@@ -585,6 +590,12 @@ static bool hasSafeBiomeSeed(float heat, float humidity)
 	return std::isfinite(low) && std::isfinite(high) &&
 		static_cast<double>(low) >= -0x1p63 &&
 		static_cast<double>(high) < 0x1p63;
+}
+
+bool BiomeGenOriginal::isSelectableClimate(float heat, float humidity)
+{
+	return std::isfinite(heat) && std::isfinite(humidity) &&
+		hasSafeBiomeSeed(heat, humidity);
 }
 
 bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out,

@@ -357,6 +357,13 @@ public:
 	bool getBiomeForm(v2s16 pos, BiomeTerrainForm &form) const;
 	void setValleysClimate(const MapgenValleysParams &params);
 	bool hasEffectiveClimate() const { return m_valleys_climate; }
+	// Whether the terrain pass has climate corrections to apply to the
+	// raw climate its maps hold
+	bool hasClimateCorrections() const { return m_climate_flags != 0; }
+	// Whether a climate is one the selector can take: finite, and within
+	// the range its seed conversion allows at every Y. A query checks it
+	// before answering and the terrain pass before keeping a column's.
+	static bool isSelectableClimate(float heat, float humidity);
 	bool getEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out) const;
 	// Climate-only consumers do not need column heights when corrections are off.
 	bool getEffectiveClimate(v2s16 pos, ValleysClimate &out) const;
