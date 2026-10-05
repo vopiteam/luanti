@@ -3023,15 +3023,19 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 	EmergeManager emerge(&server, &metrics);
 	emerge.ndef = &ndef;
 	BiomeGenOriginal source(&manager, &climate, v3s16(5 * MAP_BLOCKSIZE));
-	MapgenValleys mapgen(&params, new EmergeParams(&emerge, &source, &manager,
-		emerge.getOreManager(), emerge.getDecorationManager(),
-		emerge.getSchematicManager()));
-	auto sampler = createValleysBiomeTerrainSampler(params);
+	// Generate the stacks with a profile and compare every column with the
+	// sampler of the same profile; the sampler stays for the caller's checks
+	auto compare = [&](const MapgenValleysParams &profile, const char *label) {
+		MapgenValleysParams generated = profile;
+		MapgenValleys mapgen(&generated, new EmergeParams(&emerge, &source, &manager,
+			emerge.getOreManager(), emerge.getDecorationManager(),
+			emerge.getSchematicManager()));
+		auto sampler = createValleysBiomeTerrainSampler(profile);
 
 	// The two mapchunk columns of the profile fixtures, the cliff and
 	// the removed mountain cap, in mapblocks on the chunk grid, and a
 	// stack from the solid floor to above the highest body
-	const v3s16 chunk_blocks = params.chunksize;
+	const v3s16 chunk_blocks = profile.chunksize;
 	const s16 side = chunk_blocks.X * MAP_BLOCKSIZE;
 	const v2s16 stacks[] = {v2s16(38, -102), v2s16(43, -102)};
 	const s16 lowest_block = -7;
@@ -3045,7 +3049,7 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 			BlockMakeData data;
 			data.blockpos_min = v3s16(stack.X, block_y, stack.Y);
 			data.blockpos_max = data.blockpos_min + chunk_blocks - v3s16(1);
-			data.seed = params.seed;
+			data.seed = profile.seed;
 			data.nodedef = &ndef;
 			const v3s16 node_min = data.blockpos_min * MAP_BLOCKSIZE;
 			const v3s16 node_max = (data.blockpos_max + v3s16(1)) * MAP_BLOCKSIZE - v3s16(1);
@@ -3073,11 +3077,11 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 			const float modeled = sampler->sampleHeight(pos);
 			const s16 generated = top[(size_t)z * side + x];
 			UASSERT(std::isfinite(modeled) && modeled < ceiling);
-			UASSERT(generated >= params.floor_y);
+			UASSERT(generated >= profile.floor_y);
 			++columns;
 			if (modeled != static_cast<float>(generated)) {
 				if (mismatches < 8)
-					errorstream << "Valleys surface model: column " << pos
+					errorstream << "Valleys surface model (" << label << "): column " << pos
 						<< " modeled " << modeled << ", generated "
 						<< generated << std::endl;
 				++mismatches;
@@ -3086,10 +3090,42 @@ void TestMapgen::testValleysSurfaceModel(IGameDef *gamedef)
 	}
 	UASSERTEQ(size_t, columns, 2 * (size_t)side * side);
 	UASSERTEQ(size_t, mismatches, 0);
+		return sampler;
+	};
+	auto sampler = compare(params, "profile");
 	// The fixtures of testBiomeTerrainProfile lie in these stacks, the
 	// cliff and the removed cap: the area compared is not a flat one
 	UASSERTEQ(float, sampler->sampleHeight(v2s16(680, -1584)), 24.0f);
 	UASSERTEQ(float, sampler->sampleHeight(v2s16(744, -1584)), 104.0f);
+
+	// With the river bank relief the bank surface moves half a node up and
+	// the lowered ground takes its relief from the slope the column model
+	// raises, which the sampler has to raise the same way, bank by bank
+	MapgenValleysParams rippled = params;
+	rippled.river_bank_height = 1;
+	rippled.river_bank_relief = 1.0f;
+	rippled.river_valley_width = 0.3f;
+	auto rippled_sampler = compare(rippled, "bank relief");
+	// The stacks hold lowered banks for the comparison to mean anything:
+	// ground at the bank, two nodes over the water at most where the land
+	// around stands tens of nodes up, and some of it rippled down to the
+	// water line
+	size_t banked = 0, at_water = 0;
+	const s16 side = params.chunksize.X * MAP_BLOCKSIZE;
+	const v2s16 stacks[] = {v2s16(38, -102), v2s16(43, -102)};
+	for (s16 z = 0; z < side; ++z)
+	for (s16 x = 0; x < side; ++x)
+	for (const auto &stack : stacks) {
+		const float height = rippled_sampler->sampleHeight(
+			v2s16(stack.X * MAP_BLOCKSIZE + x, stack.Y * MAP_BLOCKSIZE + z));
+		if (height >= 0.0f && height <= 2.0f)
+			++banked;
+		if (height == 0.0f)
+			++at_water;
+	}
+	// 816 and 21 on this seed
+	UASSERT(banked >= 100);
+	UASSERT(at_water >= 1);
 }
 
 void TestMapgen::testValleysFloaterBiomes(IGameDef *gamedef)

@@ -533,7 +533,7 @@ For Valleys, the result contains:
 | `heat`, `humidity` | Effective climate after the configured Valleys corrections. |
 | `raw_heat`, `raw_humidity` | Scalar climate noise before those corrections. |
 | `climate_reference_height` | Canonical height used by the climate corrections. |
-| `river_bank_height` | Modeled river-bank level, in absolute node coordinates. |
+| `river_bank_height` | Modeled river-bank level, in absolute node coordinates: the bank surface, which `mgvalleys_river_bank_relief` puts half a node over the bank's top node. |
 | `base` | Region level before the river-bank clamp, in nodes. |
 | `valley_depth` | Valley depth amplitude, in nodes. |
 | `variant` | The variant axis at the column, `mg_biome_np_variant`. |
