@@ -11,6 +11,7 @@
 #include "profiler.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_set>
 #include <vector>
 
@@ -159,6 +160,7 @@ public:
 
 	float sampleHeight(v2s16 pos) const override;
 	bool sampleClimate(v2s16 pos, BiomeClimateContext &out) const override;
+	bool sampleClimateHeights(v2s16 pos, BiomeClimateContext &out) const override;
 
 	void beginChunk() override
 	{
@@ -200,6 +202,7 @@ private:
 	};
 	enum Voxel : u8 { AIR, SOLID, KEPT, REMOVED };
 	float modelHeight(s32 x, s32 z) const;
+	bool sampleColumn(v2s16 pos, BiomeClimateContext &out, bool need_body) const;
 	Column columnAt(s32 x, s32 z) const;
 	TerrainChunk chunkAt(const TerrainPoint &point) const;
 	float densityUpperAt(const Column &column) const;
@@ -338,12 +341,14 @@ float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c,
 	if (noise)
 		m_profile_chunk_bodies++;
 	auto noise_at = [&](float y) -> float {
-		if (noise) {
+		// Compared as floats: a surface far outside the world is finite
+		// but not an s32
+		if (noise && y >= static_cast<float>(chunk->noise_min.Y) &&
+				y < static_cast<float>(chunk->noise_min.Y + chunk->noise_size.Y)) {
 			const s32 yi = static_cast<s32>(y);
-			if (yi >= chunk->noise_min.Y && yi < chunk->noise_min.Y + chunk->noise_size.Y)
-				return noise[((size_t)(z - chunk->noise_min.Z) * chunk->noise_size.Y +
-					(yi - chunk->noise_min.Y)) * chunk->noise_size.X +
-					(x - chunk->noise_min.X)];
+			return noise[((size_t)(z - chunk->noise_min.Z) * chunk->noise_size.Y +
+				(yi - chunk->noise_min.Y)) * chunk->noise_size.X +
+				(x - chunk->noise_min.X)];
 		}
 		return NoiseFractal3D(&p.mountain, x, y, z, p.seed);
 	};
@@ -650,6 +655,26 @@ void ValleysBiomeTerrainSampler::markVoxel(const TerrainPoint &point, Voxel mark
 bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 		BiomeClimateContext &out) const
 {
+	return sampleColumn(pos, out, true);
+}
+
+bool ValleysBiomeTerrainSampler::sampleClimateHeights(v2s16 pos,
+		BiomeClimateContext &out) const
+{
+	return sampleColumn(pos, out, false);
+}
+
+// The context of a column: the bank, the surface and the form, with the
+// body of the form when it is asked for. The body waits until then: NaN in
+// the cache marks one still to model, 0 one that cannot rise. Inside the
+// lent mapchunk a body comes from the mapchunk's own noise, for this
+// mapchunk alone and whatever the cache holds from a query in between, so
+// what a mapchunk selects is a function of the mapchunk; outside it, from
+// the scalar noise, once, kept with the column. A body that is not finite
+// is not kept, and the column is refused.
+bool ValleysBiomeTerrainSampler::sampleColumn(v2s16 pos, BiomeClimateContext &out,
+		bool need_body) const
+{
 	u64 key = columnKey(pos.X, pos.Y);
 	auto found = m_climates.find(key);
 	if (found == m_climates.end()) {
@@ -661,12 +686,9 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 				!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
 				!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
 			return false;
-		// The body waits until it is asked for: NaN marks one to model from
-		// the scalar noise, which a column inside a lent mapchunk may never
-		// need; 0 where no body can rise
+		const bool body_capable = c.mountain_gate > 0.0f && c.mountain_height > 0.0f;
 		BiomeTerrainForm form = c.form;
-		form.body = (c.mountain_gate > 0.0f && c.mountain_height > 0.0f) ?
-			std::numeric_limits<float>::quiet_NaN() : 0.0f;
+		form.body = body_capable ? std::numeric_limits<float>::quiet_NaN() : 0.0f;
 
 		// Clamp before conversion, preserving truncation toward zero even for
 		// negative fractional surfaces. The 2D surface is the climate height:
@@ -675,7 +697,7 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 		const float low = -MAX_MAP_GENERATION_LIMIT;
 		const float high = MAX_MAP_GENERATION_LIMIT;
 		BiomeClimateContext context{c.bank,
-			static_cast<s16>(std::clamp(c.surface, low, high)), form};
+			static_cast<s16>(std::clamp(c.surface, low, high)), form, body_capable};
 
 		if (m_climates.size() >= CLIMATE_CACHE_LIMIT)
 			m_climates.clear();
@@ -683,22 +705,27 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 	}
 
 	out = found->second;
-	if (std::isnan(out.form.body)) {
-		if (insideChunk(pos.X, pos.Y)) {
-			// From the lent mapchunk, for this mapchunk alone
-			auto body = m_chunk_bodies.find(key);
-			if (body == m_chunk_bodies.end())
-				body = m_chunk_bodies.emplace(key, bodyHeightAt(pos.X, pos.Y,
-					columnAt(pos.X, pos.Y), m_chunk)).first;
-			out.form.body = body->second;
-		} else {
-			// From the scalar noise, kept with the column
-			found->second.form.body = bodyHeightAt(pos.X, pos.Y,
-				columnAt(pos.X, pos.Y), nullptr);
-			out.form.body = found->second.form.body;
+	if (!need_body || !found->second.body_capable)
+		return true;
+	if (insideChunk(pos.X, pos.Y)) {
+		auto body = m_chunk_bodies.find(key);
+		if (body == m_chunk_bodies.end()) {
+			const float modeled = bodyHeightAt(pos.X, pos.Y,
+				columnAt(pos.X, pos.Y), m_chunk);
+			if (!std::isfinite(modeled))
+				return false;
+			body = m_chunk_bodies.emplace(key, modeled).first;
 		}
-		if (!std::isfinite(out.form.body))
-			return false;
+		out.form.body = body->second;
+	} else {
+		if (std::isnan(found->second.form.body)) {
+			const float modeled = bodyHeightAt(pos.X, pos.Y,
+				columnAt(pos.X, pos.Y), nullptr);
+			if (!std::isfinite(modeled))
+				return false;
+			found->second.form.body = modeled;
+		}
+		out.form.body = found->second.form.body;
 	}
 	return true;
 }
@@ -754,7 +781,7 @@ void ValleysBiomeTerrainSampler::profileChunk() const
 	g_profiler->avg("Sampler: cap row misses [#]", m_profile_cap_rows);
 	g_profiler->avg("Sampler: cap misses [#]", m_profile_caps);
 	g_profiler->avg("Sampler: bodies modeled [#]", m_profile_bodies);
-	g_profiler->avg("Sampler: bodies from the lent chunk [#]", m_profile_chunk_bodies);
+	g_profiler->avg("Sampler: bodies with a lent chunk [#]", m_profile_chunk_bodies);
 	g_profiler->avg("Sampler: climate misses [#]", m_profile_climates);
 	g_profiler->avg("Sampler: heights modeled [#]", m_profile_heights);
 	g_profiler->avg("Sampler: columns cached [#]", m_columns.size());

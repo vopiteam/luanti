@@ -51,6 +51,7 @@ public:
 	void testBiomeTerrainProfile();
 	void testBiomeTerrainFloaterSeeds();
 	void testValleysSurfaceModel(IGameDef *gamedef);
+	void testValleysLentChunkBodies();
 	void testValleysClimateParams();
 	void testValleysClimateCorrections();
 	void testValleysClimateContext();
@@ -98,6 +99,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testBiomeTerrainProfile);
 	TEST(testBiomeTerrainFloaterSeeds);
 	TEST(testValleysSurfaceModel, gamedef);
+	TEST(testValleysLentChunkBodies);
 	TEST(testValleysClimateParams);
 	TEST(testValleysClimateCorrections);
 	TEST(testValleysClimateContext);
@@ -269,6 +271,17 @@ public:
 		++climate_calls;
 		return m_sampler->sampleClimate(pos, out);
 	}
+
+	bool sampleClimateHeights(v2s16 pos, BiomeClimateContext &out) const override
+	{
+		++climate_calls;
+		return m_sampler->sampleClimateHeights(pos, out);
+	}
+
+	void beginChunk() override { m_sampler->beginChunk(); }
+	void setChunk(const BiomeTerrainChunk *chunk) override { m_sampler->setChunk(chunk); }
+	void resetProfile() const override { m_sampler->resetProfile(); }
+	void profileChunk() const override { m_sampler->profileChunk(); }
 
 	mutable unsigned int climate_calls = 0;
 
@@ -1041,6 +1054,16 @@ void TestMapgen::testEffectiveClimateContextDemand()
 		UASSERT(generator.getEffectiveBiomeData(v3s16(0), query));
 		UASSERTEQ(unsigned int, counted->climate_calls, generation_calls + 2);
 		UASSERTEQ(float, query.climate_reference_height, full.climate_reference_height);
+
+		// The terrain pass corrects the raw climate of its maps in place,
+		// asking the sampler for the bank and the surface alone, once with
+		// a correction on and never without, and lands on the query's climate
+		float heat = generator.calcHeatAtPoint(v3s16(0));
+		float humidity = generator.calcHumidityAtPoint(v3s16(0));
+		UASSERT(generator.correctClimateAt(v2s16(0), heat, humidity));
+		UASSERTEQ(unsigned int, counted->climate_calls, generation_calls * 2 + 2);
+		UASSERTEQ(float, heat, generated.heat);
+		UASSERTEQ(float, humidity, generated.humidity);
 	}
 }
 
@@ -3422,6 +3445,91 @@ void TestMapgen::testDecorationBiomeAtSurface(IGameDef *gamedef)
 				UASSERTEQ(content_t, node_at(water_level + 2), CONTENT_AIR);
 			}
 		}
+	}
+}
+
+void TestMapgen::testValleysLentChunkBodies()
+{
+	// Inside a lent mapchunk the sampler models a column's body from the
+	// mapchunk's bulk mountain noise, outside it and without a loan from
+	// the scalar noise. The two differ by the rounding of bulk noise alone,
+	// so the bodies agree on nearly every column; a wrong origin or stride
+	// of the buffer would give other bodies throughout. The mapchunks are
+	// cubic and not, as the engine allows.
+	MapgenValleysParams params;
+	params.seed = 14413353056704472440ULL;
+	params.spflags = MGVALLEYS_MOUNTAINS | MGVALLEYS_SEA_LEVEL_RIVERS;
+	params.water_level = 0;
+	params.river_size = 14;
+	params.river_depth = 6;
+	params.river_valley_width = 0.5f;
+	params.np_inter_valley_fill = {0, 1, v3f(256, 512, 256), 1993, 6, 0.55f, 2};
+	params.np_inter_valley_slope = {0.25f, 0.15f, v3f(128), 746, 1, 1, 2};
+	params.np_rivers = {0, 1, v3f(256), -6050, 5, 0.6f, 2};
+	params.np_terrain_height = {6, 50, v3f(1024), 5202, 6, 0.4f, 2};
+	params.np_valley_depth = {2.6f, 2, v3f(512), -1914, 1, 1, 2};
+	params.np_valley_profile = {1.5f, 0.5f, v3f(512), 777, 1, 1, 2};
+	params.np_mountain = {-0.55f, 1, v3f(192, 256, 192), 3517, 5, 0.7f, 2};
+	params.np_mountain_height = {-30, 280, v3f(800), 4021, 3, 0.6f, 2};
+	const s32 seed = static_cast<s32>(params.seed);
+
+	for (const v3s16 &chunksize : {v3s16(5), v3s16(4, 2, 6)}) {
+		params.chunksize = chunksize;
+		auto sampler = createValleysBiomeTerrainSampler(params);
+		const v3s16 csize = chunksize * MAP_BLOCKSIZE;
+		size_t columns = 0, with_body = 0, differing = 0;
+
+		// The mapchunks of the surface model fixtures, the cliff and the
+		// cap, with the bulk noise over each as the generator computes it,
+		// a node of overgeneration above and below
+		for (const v3s16 &blockpos : {v3s16(38, -2, -102), v3s16(38, 3, -102),
+				v3s16(43, 3, -102)}) {
+			const v3s16 node_min = blockpos * MAP_BLOCKSIZE;
+			Noise noise(&params.np_mountain, seed, csize.X, csize.Y + 2, csize.Z);
+			noise.noiseMap3D(node_min.X, node_min.Y - 1, node_min.Z);
+			BiomeTerrainChunk chunk;
+			chunk.noise_min = v3s16(node_min.X, node_min.Y - 1, node_min.Z);
+			chunk.noise_size = v3s16(csize.X, csize.Y + 2, csize.Z);
+			chunk.mountain_noise = noise.result;
+			chunk.chunk_min = v2s16(node_min.X, node_min.Z);
+			chunk.chunk_size = v2s16(csize.X, csize.Z);
+
+			for (s16 z = node_min.Z; z < node_min.Z + csize.Z; z += 4)
+			for (s16 x = node_min.X; x < node_min.X + csize.X; x += 4) {
+				const v2s16 pos(x, z);
+				sampler->setChunk(&chunk);
+				BiomeClimateContext lent;
+				UASSERT(sampler->sampleClimate(pos, lent));
+				sampler->setChunk(nullptr);
+				BiomeClimateContext scalar;
+				UASSERT(sampler->sampleClimate(pos, scalar));
+				// Without a loan the column answers as a query does, every time
+				BiomeClimateContext again;
+				UASSERT(sampler->sampleClimate(pos, again));
+				UASSERTEQ(float, again.form.body, scalar.form.body);
+				columns++;
+				if (scalar.form.body > 0.0f || lent.form.body > 0.0f)
+					with_body++;
+				if (std::fabs(lent.form.body - scalar.form.body) > 1.0e-3f)
+					differing++;
+			}
+
+			// A column outside the lent mapchunk reads the scalar noise,
+			// loan or not
+			sampler->setChunk(&chunk);
+			const v2s16 outside(node_min.X - 1, node_min.Z);
+			BiomeClimateContext lent_outside, scalar_outside;
+			UASSERT(sampler->sampleClimate(outside, lent_outside));
+			sampler->setChunk(nullptr);
+			UASSERT(sampler->sampleClimate(outside, scalar_outside));
+			UASSERTEQ(float, lent_outside.form.body, scalar_outside.form.body);
+		}
+		// The fixtures stand in mountains: bodies on a fair number of the
+		// columns, and the two models agree on all but a few of them, where
+		// a sampled density crosses zero within the rounding of bulk noise
+		UASSERT(columns > 0);
+		UASSERT(with_body >= 20);
+		UASSERT(differing * 10 <= with_body);
 	}
 }
 

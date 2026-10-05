@@ -604,13 +604,31 @@ bool BiomeGenOriginal::isSelectableClimate(float heat, float humidity)
 		hasSafeBiomeSeed(heat, humidity);
 }
 
+bool BiomeGenOriginal::correctClimateAt(v2s16 pos, float &heat, float &humidity) const
+{
+	if (m_climate_flags) {
+		if (!m_terrain_sampler)
+			return false;
+		BiomeClimateContext context{};
+		if (!m_terrain_sampler->sampleClimateHeights(pos, context))
+			return false;
+		const auto climate = calcValleysClimate(heat, humidity,
+			context.river_bank_height, context.column_max_y, m_climate_water_level,
+			m_climate_altitude_chill, m_climate_flags);
+		heat = climate.heat;
+		humidity = climate.humidity;
+	}
+	return isSelectableClimate(heat, humidity);
+}
+
 bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out,
 		bool include_context) const
 {
 	if (!hasEffectiveClimate() || !m_terrain_sampler)
 		return false;
-	// Both generation and queries use scalar noise at the exact same X/Z.
-	// Bulk noise has different rounding; it remains the legacy/river-depth input.
+	// A query reads the scalar noise at the exact X/Z, the same values the
+	// maps of a generation hold; the terrain pass corrects those in place
+	// through correctClimateAt and does not come here.
 	const v2f at = shiftedColumn(pos);
 	EffectiveBiomeClimate result{};
 	result.raw_heat = heatAt(at);
@@ -620,10 +638,16 @@ bool BiomeGenOriginal::sampleEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &
 	// The bank, the surface and the form are the column's own: the
 	// corrections, the reference height and the relief describe the
 	// place, not the displaced point.
+	// The whole form, body included, for a full query; the corrections
+	// alone need the bank and the surface
 	BiomeClimateContext context{};
-	if ((include_context || m_climate_flags) &&
-			!m_terrain_sampler->sampleClimate(pos, context))
+	if (include_context) {
+		if (!m_terrain_sampler->sampleClimate(pos, context))
+			return false;
+	} else if (m_climate_flags &&
+			!m_terrain_sampler->sampleClimateHeights(pos, context)) {
 		return false;
+	}
 	result.river_bank_height = context.river_bank_height;
 	result.climate_reference_height = std::fmax(context.river_bank_height,
 		static_cast<float>(context.column_max_y));

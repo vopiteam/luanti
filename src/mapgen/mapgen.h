@@ -11,6 +11,7 @@
 #include "nodedef.h"
 #include "util/string.h"
 #include "util/container.h"
+#include "util/basic_macros.h"
 #include <utility>
 #include <set>
 

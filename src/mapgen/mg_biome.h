@@ -367,6 +367,12 @@ public:
 	// the range its seed conversion allows at every Y. A query checks it
 	// before answering and the terrain pass before keeping a column's.
 	static bool isSelectableClimate(float heat, float humidity);
+	// The climate of a column as the selector takes it, from the raw
+	// climate the maps hold, corrected in place where the mapgen's flags
+	// say from the column's bank and surface: the terrain pass's path,
+	// which reads no noise a second time. False for a climate the selector
+	// cannot take.
+	bool correctClimateAt(v2s16 pos, float &heat, float &humidity) const;
 	bool getEffectiveClimate(v2s16 pos, EffectiveBiomeClimate &out) const;
 	// Climate-only consumers do not need column heights when corrections are off.
 	bool getEffectiveClimate(v2s16 pos, ValleysClimate &out) const;

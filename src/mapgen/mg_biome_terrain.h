@@ -41,6 +41,10 @@ struct BiomeClimateContext {
 	float river_bank_height = 0.0f;
 	s16 column_max_y = 0;
 	BiomeTerrainForm form;
+	// Whether a mountain body can rise on the column at all. Where it can,
+	// the body of the form is modeled when it is asked for, and NaN until
+	// then; where it cannot, the body is 0.
+	bool body_capable = false;
 };
 
 // What a generator has of the mapchunk it is generating, lent to the
@@ -79,6 +83,13 @@ public:
 	// Returns false when this sampler has no column model or its context
 	// cannot be calculated. This does not model the 3D surface.
 	virtual bool sampleClimate(v2s16, BiomeClimateContext &) const { return false; }
+	// The same context without the body of the form, which is left as the
+	// sampler holds it and is not to be read: what the climate corrections
+	// need of a column, the bank and the surface, which never costs the body.
+	virtual bool sampleClimateHeights(v2s16 pos, BiomeClimateContext &out) const
+	{
+		return sampleClimate(pos, out);
+	}
 	// Called once before a mapchunk is generated. A sampler may make room so
 	// that every column of the chunk stays cached from terrain to biomes.
 	virtual void beginChunk() {}
