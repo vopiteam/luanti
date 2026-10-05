@@ -8,6 +8,7 @@
 #if IS_VOPI_ENGINE
 
 #include "irr_v2d.h"
+#include "irr_v3d.h"
 #include <memory>
 
 struct MapgenValleysParams;
@@ -42,6 +43,26 @@ struct BiomeClimateContext {
 	BiomeTerrainForm form;
 };
 
+// What a generator has of the mapchunk it is generating, lent to the
+// sampler for the bodies of the columns inside it: the bulk 3D mountain
+// noise over the mapchunk with its node of overgeneration, and the
+// strongest tapered foot within reach of every column, the one the cap
+// hangs from. The sampler would read the same points from the scalar
+// noise, which the bulk noise matches to its rounding; a sample above the
+// buffer, a column outside the mapchunk or a mapchunk without the noise
+// still reads the scalar noise. Lent after the terrain pass and taken back
+// when the mapchunk is done, so a query reads the scalar noise alone, and
+// a body modeled from a loan is kept for that mapchunk only, so what a
+// mapchunk selects does not depend on the mapchunks generated before it.
+struct BiomeTerrainChunk {
+	v3s16 noise_min;
+	v3s16 noise_size;
+	const float *mountain_noise = nullptr;
+	v2s16 chunk_min;
+	v2s16 chunk_size;
+	const float *foot = nullptr;
+};
+
 // Like BiomeGen, a sampler with caches belongs to one thread. A clone has the
 // same immutable terrain parameters and starts with empty caches. Every cached
 // value is a function of the parameters and the world position alone, so the
@@ -66,6 +87,9 @@ public:
 	// mapchunks they keep counting and mean nothing.
 	virtual void resetProfile() const {}
 	virtual void profileChunk() const {}
+	// The mapchunk a generator is generating, lent for the bodies of its
+	// columns, and taken back with nullptr.
+	virtual void setChunk(const BiomeTerrainChunk *) {}
 };
 
 std::unique_ptr<BiomeTerrainSampler> createValleysBiomeTerrainSampler(

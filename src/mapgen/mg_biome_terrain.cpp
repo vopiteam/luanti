@@ -178,6 +178,7 @@ public:
 
 	void resetProfile() const override;
 	void profileChunk() const override;
+	void setChunk(const BiomeTerrainChunk *chunk) override;
 
 private:
 	explicit ValleysBiomeTerrainSampler(const ValleysTerrainParams &params) :
@@ -215,8 +216,20 @@ private:
 	float capRowAt(s32 x, s32 z) const;
 	float capAt(s32 x, s32 z) const;
 	float capLift(float delta, float foot) const;
-	float bodyHeightAt(s32 x, s32 z, const Column &column) const;
+	float bodyHeightAt(s32 x, s32 z, const Column &column,
+		const BiomeTerrainChunk *chunk) const;
+	bool insideChunk(s32 x, s32 z) const
+	{
+		return m_chunk && x >= m_chunk->chunk_min.X &&
+			x < m_chunk->chunk_min.X + m_chunk->chunk_size.X &&
+			z >= m_chunk->chunk_min.Y &&
+			z < m_chunk->chunk_min.Y + m_chunk->chunk_size.Y;
+	}
 	const ValleysTerrainParams m_params;
+	// The mapchunk lent by the generator, and the bodies modeled from it,
+	// kept for this mapchunk alone
+	const BiomeTerrainChunk *m_chunk = nullptr;
+	mutable std::unordered_map<u64, float> m_chunk_bodies;
 	mutable std::unordered_map<u64, float> m_heights;
 	mutable std::unordered_map<u64, Column> m_columns;
 	mutable std::unordered_map<u64, float> m_caps;
@@ -230,6 +243,7 @@ private:
 	mutable u32 m_profile_cap_rows = 0;
 	mutable u32 m_profile_caps = 0;
 	mutable u32 m_profile_bodies = 0;
+	mutable u32 m_profile_chunk_bodies = 0;
 	mutable u32 m_profile_climates = 0;
 	mutable u32 m_profile_heights = 0;
 };
@@ -296,21 +310,47 @@ float ValleysBiomeTerrainSampler::capLift(float delta, float foot) const
 // a body spreads over its feet counts; the fill relief does not. Costs
 // the columns of the neighbourhood once per chunk, as the generator's
 // feet do.
-float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c) const
+// With a lent mapchunk the column must lie inside it (insideChunk).
+float ValleysBiomeTerrainSampler::bodyHeightAt(s32 x, s32 z, const Column &c,
+		const BiomeTerrainChunk *chunk) const
 {
 	m_profile_bodies++;
 	const auto &p = m_params;
-	const float foot = p.mountain_cap != 0.0f ? capAt(x, z) : 0.0f;
+	// The foot the cap hangs from: the generator's, where the mapchunk
+	// lends its feet; the strongest tapered foot of the scalar
+	// neighbourhood otherwise
+	float foot = 0.0f;
+	if (p.mountain_cap != 0.0f) {
+		if (chunk && chunk->foot)
+			foot = chunk->foot[(size_t)(z - chunk->chunk_min.Y) * chunk->chunk_size.X +
+				(x - chunk->chunk_min.X)];
+		else
+			foot = capAt(x, z);
+	}
 	const float reach = std::fmax(
 		p.mountain_noise_max * c.mountain_gate * c.mountain_height,
 		foot > 0.0f ? p.mountain_cap_height : 0.0f);
 	if (!(reach > 0.0f))
 		return 0.0f;
+	// The 3D noise at a node of the column: from the lent buffer where
+	// the node lies in it, from the scalar noise above and below it
+	const float *noise = chunk ? chunk->mountain_noise : nullptr;
+	if (noise)
+		m_profile_chunk_bodies++;
+	auto noise_at = [&](float y) -> float {
+		if (noise) {
+			const s32 yi = static_cast<s32>(y);
+			if (yi >= chunk->noise_min.Y && yi < chunk->noise_min.Y + chunk->noise_size.Y)
+				return noise[((size_t)(z - chunk->noise_min.Z) * chunk->noise_size.Y +
+					(yi - chunk->noise_min.Y)) * chunk->noise_size.X +
+					(x - chunk->noise_min.X)];
+		}
+		return NoiseFractal3D(&p.mountain, x, y, z, p.seed);
+	};
 	auto density = [&](float delta) {
 		const float y = std::floor(c.surface + delta + 0.5f);
 		const float node_delta = y - c.surface;
-		return (NoiseFractal3D(&p.mountain, x, y, z, p.seed) +
-			capLift(node_delta, foot)) * c.mountain_gate -
+		return (noise_at(y) + capLift(node_delta, foot)) * c.mountain_gate -
 			node_delta / c.mountain_height;
 	};
 	constexpr int STEPS = 8;
@@ -612,38 +652,61 @@ bool ValleysBiomeTerrainSampler::sampleClimate(v2s16 pos,
 {
 	u64 key = columnKey(pos.X, pos.Y);
 	auto found = m_climates.find(key);
-	if (found != m_climates.end()) {
-		out = found->second;
-		return true;
+	if (found == m_climates.end()) {
+		m_profile_climates++;
+
+		trimColumnCaches();
+		const Column c = columnAt(pos.X, pos.Y);
+		if (!std::isfinite(c.surface) || !std::isfinite(c.bank) ||
+				!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
+				!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
+			return false;
+		// The body waits until it is asked for: NaN marks one to model from
+		// the scalar noise, which a column inside a lent mapchunk may never
+		// need; 0 where no body can rise
+		BiomeTerrainForm form = c.form;
+		form.body = (c.mountain_gate > 0.0f && c.mountain_height > 0.0f) ?
+			std::numeric_limits<float>::quiet_NaN() : 0.0f;
+
+		// Clamp before conversion, preserving truncation toward zero even for
+		// negative fractional surfaces. The 2D surface is the climate height:
+		// 3D relief and mountain bodies above it do not cool the column, and
+		// the form fields carry where the column sits instead.
+		const float low = -MAX_MAP_GENERATION_LIMIT;
+		const float high = MAX_MAP_GENERATION_LIMIT;
+		BiomeClimateContext context{c.bank,
+			static_cast<s16>(std::clamp(c.surface, low, high)), form};
+
+		if (m_climates.size() >= CLIMATE_CACHE_LIMIT)
+			m_climates.clear();
+		found = m_climates.emplace(key, context).first;
 	}
-	m_profile_climates++;
 
-	trimColumnCaches();
-	const Column c = columnAt(pos.X, pos.Y);
-	if (!std::isfinite(c.surface) || !std::isfinite(c.bank) ||
-			!std::isfinite(c.form.base) || !std::isfinite(c.form.valley_depth) ||
-			!std::isfinite(c.form.valley_pos) || !std::isfinite(c.form.mountain))
-		return false;
-	BiomeTerrainForm form = c.form;
-	if (c.mountain_gate > 0.0f && c.mountain_height > 0.0f)
-		form.body = bodyHeightAt(pos.X, pos.Y, c);
-	if (!std::isfinite(form.body))
-		return false;
-
-	// Clamp before conversion, preserving truncation toward zero even for
-	// negative fractional surfaces. The 2D surface is the climate height:
-	// 3D relief and mountain bodies above it do not cool the column, and
-	// the form fields carry where the column sits instead.
-	const float low = -MAX_MAP_GENERATION_LIMIT;
-	const float high = MAX_MAP_GENERATION_LIMIT;
-	BiomeClimateContext context{c.bank,
-		static_cast<s16>(std::clamp(c.surface, low, high)), form};
-
-	if (m_climates.size() >= CLIMATE_CACHE_LIMIT)
-		m_climates.clear();
-	m_climates.emplace(key, context);
-	out = context;
+	out = found->second;
+	if (std::isnan(out.form.body)) {
+		if (insideChunk(pos.X, pos.Y)) {
+			// From the lent mapchunk, for this mapchunk alone
+			auto body = m_chunk_bodies.find(key);
+			if (body == m_chunk_bodies.end())
+				body = m_chunk_bodies.emplace(key, bodyHeightAt(pos.X, pos.Y,
+					columnAt(pos.X, pos.Y), m_chunk)).first;
+			out.form.body = body->second;
+		} else {
+			// From the scalar noise, kept with the column
+			found->second.form.body = bodyHeightAt(pos.X, pos.Y,
+				columnAt(pos.X, pos.Y), nullptr);
+			out.form.body = found->second.form.body;
+		}
+		if (!std::isfinite(out.form.body))
+			return false;
+	}
 	return true;
+}
+
+void ValleysBiomeTerrainSampler::setChunk(const BiomeTerrainChunk *chunk)
+{
+	m_chunk = chunk;
+	m_chunk_bodies.clear();
 }
 
 float ValleysBiomeTerrainSampler::modelHeight(s32 x, s32 z) const
@@ -680,6 +743,7 @@ void ValleysBiomeTerrainSampler::resetProfile() const
 	m_profile_cap_rows = 0;
 	m_profile_caps = 0;
 	m_profile_bodies = 0;
+	m_profile_chunk_bodies = 0;
 	m_profile_climates = 0;
 	m_profile_heights = 0;
 }
@@ -690,6 +754,7 @@ void ValleysBiomeTerrainSampler::profileChunk() const
 	g_profiler->avg("Sampler: cap row misses [#]", m_profile_cap_rows);
 	g_profiler->avg("Sampler: cap misses [#]", m_profile_caps);
 	g_profiler->avg("Sampler: bodies modeled [#]", m_profile_bodies);
+	g_profiler->avg("Sampler: bodies from the lent chunk [#]", m_profile_chunk_bodies);
 	g_profiler->avg("Sampler: climate misses [#]", m_profile_climates);
 	g_profiler->avg("Sampler: heights modeled [#]", m_profile_heights);
 	g_profiler->avg("Sampler: columns cached [#]", m_columns.size());

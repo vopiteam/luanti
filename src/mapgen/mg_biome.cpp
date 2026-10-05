@@ -569,6 +569,12 @@ void BiomeGenOriginal::setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sa
 	m_terrain_sampler = std::move(sampler);
 }
 
+void BiomeGenOriginal::setTerrainChunk(const BiomeTerrainChunk *chunk)
+{
+	if (m_terrain_sampler)
+		m_terrain_sampler->setChunk(chunk);
+}
+
 void BiomeGenOriginal::setValleysClimate(const MapgenValleysParams &params)
 {
 	// Reconfiguration must never keep a context from different terrain params.

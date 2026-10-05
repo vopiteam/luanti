@@ -420,6 +420,25 @@ void MapgenValleys::makeChunk(BlockMakeData *data)
 	s16 stone_surface_max_y = generateTerrain();
 	timer_terrain.finish();
 
+#if IS_VOPI_ENGINE
+	// The biome selection of this mapchunk models the bodies of its
+	// columns from what the terrain pass computed, the bulk mountain
+	// noise and the feet, as far as they reach; taken back when the
+	// mapchunk is done, however it ends
+	BiomeTerrainChunk lent_chunk;
+	lent_chunk.noise_min = v3s16(node_min.X, node_min.Y - 1, node_min.Z);
+	lent_chunk.noise_size = v3s16(csize.X, csize.Y + 2, csize.Z);
+	lent_chunk.mountain_noise = mountain_noise_ready ? noise_mountain->result : nullptr;
+	lent_chunk.chunk_min = v2s16(node_min.X, node_min.Z);
+	lent_chunk.chunk_size = v2s16(csize.X, csize.Z);
+	lent_chunk.foot = feet_ready ? foot_dil.data() : nullptr;
+	struct ChunkLoan {
+		BiomeGenOriginal *bgen;
+		~ChunkLoan() { bgen->setTerrainChunk(nullptr); }
+	} chunk_loan{m_bgen};
+	m_bgen->setTerrainChunk(&lent_chunk);
+#endif
+
 	// Create heightmap
 	MapgenPhaseTimer timer_heightmap(profile_phases, "Mapgen: 03 heightmap [ms]");
 	updateHeightmap(node_min, node_max);
@@ -1188,8 +1207,8 @@ int MapgenValleys::generateTerrain()
 	// them skip it
 	const bool gen_mountains = (spflags & MGVALLEYS_MOUNTAINS) &&
 		mountain_noise_max > 0.0f;
-	bool mountain_noise_ready = false;
-	bool feet_ready = false;
+	mountain_noise_ready = false;
+	feet_ready = false;
 	if (gen_mountains) {
 		MapgenPhaseTimer timer(profile_phases, "Terrain: 5 mountain height 2D [ms]");
 		noise_mountain_height->noiseMap2D(area_min_x, area_min_z);

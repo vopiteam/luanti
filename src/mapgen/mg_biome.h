@@ -351,6 +351,9 @@ public:
 
 #if IS_VOPI_ENGINE
 	void setTerrainSampler(std::unique_ptr<BiomeTerrainSampler> sampler);
+	// The mapchunk the mapgen is generating, lent to the terrain sampler
+	// for the bodies of its columns; nullptr takes it back
+	void setTerrainChunk(const BiomeTerrainChunk *chunk);
 	// The modeled natural surface of a column, for queries; selection
 	// goes by the form and Y, never by this height.
 	bool getBiomeTerrainHeight(v2s16 pos, float &height) const;

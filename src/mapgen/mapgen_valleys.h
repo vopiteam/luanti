@@ -257,6 +257,10 @@ private:
 	std::vector<float> foot;
 	std::vector<float> foot_row;
 	std::vector<float> foot_dil;
+	// Whether the terrain pass computed the 3D mountain noise and the feet
+	// for the mapchunk at hand, which the biome selection then reads
+	bool mountain_noise_ready = false;
+	bool feet_ready = false;
 	float mountainGate(const Column &c) const;
 	float mountainFoot(s16 x, s16 z, const Column &c, float gate) const;
 	float spawnFoot(v2s16 p, const Column &c) const;
