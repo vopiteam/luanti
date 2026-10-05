@@ -795,6 +795,37 @@ void TestMapgen::testValleysBankRelief()
 	ValleysColumn low = calcValleysColumn(rippled, 0.5f, edge_n, 0.2f, 0.5f, 1.0f, 0.0f);
 	UASSERTEQ(float, low.surface_y, low_plain.surface_y);
 	UASSERTEQ(float, low.slope, low_plain.slope);
+	// Just over the bank the relief is what the clamp took, a quarter of a
+	// node here, so it grows in from the contour instead of starting in full
+	ValleysColumn contour = calcValleysColumn(rippled, 0.5f, edge_n, 0.75f, 1.0f, 1.0f, 0.0f);
+	UASSERTEQ(float, contour.region_level, 1.75f);
+	UASSERTEQ(float, contour.surface_y, 1.5f);
+	UASSERT(near(contour.slope, 0.25f / rippled.fill_magnitude));
+	// A slope noise under zero mirrors the relief; the valley's own relief
+	// stays where it is the larger, whatever its sign
+	ValleysColumn mirrored = calcValleysColumn(rippled, -0.5f, edge_n, 30.0f, 1.0f, 1.0f, 0.0f);
+	UASSERT(near(std::fabs(mirrored.slope), 1.0f / rippled.fill_magnitude));
+	ValleysColumn own = calcValleysColumn(rippled, -0.5f, half_n, 30.0f, 1.0f, 1.0f, 0.0f);
+	UASSERT(own.slope < 0.0f);
+	UASSERT(std::fabs(own.slope) * rippled.fill_magnitude > 1.0f);
+	UASSERT(near(own.slope, -0.5f * (own.surface_y - own.base)));
+	// The water line is the water level's, not zero: ten nodes up the bank
+	// is ten nodes up, with the same margin and the same relief
+	MapgenValleysParams raised = params;
+	raised.water_level = 10;
+	const ValleysColumnParams high_water(raised);
+	ValleysColumn high_edge = at(high_water, edge_n);
+	UASSERTEQ(float, high_edge.base, 11.5f);
+	UASSERTEQ(float, high_edge.surface_y, 11.5f);
+	UASSERTEQ(float, high_edge.river_y, 10.0f);
+	UASSERT(near(high_edge.slope, 1.0f / high_water.fill_magnitude));
+	UASSERT(high_edge.surface_y - high_edge.slope * high_water.fill_magnitude >= 10.5f - 1e-4f);
+	// A bank at the water line has no margin: no relief next to the river
+	MapgenValleysParams flush = params;
+	flush.river_bank_height = 0;
+	ValleysColumn flush_edge = at(ValleysColumnParams(flush), edge_n);
+	UASSERTEQ(float, flush_edge.surface_y, 0.5f);
+	UASSERTEQ(float, flush_edge.slope, 0.0f);
 
 	// The bound follows the surface the wetlands sink: the flat keeps its
 	// relief, a node over the water line, and a pool, under the water
@@ -831,6 +862,8 @@ void TestMapgen::testValleysBankRelief()
 	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 0.0f);
 	params.np_inter_valley_fill = constant_noise(1.0f);
 	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 2.0f);
+	// A fill noise of nothing has no magnitude to divide by: no relief,
+	// the bank at its top node
 	params.np_inter_valley_fill = constant_noise(0.0f);
 	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 1.0f);
 	// Without the relief the edge column tops one node under the bank

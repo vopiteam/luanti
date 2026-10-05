@@ -58,9 +58,13 @@ The upstream relief fades out at the river with the valley height, so the
 ground the clamp lowers is a plane at the bank level along every river, and
 one plane the world over. `mgvalleys_river_bank_relief` (default 0, nodes)
 keeps at least that amplitude of relief on it: the bank surface then sits in
-the middle of its top node, the relief fades with the clamp, and it is
-bounded by the height of the column over the water line, so the ground
-never sinks under the water. The river bed keeps its depth below the bank.
+the middle of its top node and the ground ripples about the bank level by up
+to the relief. The relief fades with the clamp, never exceeds what the clamp
+took from the column, so it grows in from the contour where the region level
+meets the bank, and is bounded by the height of the column over the water
+line, so the ground never sinks under the water: next to a river that bound
+is the bank height, and a larger relief adds nothing there. The river bed
+keeps its depth below the bank.
 
 Channels whose banks were lowered carry river water below the water line;
 lowland channels stay part of the sea, as upstream.
