@@ -12,6 +12,11 @@
 #include <memory>
 
 struct MapgenValleysParams;
+struct NoiseParams;
+
+// The largest value a noise can take, from its parameters: the octaves at
+// their largest, then offset and scale
+float noiseMagnitude(const NoiseParams &np);
 
 // Terrain form of a column, from the 2D column model alone. It describes the
 // place a column occupies in the landscape rather than its materials: the

@@ -54,6 +54,14 @@ profile: 1.0 lowers the whole valley to sea level, smaller values cut a
 narrower canyon and leave the valley above it as upstream generates it.
 The 3D relief noise keeps its upstream amplitude either way.
 
+The upstream relief fades out at the river with the valley height, so the
+ground the clamp lowers is a plane at the bank level along every river, and
+one plane the world over. `mgvalleys_river_bank_relief` (default 0, nodes)
+keeps at least that amplitude of relief on it: the bank surface then sits in
+the middle of its top node, the relief fades with the clamp, and it is
+bounded by the height of the column over the water line, so the ground
+never sinks under the water. The river bed keeps its depth below the bank.
+
 Channels whose banks were lowered carry river water below the water line;
 lowland channels stay part of the sea, as upstream.
 

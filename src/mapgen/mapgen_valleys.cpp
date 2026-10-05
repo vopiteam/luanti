@@ -261,6 +261,7 @@ void MapgenValleysParams::readParams(const Settings *settings)
 #if IS_VOPI_ENGINE
 	settings->getFloatNoEx("mgvalleys_river_valley_width", river_valley_width);
 	settings->getU16NoEx("mgvalleys_river_bank_height",    river_bank_height);
+	settings->getFloatNoEx("mgvalleys_river_bank_relief",  river_bank_relief);
 	settings->getS16NoEx("mgvalleys_floor_y",              floor_y);
 	settings->getFloatNoEx("mgvalleys_mountain_river_width", mountain_river_width);
 	settings->getFloatNoEx("mgvalleys_mountain_cap",         mountain_cap);
@@ -320,6 +321,7 @@ void MapgenValleysParams::writeParams(Settings *settings) const
 #if IS_VOPI_ENGINE
 	settings->setFloat("mgvalleys_river_valley_width", river_valley_width);
 	settings->setU16("mgvalleys_river_bank_height",    river_bank_height);
+	settings->setFloat("mgvalleys_river_bank_relief",  river_bank_relief);
 	settings->setS16("mgvalleys_floor_y",              floor_y);
 	settings->setFloat("mgvalleys_mountain_river_width", mountain_river_width);
 	settings->setFloat("mgvalleys_mountain_cap",         mountain_cap);
@@ -579,6 +581,8 @@ ValleysColumnParams::ValleysColumnParams(const MapgenValleysParams &params) :
 	river_bank_height(params.river_bank_height),
 	mountain_river_width(std::fmax(params.mountain_river_width, 0.01f)),
 	sea_level_rivers(params.spflags & MGVALLEYS_SEA_LEVEL_RIVERS),
+	river_bank_relief(std::fmax(params.river_bank_relief, 0.0f)),
+	fill_magnitude(noiseMagnitude(params.np_inter_valley_fill)),
 	wetlands(params.spflags & MGVALLEYS_WETLANDS),
 	wetland_base_min(params.wetland_base_min),
 	wetland_base_max(std::fmax(params.wetland_base_max, params.wetland_base_min)),
@@ -648,6 +652,9 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 	// River water surface is 1 node below river banks
 	float river_y = base - 1.0f;
 	bool river_water = false;
+	// How much of the bank clamp of the sea level rivers the column takes,
+	// 1 at the river and 0 where the clamp has faded out
+	float bank_fade = 0.0f;
 
 	ValleysColumn c;
 	// The form keeps the region level before the bank clamp below: that
@@ -661,6 +668,11 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 	// Sea level river channels carry river water below the water line
 	if (p.sea_level_rivers) {
 		float bank = p.water_level + p.river_bank_height;
+		// With relief on the lowered ground the bank surface sits half a
+		// node up, in the middle of its top node, so the relief rises and
+		// falls by the same margin before the top node changes
+		if (p.river_bank_relief > 0.0f)
+			bank += 0.5f;
 		if (base > bank) {
 			// River banks never rise above 'river_bank_height' over the
 			// sea: the height by which they would is removed, fading out over
@@ -669,7 +681,8 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 			// and every river is level with the sea.
 			float tg = std::fmax(river /
 				(n_valley_profile * p.river_valley_width), 0.0f);
-			surface_y -= (base - bank) * std::exp(-tg * tg);
+			bank_fade = std::exp(-tg * tg);
+			surface_y -= (base - bank) * bank_fade;
 			base = bank;
 			// River water only below the water line, whatever the bank height
 			river_y = p.water_level;
@@ -715,6 +728,22 @@ ValleysColumn calcValleysColumn(const ValleysColumnParams &p, float n_slope,
 				river_y = base - 1.0f;
 			}
 		}
+	}
+
+	// The relief of the lowered ground. The 3D relief of the valley fades
+	// out at the river with the valley height, so the ground the bank
+	// clamp lowers is a plane at the bank level along every river, and
+	// one plane the world over. With 'river_bank_relief' it keeps at
+	// least that amplitude, in nodes: scaled by the clamp, so the ground
+	// beyond the fade stays as the valley makes it, and bounded by the
+	// height of the column over the water line, so the relief never sinks
+	// the ground under the water, the fill noise never exceeding its
+	// magnitude. After the wetlands, whose sunk surface the bound follows.
+	if (bank_fade > 0.0f && p.river_bank_relief > 0.0f && p.fill_magnitude > 0.0f) {
+		float relief = std::fmin(p.river_bank_relief,
+			surface_y - (p.water_level + 0.5f)) * bank_fade;
+		if (relief > 0.0f)
+			slope = std::fmax(slope, relief / p.fill_magnitude);
 	}
 
 	// Rivers are placed where 'river' is negative

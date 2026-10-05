@@ -56,6 +56,7 @@ public:
 	void testValleysClimateCorrections();
 	void testValleysClimateContext();
 	void testValleysWetlands();
+	void testValleysBankRelief();
 	void testEffectiveBiomeSelection();
 	void testBiomeShift();
 	void testEffectiveClimateSafety();
@@ -104,6 +105,7 @@ void TestMapgen::runTests(IGameDef *gamedef)
 	TEST(testValleysClimateCorrections);
 	TEST(testValleysClimateContext);
 	TEST(testValleysWetlands);
+	TEST(testValleysBankRelief);
 	TEST(testEffectiveBiomeSelection);
 	TEST(testBiomeShift);
 	TEST(testEffectiveClimateSafety);
@@ -707,6 +709,133 @@ void TestMapgen::testValleysWetlands()
 	UASSERT(unflagged->sampleClimate(v2s16(7, -3), context));
 	UASSERTEQ(float, context.form.wetland, 0.0f);
 	UASSERTEQ(s16, context.column_max_y, 12);
+}
+
+void TestMapgen::testValleysBankRelief()
+{
+	// The sea level rivers lower the banks to the bank level, and the relief
+	// of the valley fades out at the river, so the lowered ground is a plane
+	// there. 'river_bank_relief' keeps relief on it: the bank surface moves
+	// to the middle of its top node and the slope of the column rises to
+	// the relief over the magnitude of the fill noise, bounded by the
+	// height over the water line and scaled by the clamp.
+	auto near = [](float a, float b) { return std::fabs(a - b) < 1e-4f; };
+	MapgenValleysParams params;
+	params.water_level = 0;
+	params.spflags = MGVALLEYS_SEA_LEVEL_RIVERS;
+	params.river_bank_height = 1;
+	params.river_valley_width = 1.0f;
+	const ValleysColumnParams plain(params);
+	UASSERTEQ(float, plain.river_bank_relief, 0.0f);
+	params.river_bank_relief = 1.0f;
+	const ValleysColumnParams rippled(params);
+	UASSERTEQ(float, rippled.river_bank_relief, 1.0f);
+	// The default fill noise: six octaves at a persistence of 0.8
+	UASSERT(near(rippled.fill_magnitude, noiseMagnitude(params.np_inter_valley_fill)));
+	UASSERT(rippled.fill_magnitude > 3.6f && rippled.fill_magnitude < 3.7f);
+
+	// A column on a slope noise of a half, a valley noise of 1 and a
+	// profile of 1, the region 31 nodes up, at a river distance of the
+	// caller's: at the river edge the valley height and the fade are 0 and 1
+	const float edge_n = plain.river_size_factor;
+	auto at = [](const ValleysColumnParams &p, float n_rivers, float n_valley = 1.0f) {
+		return calcValleysColumn(p, 0.5f, n_rivers, 30.0f, n_valley, 1.0f, 0.0f);
+	};
+	ValleysColumn flat = at(plain, edge_n);
+	UASSERTEQ(float, flat.base, 1.0f);
+	UASSERTEQ(float, flat.surface_y, 1.0f);
+	UASSERTEQ(float, flat.slope, 0.0f);
+	ValleysColumn edge = at(rippled, edge_n);
+	UASSERTEQ(float, edge.base, 1.5f);
+	UASSERTEQ(float, edge.surface_y, 1.5f);
+	UASSERT(near(edge.slope, 1.0f / rippled.fill_magnitude));
+	// At its deepest the relief leaves ground at the water line
+	UASSERT(edge.surface_y - edge.slope * rippled.fill_magnitude >= 0.5f - 1e-4f);
+	// The form of the column is the same either way
+	UASSERTEQ(float, edge.region_level, flat.region_level);
+	UASSERTEQ(float, edge.valley_depth, flat.valley_depth);
+	UASSERTEQ(float, edge.valley_pos, flat.valley_pos);
+	// More relief than the margin over the water line is cut to the margin
+	MapgenValleysParams tall = params;
+	tall.river_bank_relief = 5.0f;
+	UASSERT(near(at(ValleysColumnParams(tall), edge_n).slope, edge.slope));
+	// A higher bank leaves a wider margin
+	tall.river_bank_height = 3;
+	ValleysColumn high = at(ValleysColumnParams(tall), edge_n);
+	UASSERTEQ(float, high.surface_y, 3.5f);
+	UASSERT(near(high.slope, 3.0f / rippled.fill_magnitude));
+	// The channel keeps a smooth bed under water at the sea level
+	ValleysColumn channel = at(rippled, 0.0f);
+	UASSERTEQ(float, channel.slope, 0.0f);
+	UASSERT(channel.river_water);
+	UASSERTEQ(float, channel.river_y, 0.0f);
+	// The bed follows the bank, half a node up with it
+	UASSERTEQ(float, channel.surface_y, at(plain, 0.0f).surface_y + 0.5f);
+	// Half way through the fade the relief is half, or the valley's own
+	// where that is more: with a deep valley the valley's, with a shallow
+	// one the bank's
+	const float half_n = plain.river_size_factor + std::sqrt(std::log(2.0f));
+	ValleysColumn half_plain = at(plain, half_n);
+	ValleysColumn half = at(rippled, half_n);
+	UASSERT(near(half.surface_y, half_plain.surface_y + 0.25f));
+	UASSERT(near(half.slope, std::fmax(half_plain.slope,
+		std::fmin(1.0f, half.surface_y - 0.5f) * 0.5f / rippled.fill_magnitude)));
+	UASSERTEQ(float, half.slope, half_plain.slope);
+	ValleysColumn shallow_plain = at(plain, half_n, 0.1f);
+	ValleysColumn shallow = at(rippled, half_n, 0.1f);
+	UASSERT(shallow.slope > shallow_plain.slope);
+	UASSERT(near(shallow.slope, 0.5f / rippled.fill_magnitude));
+	// Beyond the fade nothing changes
+	ValleysColumn far_plain = at(plain, 100.0f);
+	ValleysColumn far = at(rippled, 100.0f);
+	UASSERTEQ(float, far.slope, far_plain.slope);
+	UASSERTEQ(float, far.surface_y, far_plain.surface_y);
+	// Nor under the bank, in low country the clamp never touches
+	ValleysColumn low_plain = calcValleysColumn(plain, 0.5f, edge_n, 0.2f, 0.5f, 1.0f, 0.0f);
+	ValleysColumn low = calcValleysColumn(rippled, 0.5f, edge_n, 0.2f, 0.5f, 1.0f, 0.0f);
+	UASSERTEQ(float, low.surface_y, low_plain.surface_y);
+	UASSERTEQ(float, low.slope, low_plain.slope);
+
+	// The bound follows the surface the wetlands sink: the flat keeps its
+	// relief, a node over the water line, and a pool, under the water
+	// already, takes none
+	MapgenValleysParams marsh = params;
+	marsh.spflags = MGVALLEYS_SEA_LEVEL_RIVERS | MGVALLEYS_WETLANDS;
+	marsh.wetland_base_min = 3.0f;
+	marsh.wetland_base_max = 25.0f;
+	marsh.wetland_valley_depth_max = 2.0f;
+	marsh.wetland_fade = 0.25f;
+	marsh.wetland_height = 1;
+	marsh.wetland_pool_depth = 2;
+	const ValleysColumnParams wet(marsh);
+	ValleysColumn flat_marsh = calcValleysColumn(wet, 0.5f, edge_n, 10.0f, 1.0f, 1.0f, 0.0f);
+	UASSERTEQ(float, flat_marsh.wetland, 1.0f);
+	UASSERTEQ(float, flat_marsh.surface_y, 1.5f);
+	UASSERT(near(flat_marsh.slope, 1.0f / wet.fill_magnitude));
+	ValleysColumn pool = calcValleysColumn(wet, 0.5f, edge_n, 10.0f, 1.0f, 1.0f, 1.0f);
+	UASSERTEQ(float, pool.surface_y, -1.5f);
+	UASSERTEQ(float, pool.slope, 0.0f);
+
+	// The sampler models the relief the generator lays: with a constant
+	// fill noise of -1 the ground at the river edge lies one node under the
+	// bank surface, at the water line and never under it; of +1, one over
+	auto constant_noise = [](float value) {
+		return NoiseParams(value, 0.0f, v3f(64.0f), 0, 1, 0.5f, 2.0f);
+	};
+	params.np_terrain_height = constant_noise(30.0f);
+	params.np_valley_depth = constant_noise(1.0f);
+	params.np_valley_profile = constant_noise(1.0f);
+	params.np_rivers = constant_noise(edge_n);
+	params.np_inter_valley_slope = constant_noise(0.5f);
+	params.np_inter_valley_fill = constant_noise(-1.0f);
+	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 0.0f);
+	params.np_inter_valley_fill = constant_noise(1.0f);
+	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 2.0f);
+	params.np_inter_valley_fill = constant_noise(0.0f);
+	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 1.0f);
+	// Without the relief the edge column tops one node under the bank
+	params.river_bank_relief = 0.0f;
+	UASSERTEQ(float, createValleysBiomeTerrainSampler(params)->sampleHeight(v2s16(3, 4)), 0.0f);
 }
 
 void TestMapgen::testBiomeShift()

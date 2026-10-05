@@ -59,6 +59,11 @@ struct ValleysColumnParams {
 	float river_bank_height;
 	float mountain_river_width;
 	bool sea_level_rivers;
+	// The relief kept on the ground the sea level rivers lower, in nodes,
+	// 0 for none, and the largest value the fill noise can take, which
+	// scales that relief into the slope of the column
+	float river_bank_relief;
+	float fill_magnitude;
 	// Wetlands: the region level and the valley depth between which flat
 	// low country sinks to the water line, the fraction of each bound
 	// over which the sinking fades in from it, the ground left over the
@@ -124,6 +129,7 @@ struct MapgenValleysParams : public MapgenParams {
 #if IS_VOPI_ENGINE
 	float river_valley_width = 1.0f;
 	u16 river_bank_height = 2;
+	float river_bank_relief = 0.0f;
 	s16 floor_y = -31000;
 	float mountain_river_width = 0.4f;
 	float mountain_cap = 1.6f;

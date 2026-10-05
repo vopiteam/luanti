@@ -15,6 +15,19 @@
 #include <unordered_set>
 #include <vector>
 
+// Value noise is bounded by one, and interpolation does not increase that
+// bound. Absolute amplitudes also cover negative persistence and scale.
+float noiseMagnitude(const NoiseParams &np)
+{
+	double amplitude = 1.0;
+	double total = 0.0;
+	for (u16 i = 0; i < np.octaves; ++i) {
+		total += amplitude;
+		amplitude *= std::fabs(np.persist);
+	}
+	return std::fabs(np.offset) + std::fabs(np.scale) * total;
+}
+
 namespace {
 
 constexpr size_t HEIGHT_CACHE_LIMIT = 4096;
@@ -30,19 +43,6 @@ u64 columnKey(s32 x, s32 z)
 {
 	return (static_cast<u64>(static_cast<u32>(x)) << 32) |
 		static_cast<u32>(z);
-}
-
-// Value noise is bounded by one, and interpolation does not increase that
-// bound. Absolute amplitudes also cover negative persistence and scale.
-float noiseMagnitude(const NoiseParams &np)
-{
-	double amplitude = 1.0;
-	double total = 0.0;
-	for (u16 i = 0; i < np.octaves; ++i) {
-		total += amplitude;
-		amplitude *= std::fabs(np.persist);
-	}
-	return std::fabs(np.offset) + std::fabs(np.scale) * total;
 }
 
 struct TerrainPoint {
