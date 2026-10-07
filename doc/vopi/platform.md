@@ -92,6 +92,11 @@ process is not, and several fixes here exist because of it:
   inconsistent.
 - **Formspec after a background cycle on iOS** would come back invisible; the
   fix is in the same area.
+- **Emergency world save.** When the OS is about to suspend the process, the
+  platform layer asks the running server for an immediate save; the server's
+  save step polls `porting::consumeEmergencyWorldSaveRequest()` and saves the
+  map, the players and the environment metadata on that step instead of
+  waiting for `server_map_save_interval`.
 
 ## Transient caps
 

@@ -1153,11 +1153,11 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 		static thread_local const float save_interval =
 			g_settings->getFloat("server_map_save_interval");
 		bool emergency_save = false;
-#if IS_VOPI_ENGINE && defined(__IOS__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 		// The platform requests an immediate save when the app is about to be
-		// suspended: iOS freezes the process seconds after backgrounding and
-		// may kill it while suspended, losing everything since the last
-		// periodic save.
+		// suspended: a mobile OS stops the process soon after it leaves the
+		// foreground and may kill it while stopped, losing everything since
+		// the last periodic save.
 		emergency_save = porting::consumeEmergencyWorldSaveRequest();
 		if (emergency_save)
 			actionstream << "Server: emergency world save requested by platform" << std::endl;
