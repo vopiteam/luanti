@@ -876,17 +876,17 @@ static bool init_common(const Settings &cmd_args, int argc, char *argv[])
 
 	migrate_settings();
 
-#if defined(__IOS__)
-	// Sync Luanti debug_log_level with iOS DebugManager LogLevel
+#if defined(__IOS__) || (IS_VOPI_ENGINE && defined(__ANDROID__))
+	// Sync debug_log_level with the log level of the platform's app
 	// IMPORTANT: Must be done BEFORE init_log_streams() so logger is configured with correct level
 	{
-		std::string ios_debug_level = porting::getDebugLogLevel();
-		if (!ios_debug_level.empty()) {
-			g_settings->set("debug_log_level", ios_debug_level);
+		std::string platform_debug_level = porting::getDebugLogLevel();
+		if (!platform_debug_level.empty()) {
+			g_settings->set("debug_log_level", platform_debug_level);
 
-			// Update stderr_output to match iOS debug level
-			// By default stderr is set to LL_ACTION in main(), but iOS may need INFO or VERBOSE
-			LogLevel log_level = Logger::stringToLevel(ios_debug_level);
+			// Update stderr_output to match the platform's level
+			// By default stderr is set to LL_ACTION in main(), but the platform may need INFO or VERBOSE
+			LogLevel log_level = Logger::stringToLevel(platform_debug_level);
 			if (log_level != LL_MAX && log_level > LL_ACTION) {
 				g_logger.removeOutput(&stderr_output);
 				g_logger.addOutputMaxLevel(&stderr_output, log_level);
