@@ -185,6 +185,17 @@ void OpenALSoundManager::playSoundGeneric(sound_handle_t id, const std::string &
 		return;
 	}
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	// A sound started while the output is paused (a multiplayer game goes
+	// on in the background) is not mixed and never ends: they would all play
+	// at the return, and pile up until the sources run out. A one-shot one
+	// is dropped as if it had ended; a loop starts, to be heard at the return
+	if (!loop && m_smg->isOutputPaused()) {
+		reportRemovedSound(id);
+		return;
+	}
+#endif
+
 	// choose random sound name from group name
 	std::string sound_name = use_local_fallback ?
 			getOrLoadLoadedSoundNameFromGroup(group_name) :
@@ -258,6 +269,9 @@ OpenALSoundManager::OpenALSoundManager(SoundManagerSingleton *smg,
 	m_device(smg->m_device.get()),
 	m_context(smg->m_context.get()),
 	m_exts(m_device)
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	, m_smg(smg)
+#endif
 {
 	SANITY_CHECK(!!m_fallback_path_provider);
 
@@ -490,7 +504,17 @@ void *OpenALSoundManager::run()
 			return (f32)(porting::getTimeMs() - t_step_start);
 		};
 		auto get_remaining_timeout = [&] {
-			return (s32)((1.0e3f * SOUNDTHREAD_DTIME) - get_time_since_last_step());
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+			// With the output paused (the app in the background) nothing is
+			// mixed and no stream advances: a step a second instead of sixty.
+			// The main loop's messages still wake the thread (one a frame, at
+			// the background's frame rate), and the step after a resume
+			// comes at once
+			const f32 step_time = m_smg->isOutputPaused() ? 1.0f : SOUNDTHREAD_DTIME;
+#else
+			const f32 step_time = SOUNDTHREAD_DTIME;
+#endif
+			return (s32)((1.0e3f * step_time) - get_time_since_last_step());
 		};
 
 		bool stop_requested = false;

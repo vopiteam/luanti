@@ -418,6 +418,12 @@ private:
 	// (drifting camera) and hidden touch buttons.
 	bool m_lost_focus_needs_pause = false;
 #endif
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	// VOPI: set while the app is in the background, cleared once it shows
+	// again and the pause menu it awaits, if any, is up: a singleplayer
+	// world stays paused between the two (updatePauseState)
+	bool m_background_pause = false;
+#endif
 
 	// if true, (almost) the whole game is paused
 	// this happens in pause menu in singleplayer

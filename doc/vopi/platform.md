@@ -87,16 +87,36 @@ process is not, and several fixes here exist because of it:
 - **Background.** Load-screen rendering is skipped while the app is
   backgrounded, main-menu audio is paused, and texture creation is deferred
   while no rendering context exists.
+- **Background on Android.** The process runs on there (SDL's block on
+  pause stays off, for multiplayer), and the system kills a cached process
+  that uses too much CPU. While the app is in the background:
+  - the audio output device is paused (`ALC_SOFT_pause_device`, followed
+    in `RenderingEngine::run`), so no mixer runs and the system does not
+    see an app playing audio, which it would not freeze; the sound thread
+    steps once a second instead of sixty times, and a one-shot sound
+    started meanwhile (a multiplayer game goes on) is dropped as ended;
+    a device that fails to restart is reopened (`ALC_SOFT_reopen_device`);
+  - a singleplayer game is paused, as the suspended iOS app stands still;
+    left from play, it stays paused until the pause menu comes with the
+    focus, and left with a formspec or the chat open, it goes on when the
+    window shows;
+  - the frame rate, from a second in, and a singleplayer server's step
+    rate are capped at `FpsControl::BACKGROUND_FPS` (4): the first frame
+    after the return comes within a quarter of a second. A server hosting
+    others keeps its rate, and a client session its connection; neither
+    is held under the system's limit.
 - **Focus regain.** The game pauses when focus returns, which resets touch
   input state that system UI (notification shade, control centre) leaves
   inconsistent.
 - **Formspec after a background cycle on iOS** would come back invisible; the
   fix is in the same area.
 - **Emergency world save.** When the OS is about to suspend the process, the
-  platform layer asks the running server for an immediate save; the server's
-  save step polls `porting::consumeEmergencyWorldSaveRequest()` and saves the
-  map, the players and the environment metadata on that step instead of
-  waiting for `server_map_save_interval`.
+  platform layer asks the running server for an immediate save; every server
+  step polls `porting::consumeEmergencyWorldSaveRequest()` and saves the
+  map, the players, the environment metadata and the mod storage on that
+  step instead of waiting for `server_map_save_interval`. It polls before
+  the pause early-return, so a paused game (the pause menu, the background
+  on Android) saves too.
 
 ## Transient caps
 

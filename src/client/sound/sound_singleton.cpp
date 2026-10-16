@@ -42,6 +42,19 @@ bool SoundManagerSingleton::init()
 		return false;
 	}
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	if (alcIsExtensionPresent(m_device.get(), "ALC_SOFT_pause_device")) {
+		m_device_pause = reinterpret_cast<LPALCDEVICEPAUSESOFT>(
+				alcGetProcAddress(m_device.get(), "alcDevicePauseSOFT"));
+		m_device_resume = reinterpret_cast<LPALCDEVICERESUMESOFT>(
+				alcGetProcAddress(m_device.get(), "alcDeviceResumeSOFT"));
+	}
+	if (alcIsExtensionPresent(m_device.get(), "ALC_SOFT_reopen_device")) {
+		m_device_reopen = reinterpret_cast<LPALCREOPENDEVICESOFT>(
+				alcGetProcAddress(m_device.get(), "alcReopenDeviceSOFT"));
+	}
+#endif
+
 	infostream << "Audio: Global Initialized: OpenAL " << alGetString(AL_VERSION)
 		<< ", using " << alcGetString(m_device.get(), ALC_DEVICE_SPECIFIER)
 		<< std::endl;
@@ -53,5 +66,42 @@ SoundManagerSingleton::~SoundManagerSingleton()
 {
 	infostream << "Audio: Global Deinitialized." << std::endl;
 }
+
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+void SoundManagerSingleton::setOutputPaused(bool paused)
+{
+	if (paused == isOutputPaused() || !m_device)
+		return;
+	if (!m_device_pause || !m_device_resume) {
+		static bool warned = false;
+		if (!warned)
+			warningstream << "Audio: no ALC_SOFT_pause_device, the output keeps running" << std::endl;
+		warned = true;
+		return;
+	}
+
+	// Stopping the device stops the backend's stream and its mixer thread;
+	// the sources keep their state and play on when it restarts
+	ALCdevice *device = m_device.get();
+	m_output_paused.store(paused, std::memory_order_relaxed);
+	if (paused) {
+		m_device_pause(device);
+	} else {
+		m_device_resume(device);
+		// A restart that failed (the audio route changed meanwhile, ...)
+		// leaves the device disconnected and the game silent: reopened on
+		// the default output, with the context and the sources kept
+		ALCint connected = 1;
+		if (alcIsExtensionPresent(device, "ALC_EXT_disconnect"))
+			alcGetIntegerv(device, ALC_CONNECTED, 1, &connected);
+		if (!connected) {
+			const bool reopened = m_device_reopen && m_device_reopen(device, nullptr, nullptr);
+			warningstream << "Audio: the output did not resume, the device is disconnected"
+					<< (reopened ? "; reopened" : "; reopening failed") << std::endl;
+		}
+	}
+	infostream << "Audio: output " << (paused ? "paused" : "resumed") << std::endl;
+}
+#endif
 
 } // namespace sound

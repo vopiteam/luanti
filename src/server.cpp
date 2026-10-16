@@ -706,6 +706,35 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 		return;
 	}
 
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+	/*
+		The platform requests an immediate save when the app is about to be
+		suspended: a mobile OS stops the process soon after it leaves the
+		foreground and may kill it while stopped, losing everything since
+		the last periodic save. Taken before the pause early-return, as the
+		game is often paused by then: by the pause menu, or on Android by
+		the background itself. The same saves as the periodic ones below,
+		the mod storage's included.
+	*/
+	if (porting::consumeEmergencyWorldSaveRequest()) {
+		actionstream << "Server: emergency world save requested by platform" << std::endl;
+		m_savemap_timer = 0.0f;
+		EnvAutoLock lock(this);
+
+		ScopeProfiler sp(g_profiler, "Server: map saving (sum)");
+
+		if (m_banmanager->isModified())
+			m_banmanager->save();
+		m_env->getMap().save(MOD_STATE_WRITE_NEEDED);
+		m_env->saveLoadedPlayers();
+		m_env->saveMeta();
+
+		m_mod_storage_save_timer = g_settings->getFloat("server_map_save_interval");
+		m_mod_storage_database->endSave();
+		m_mod_storage_database->beginSave();
+	}
+#endif
+
 	{
 		// Send blocks to clients
 		SendBlocks(dtime);
@@ -1152,17 +1181,7 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 		counter += dtime;
 		static thread_local const float save_interval =
 			g_settings->getFloat("server_map_save_interval");
-		bool emergency_save = false;
-#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
-		// The platform requests an immediate save when the app is about to be
-		// suspended: a mobile OS stops the process soon after it leaves the
-		// foreground and may kill it while stopped, losing everything since
-		// the last periodic save.
-		emergency_save = porting::consumeEmergencyWorldSaveRequest();
-		if (emergency_save)
-			actionstream << "Server: emergency world save requested by platform" << std::endl;
-#endif
-		if (counter >= save_interval || emergency_save) {
+		if (counter >= save_interval) {
 			counter = 0.0;
 			EnvAutoLock lock(this);
 

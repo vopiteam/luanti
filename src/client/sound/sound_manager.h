@@ -41,6 +41,11 @@ private:
 
 	const ALExtensions m_exts;
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	// Outlives every manager: its output pause sets the step's pace
+	const SoundManagerSingleton *const m_smg;
+#endif
+
 	// time in seconds until which removeDeadSounds will be called again
 	f32 m_time_until_dead_removal = REMOVE_DEAD_SOUNDS_INTERVAL;
 

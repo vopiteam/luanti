@@ -33,6 +33,11 @@
 #include "CIrrDeviceSDL.h"
 #endif
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__) && USE_SOUND
+#include "client/sound/sound_openal.h"
+#include "client/sound/sound_singleton.h"
+#endif
+
 RenderingEngine *RenderingEngine::s_singleton = nullptr;
 
 /* Helper classes */
@@ -55,6 +60,20 @@ void FpsControl::limit(IrrlichtDevice *device, f32 *dtime)
 	const int thermal_cap = porting::thermal_fps_cap.load(std::memory_order_relaxed);
 	if (thermal_cap > 0)
 		fps_limit = std::min(fps_limit, (float)thermal_cap);
+#endif
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	// From a second in the background on: on the first frames there SDL
+	// still runs its pause sequence (the GL context's backup, which its
+	// Java side waits for, half a second at most)
+	if (device->isWindowVisible()) {
+		background_since = 0;
+	} else {
+		const u64 now = porting::getTimeUs();
+		if (background_since == 0)
+			background_since = now;
+		else if (now - background_since >= 1000000)
+			fps_limit = std::min(fps_limit, BACKGROUND_FPS);
+	}
 #endif
 
 	const u64 frametime_min = 1000000.0f / std::max(fps_limit, 1.0f);
@@ -288,6 +307,21 @@ v2u32 RenderingEngine::_getWindowSize() const
 	return m_device->getVideoDriver()->getScreenSize();
 }
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+void RenderingEngine::pauseSoundInBackground()
+{
+	// SDL's block on pause is off (CIrrDeviceSDL), so the process runs on in
+	// the background, where a running audio output mixes silence at a fifth
+	// of a core and makes the system see an app playing audio, which it does
+	// not freeze once cached. Every loop pumps the device through run(), so
+	// this follows the background in the menu, a world and the loading.
+#if USE_SOUND
+	if (g_sound_manager_singleton)
+		g_sound_manager_singleton->setOutputPaused(!m_device->isWindowVisible());
+#endif
+}
+#endif
+
 void RenderingEngine::setResizable(bool resize)
 {
 	m_device->setResizable(resize);
@@ -336,7 +370,8 @@ void RenderingEngine::draw_load_screen(const std::wstring &text,
 	// submitting GPU work while backgrounded kills the process on mobile
 	// (e.g. gpus_ReturnNotPermittedKillClient on iOS). The interactive
 	// loops already guard drawing with isWindowVisible(); see #15883.
-	m_device->run();
+	// Pumped through run(), which also pauses the audio output there.
+	run();
 	if (!m_device->isWindowVisible())
 		return;
 

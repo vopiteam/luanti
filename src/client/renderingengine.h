@@ -46,6 +46,21 @@ struct FpsControl {
 
 	u32 getBusyMs() const { return busy_time / 1000; }
 
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	/*
+		The frame rate, and a singleplayer server's step rate, while the app
+		is in the background on Android, where the process runs on (SDL's
+		block on pause is off) with nothing drawn. Low enough for the
+		system's CPU limit for a cached app, high enough for the first frame
+		after the return to come within a quarter of a second. A cap applied
+		where the rate is read, never a setting, as the thermal one. The
+		frame rate is capped from a second in the background on (limit()).
+	*/
+	static constexpr float BACKGROUND_FPS = 4.0f;
+	// When the window went to the background (us); 0 while it is visible
+	u64 background_since = 0;
+#endif
+
 	// all values in microseconds (us)
 	u64 last_time, busy_time, sleep_time;
 };
@@ -137,7 +152,13 @@ public:
 
 	bool run()
 	{
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+		bool running = m_device->run();
+		pauseSoundInBackground();
+		return running;
+#else
 		return m_device->run();
+#endif
 	}
 
 	// FIXME: this is still global when it shouldn't be
@@ -165,6 +186,9 @@ public:
 private:
 	static void settingChangedCallback(const std::string &name, void *data);
 	v2u32 _getWindowSize() const;
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	void pauseSoundInBackground();
+#endif
 
 	std::unique_ptr<RenderingCore> core;
 	IrrlichtDevice *m_device = nullptr;

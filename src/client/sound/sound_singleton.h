@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include "al_helpers.h"
 
@@ -44,6 +45,25 @@ public:
 	bool init();
 
 	~SoundManagerSingleton();
+
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	/**
+	 * Stops or restarts the output device (ALC_SOFT_pause_device), for the
+	 * app in the background. Main thread; the same state again is a no-op.
+	 */
+	void setOutputPaused(bool paused);
+
+	/** Whether the output is paused. Any thread */
+	bool isOutputPaused() const { return m_output_paused.load(std::memory_order_relaxed); }
+
+private:
+	std::atomic<bool> m_output_paused{false};
+	// ALC_SOFT_pause_device's and ALC_SOFT_reopen_device's functions, null
+	// without the extension
+	LPALCDEVICEPAUSESOFT m_device_pause = nullptr;
+	LPALCDEVICERESUMESOFT m_device_resume = nullptr;
+	LPALCREOPENDEVICESOFT m_device_reopen = nullptr;
+#endif
 };
 
 } // namespace sound

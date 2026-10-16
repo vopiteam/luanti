@@ -2430,6 +2430,22 @@ void Game::updatePauseState()
 {
 	bool was_paused = this->m_is_paused;
 	this->m_is_paused = this->simple_singleplayer_mode && g_menumgr.pausesGame();
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+	// The process keeps running in the background (SDL's block on pause is
+	// off, for multiplayer): a singleplayer world stands still there, as on
+	// iOS, whose app is suspended. Left from play, it stays paused until the
+	// pause menu is up: the focus, and the menu with it, come some frames
+	// after the window shows, as processUserInput finds them earlier in this
+	// frame (the focus flips from another thread). Left with a formspec or
+	// the chat open, it goes on when the window shows, as before: a paused
+	// client would leave a formspec's actions unanswered
+	if (!device->isWindowVisible())
+		m_background_pause = true;
+	else if (!m_lost_focus_needs_pause || m_game_focused)
+		m_background_pause = false;
+	if (this->simple_singleplayer_mode && m_background_pause)
+		this->m_is_paused = true;
+#endif
 
 	if (!was_paused && this->m_is_paused) {
 		this->pauseAnimation();
@@ -2450,6 +2466,12 @@ inline void Game::step(f32 dtime)
 				g_settings->getFloat("fps_max_unfocused") :
 				g_settings->getFloat("fps_max");
 		fps_max = std::max(fps_max, 1.0f);
+#if IS_VOPI_ENGINE && defined(__ANDROID__)
+		// Paused in the background (updatePauseState): its steps only wait.
+		// A server hosting others runs on at its own rate
+		if (simple_singleplayer_mode && !device->isWindowVisible())
+			fps_max = std::min(fps_max, FpsControl::BACKGROUND_FPS);
+#endif
 		/*
 		 * Unless you have a barebones game, running the server at more than 60Hz
 		 * is hardly realistic and you're at the point of diminishing returns.
