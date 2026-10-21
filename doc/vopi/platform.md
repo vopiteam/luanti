@@ -151,3 +151,30 @@ Present because the platform requires them, not by preference:
 - Irrlicht dropdowns open through Irrlicht on iOS rather than a native hook
   that never fires.
 - The GL framebuffer is restored correctly after a texture readback.
+- On iOS the engine builds with SDL2 or SDL3 (`_IRR_USE_SDL3_`, which the
+  iOS project defines for every source file, `main.cpp` included):
+  `main.cpp` includes the matching `SDL_main.h`, and the view controller
+  comes from `SDL_GetWindowWMInfo` or from the window's
+  `SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER`. An app built with the iOS 27 SDK
+  needs SDL3, whose UIKit delegate adopts the scene life cycle that iOS
+  then requires.
+- On iOS `main()` returns right after `porting::initializeIOSPlatform()`
+  when that returns false: the application keeps a unit-test host from
+  starting the engine, since SDL3 calls `main()` from inside XCTest's wait
+  for its session.
+
+## SDL3 on mobile
+
+Upstream's SDL3 backend is written for the desktop. Two SDL3 behaviours
+differ from SDL2's where mobile depends on them, and the SDL device
+(`irr/src/CIrrDeviceSDL.cpp`) handles both in fork builds only:
+
+- **A touch the system takes away** arrives as `SDL_EVENT_FINGER_CANCELED`
+  (on iOS whenever a view is presented over the touch, such as a text input
+  dialog opened on the press). It is handled as a release: otherwise the
+  pointer stays counted, and every later tap goes in as a second finger.
+- **The application lifecycle events** (entering the background or the
+  foreground) are not queued but handed to event watchers. The device
+  registers one, `AppLifecycleWatch`, which sets the same state as the
+  queued events under SDL2: otherwise the engine never learns it is in the
+  background and goes on submitting GPU work there, which iOS refuses.

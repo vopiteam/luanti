@@ -21,6 +21,10 @@
 #ifdef _IRR_USE_SDL3_
 #include <SDL3/SDL_version.h>
 #include <SDL3/SDL_messagebox.h>
+#ifdef _IRR_IOS_PLATFORM_
+// UIWindow for getViewController(); with SDL2 it comes from SDL_syswm.h
+#import <UIKit/UIKit.h>
+#endif
 #else
 #include <SDL_video.h>
 #include <SDL_messagebox.h>
@@ -453,6 +457,10 @@ CIrrDeviceSDL::CIrrDeviceSDL(const SIrrlichtCreationParameters &param) :
 		}
 	}
 
+#if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
+	SDL_AddEventWatch(AppLifecycleWatch, this);
+#endif
+
 	// create keymap
 	createKeyMap();
 
@@ -491,6 +499,9 @@ CIrrDeviceSDL::CIrrDeviceSDL(const SIrrlichtCreationParameters &param) :
 //! destructor
 CIrrDeviceSDL::~CIrrDeviceSDL()
 {
+#if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
+	SDL_RemoveEventWatch(AppLifecycleWatch, this);
+#endif
 #if defined(_IRR_COMPILE_WITH_JOYSTICK_EVENTS_)
 	const u32 numJoysticks = Joysticks.size();
 	for (u32 i = 0; i < numJoysticks; ++i)
@@ -1089,6 +1100,13 @@ bool CIrrDeviceSDL::run()
 			postEventFromUser(irrevent);
 			break;
 
+#if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
+		// A touch the system took away (or whose release SDL lost) ends as
+		// cancelled in SDL3, where SDL2 reported it as released. Without the
+		// release the pointer stays counted, and every later tap counts as a
+		// second finger.
+		case SDL_EVENT_FINGER_CANCELED:
+#endif
 		case SDL_EVENT_FINGER_UP:
 			irrevent.EventType = EET_TOUCH_INPUT_EVENT;
 			irrevent.TouchInput.Event = ETIE_LEFT_UP;
@@ -1109,14 +1127,10 @@ bool CIrrDeviceSDL::run()
 		// by testing or by looking at the org.libsdl.app.SDLActivity Java code.
 		// -> This means we can use them to implement isWindowVisible().
 
+		// SDL3 does not queue these: AppLifecycleWatch() handles them there
+		// (fork builds only).
 		case SDL_EVENT_WILL_ENTER_BACKGROUND:
-			IsInBackground = true;
-			// The window surface may be destroyed while backgrounded (the
-			// application keeps running, see SDL_HINT_ANDROID_BLOCK_ON_PAUSE
-			// above); GL object creation fails in that state, so have the
-			// driver defer it until rendering resumes.
-			if (VideoDriver)
-				VideoDriver->setContextAvailable(false);
+			setInBackground(true);
 			break;
 
 #ifdef _IRR_IOS_PLATFORM_
@@ -1124,9 +1138,7 @@ bool CIrrDeviceSDL::run()
 #else
 		case SDL_EVENT_WILL_ENTER_FOREGROUND:
 #endif
-			IsInBackground = false;
-			if (VideoDriver)
-				VideoDriver->setContextAvailable(true);
+			setInBackground(false);
 			break;
 
 		case SDL_EVENT_RENDER_TARGETS_RESET:
@@ -1327,6 +1339,12 @@ float CIrrDeviceSDL::getDisplayDensity() const
 void *CIrrDeviceSDL::getViewController()
 {
 	if (Window) {
+#ifdef _IRR_USE_SDL3_
+		UIWindow *uiWindow = (__bridge UIWindow *)SDL_GetPointerProperty(
+				SDL_GetWindowProperties(Window), SDL_PROP_WINDOW_UIKIT_WINDOW_POINTER, nullptr);
+		if (uiWindow)
+			return (__bridge void *)uiWindow.rootViewController;
+#else
 		SDL_SysWMinfo info;
 		SDL_VERSION(&info.version);
 		if (SDL_GetWindowWMInfo(Window, &info)) {
@@ -1335,6 +1353,7 @@ void *CIrrDeviceSDL::getViewController()
 				return (__bridge void*)uiWindow.rootViewController;
 			}
 		}
+#endif
 	}
 	return nullptr;
 }
@@ -1518,6 +1537,45 @@ bool CIrrDeviceSDL::isWindowVisible() const
 {
 	return !IsInBackground;
 }
+
+void CIrrDeviceSDL::setInBackground(bool background)
+{
+	IsInBackground = background;
+	// The window surface may be destroyed while backgrounded (the
+	// application keeps running, see SDL_HINT_ANDROID_BLOCK_ON_PAUSE
+	// above); GL object creation fails in that state, so have the
+	// driver defer it until rendering resumes.
+	if (VideoDriver)
+		VideoDriver->setContextAvailable(!background);
+}
+
+#if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
+// SDL3 does not queue the application lifecycle events: it calls the event
+// watchers with them, in the call stack that reports the change (on iOS, a
+// UIKit callback on the main thread, the thread of run(), wherever its run
+// loop turns).
+// Without this the device never learns it went to the background, and the
+// engine goes on submitting GPU work there, which iOS refuses.
+bool SDLCALL CIrrDeviceSDL::AppLifecycleWatch(void *userdata, SDL_Event *event)
+{
+	auto *device = static_cast<CIrrDeviceSDL *>(userdata);
+	switch (event->type) {
+	case SDL_EVENT_WILL_ENTER_BACKGROUND:
+		device->setInBackground(true);
+		break;
+#ifdef _IRR_IOS_PLATFORM_
+	case SDL_EVENT_DID_ENTER_FOREGROUND:
+#else
+	case SDL_EVENT_WILL_ENTER_FOREGROUND:
+#endif
+		device->setInBackground(false);
+		break;
+	default:
+		break;
+	}
+	return true;
+}
+#endif
 
 //! Checks if the Irrlicht device supports touch events.
 bool CIrrDeviceSDL::supportsTouchEvents() const

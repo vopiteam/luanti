@@ -53,7 +53,11 @@
 #endif
 
 #if defined(__IOS__)
-	#include "SDL_main.h"
+	#ifdef _IRR_USE_SDL3_
+		#include <SDL3/SDL_main.h>
+	#else
+		#include "SDL_main.h"
+	#endif
 #endif
 
 // for version information only
@@ -209,7 +213,10 @@ int main(int argc, char *argv[])
 
 	porting::signal_handler_init();
 #if defined(__IOS__)
-	porting::initializeIOSPlatform();
+	// False in the host app of a unit-test run: the tests need the main run
+	// loop, which the engine would never give back
+	if (!porting::initializeIOSPlatform())
+		return 0;
 #else
 	porting::initializePaths();
 #endif

@@ -366,6 +366,13 @@ private:
 
 	s32 CurrentTouchCount;
 	bool IsInBackground;
+
+	//! Moves the device into or out of the background (application lifecycle)
+	void setInBackground(bool background);
+#if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
+	//! SDL3 hands the application lifecycle events to event watchers only
+	static bool SDLCALL AppLifecycleWatch(void *userdata, SDL_Event *event);
+#endif
 };
 
 #endif // _IRR_COMPILE_WITH_SDL_DEVICE_
