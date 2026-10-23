@@ -59,7 +59,14 @@ set(unittest_SRCS
 	${CMAKE_CURRENT_SOURCE_DIR}/test_gettext.cpp
 	PARENT_SCOPE)
 
+set(vopi_unittest_client_SRCS "")
+if(IS_VOPI_ENGINE)
+	set(vopi_unittest_client_SRCS
+		${CMAKE_CURRENT_SOURCE_DIR}/test_tween.cpp)
+endif()
+
 set(unittest_client_SRCS
+	${vopi_unittest_client_SRCS}
 	${CMAKE_CURRENT_SOURCE_DIR}/mesh_compare.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/test_clientactiveobjectmgr.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/test_content_mapblock.cpp

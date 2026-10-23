@@ -26,6 +26,7 @@ labels, so a form does not end up with four different notions of "normal text".
 | `model_overlay[]` | New — a model layer with bone attachments |
 | `map[]` | New — a top-down world view. Local games store its fog-of-war inside the world folder |
 | `animated_image[]` | One-shot playback, and a 2D grid atlas as the frame source |
+| `tween[]` | New — a texture or an item moved, scaled and faded along keyframes, with optional sprite frames, and optionally anchored to another element |
 | `checkbox[]` | Custom image and styling |
 | `label[]` | Alignment, and auto-centering for multi-line labels |
 | `scrollbar[]` | Custom textures, routed through the GUI scaling filter, with auto-sized thumb caps |
@@ -129,7 +130,7 @@ over.
 
 ## Input hardening
 
-Untrusted input from HUD, scrollbar and `map[]` formspec fields is clamped, as
-are configurable UI panel rects and scaled font sizes. String-to-float parsing
-helpers are hardened. These are validation of values that arrive from a server
-or from mod code, not of local settings.
+Untrusted input from HUD, scrollbar, `map[]` and `tween[]` formspec fields is
+clamped, as are configurable UI panel rects and scaled font sizes.
+String-to-float parsing helpers are hardened. These are validation of values
+that arrive from a server or from mod code, not of local settings.

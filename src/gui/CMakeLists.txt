@@ -1,7 +1,15 @@
 file(GLOB gui_HDRS "*.h")
 
+set(vopi_gui_SRCS "")
+if(IS_VOPI_ENGINE)
+	set(vopi_gui_SRCS
+		${CMAKE_CURRENT_SOURCE_DIR}/guiTween.cpp
+		${CMAKE_CURRENT_SOURCE_DIR}/tweenSpec.cpp)
+endif()
+
 set(gui_SRCS
 	${gui_HDRS}
+	${vopi_gui_SRCS}
 	${CMAKE_CURRENT_SOURCE_DIR}/guiAnimatedImage.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/guiBackgroundImage.cpp
 	${CMAKE_CURRENT_SOURCE_DIR}/guiBox.cpp

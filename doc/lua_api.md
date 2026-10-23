@@ -3266,6 +3266,89 @@ Elements
   within the GPU's maximum texture size, since the atlas grows ~sqrt(frames) in
   each dimension instead of linearly in height. (VOPI Engine extension.)
 
+### `tween[<X>,<Y>;<W>,<H>;<name>;<option>;...]`
+
+* **VOPI Engine extension.** Shows a texture or an item that moves, scales and
+  fades along a keyframe timeline, optionally playing a sprite animation: an
+  item flying into a bag, a pointing hand pressing a button.
+* Requires real coordinates (formspec version >= 2).
+* Takes no input: clicks and taps reach the elements under it. From formspec
+  version 3 on it is drawn in formspec order, so it covers the elements
+  declared before it. In earlier versions it is drawn under images, item
+  images, lists and labels, like `animated_image[]`.
+* `X`,`Y`;`W`,`H`: the rect at rest. Keyframes move and scale it from there.
+* `name`: names the animation's clock, which starts when the element is first
+  drawn. When the same form is built again (shown again under the same form
+  name, the inventory formspec updated, the window resized), a tween of the
+  same name goes on from where it was instead of starting over. Use a new name
+  to start again. A tween with an empty name starts over on every build.
+* Each following field is an option `<option name>=<value>`, in any order. An
+  unknown option, or one with an invalid value, is skipped with a warning, so
+  a form written for a later engine still shows the element.
+    * `texture=<texture name>`: the image to draw.
+    * `item=<item string>`: the item to draw, as `item_image[]` draws it but
+      without count or wear bar. An item drawn as a mesh (one without an
+      inventory image) ignores alpha and shows until alpha reaches 0. In the
+      main menu a tween with an item is not shown.
+    * Exactly one of `texture` and `item` is given.
+    * `frames=<count>`, `columns=<count>`: the texture is an atlas of `frames`
+      frames packed left to right, then top to bottom, in `columns` columns,
+      as `animated_image[]` reads a grid. Each from 1 to 1024, default 1.
+      With `gui_scaling_filter` on, the whole atlas is scaled at once the
+      first time the element is drawn at a size, so keep it small. While the
+      element is scaled, the edges of a frame blend with the neighbouring
+      frames: leave a transparent border of 1 pixel around each frame.
+    * `frame_ms=<milliseconds>`: duration of one frame. Default 0: the first
+      frame only.
+    * `frame_loop=<bool>`: whether the frames loop. Default `true`; `false`
+      holds the last frame.
+    * `key=<time>:<dx>,<dy>:<scale>:<alpha>:<easing>:<cx>,<cy>`: a keyframe.
+      Up to 32 keys, in order of time.
+        * `time`: milliseconds after the clock started. Two keys at one time
+          make a jump.
+        * `dx`,`dy`: offset of the centre from rest, in coordinate units.
+        * `scale`: `<s>` or `<sx>,<sy>`, around the centre. At 0 nothing is
+          drawn.
+        * `alpha`: from 0 to 1. At 0 nothing is drawn.
+        * `easing`: the curve of the move from the previous key to this one:
+          `linear` (default), `in`, `out`, `in_out` (cubic), or `out_back`,
+          which passes the end slightly and settles back.
+        * `cx`,`cy`: a control point, an offset from rest like `dx`,`dy`: the
+          move from the previous key bends toward it, along a quadratic Bezier
+          curve.
+        * Fields may be left out from the end, and every field but `time` may
+          be empty. An empty offset, scale or alpha keeps the previous key's
+          value (the first key's default to `0,0`, `1` and `1`); easing and
+          control point belong to their own move only.
+        * Before the first key the element holds the first key's values, after
+          the last key the last key's. Without keys it stays at rest.
+    * `loop=<bool>`: whether the keyframes loop, every `time` of the last key.
+      Default `false`. The frames loop on their own (`frame_loop`).
+    * `anchor=<element name>`: places the rect at rest relative to the top-left
+      corner of the element with that name, wherever that element is drawn: in
+      a scroll container it follows the scrolling. `X`,`Y` are then relative
+      to that corner, and the containers around the tween do not move it.
+        * The element is a button of any kind, `field[]`, `pwdfield[]`,
+          `textarea[]`, `checkbox[]`, `dropdown[]`, `table[]`, `textlist[]`,
+          `tabheader[]`, `scrollbar[]`, `hypertext[]`, `animated_image[]`,
+          `model[]` or `map[]`. An `image[]` or a `background[]` is found by
+          its texture name: the first one drawn with it. `item_image[]`,
+          `label[]`, `list[]`, `box[]` and the containers have no name to
+          anchor to.
+        * The tween is hidden while that element is hidden or wholly scrolled
+          out of view, and when no element has that name.
+        * The tween is clipped by its own container, not by the anchor's:
+          declare it in the same container as the anchor, or it shows over the
+          container's edge while the anchor is partly scrolled out.
+* Clipped by the form or by the scroll container it is in, like other
+  elements. `style[<name>;noclip=true]` lets it draw outside.
+* Examples:
+    * An item flies along a curve to a bag icon 5 units right and 3 up,
+      shrinking, then fades:
+      `tween[1,1;1,1;fly_1;item=default:apple;key=0;key=600:5,-3:0.5::in_out:2,-4;key=700:::0]`
+    * A hand presses the button `craft` over and over:
+      `tween[0.5,0.5;1,1;hand;texture=hand.png;anchor=craft;key=0;key=150::0.85::out;key=300::1::out;key=1200;loop=true]`
+
 ### `map[<X>,<Y>;<W>,<H>;<name>;<scale>;<focus>;<player icon>;<icon size>;<marker 1>;...]`
 
 * **VOPI Engine extension.** Shows a top-down map of the world around the

@@ -15,7 +15,7 @@ Documented beside the upstream elements they extend:
 
 | Addition | Kind |
 |---|---|
-| `model_overlay[]`, `map[]`, extended `model[]`, `animated_image[]`, `checkbox[]`, `label[]`, `scrollbar[]`, `textarea[]` | formspec elements |
+| `model_overlay[]`, `map[]`, `tween[]`, extended `model[]`, `animated_image[]`, `checkbox[]`, `label[]`, `scrollbar[]`, `textarea[]` | formspec elements |
 | `anchor_above_hotbar`, HUD 9-slice, word-wrapping text panels, tappable image buttons | HUD |
 | `touch_controls`, `status_text` | HUD flags |
 | `on_selectnode`, `on_deselectnode` | global callbacks |

@@ -52,6 +52,9 @@
 #include "guiScrollContainer.h"
 #include "guiHyperText.h"
 #include "guiScene.h"
+#if IS_VOPI_ENGINE
+#include "guiTween.h"
+#endif
 
 #define MY_CHECKPOS(a,b)													\
 	if (v_pos.size() != 2) {												\
@@ -1208,6 +1211,192 @@ void GUIFormSpecMenu::parseAnimatedImage(parserData *data, const std::string &el
 
 	m_fields.push_back(spec);
 }
+
+#if IS_VOPI_ENGINE
+void GUIFormSpecMenu::parseTween(parserData *data, const std::string &element)
+{
+	// Options are `name=value` parts after the name. Their number has no
+	// upper bound, and an option this engine does not know is skipped, so a
+	// form written for a later engine still shows the element.
+	std::vector<std::string> parts = split(element, ';');
+	if (parts.size() < 4) {
+		logTweenOnce(errorstream, "Invalid tween element(" +
+				std::to_string(parts.size()) + "): '" + element + "'");
+		return;
+	}
+	if (!data->real_coordinates) {
+		logTweenOnce(errorstream,
+				"Invalid tween element (needs real coordinates): '" + element + "'");
+		return;
+	}
+
+	std::vector<std::string> v_pos = split(parts[0], ',');
+	std::vector<std::string> v_geom = split(parts[1], ',');
+	const std::string &name = parts[2];
+
+	if (v_pos.size() != 2 || v_geom.size() != 2) {
+		logTweenOnce(errorstream,
+				"Invalid tween element (pos or geometry): '" + element + "'");
+		return;
+	}
+
+	TweenSpec tween_spec;
+	std::string texture_name;
+	std::string item_name;
+	std::string anchor_name;
+	for (size_t i = 3; i < parts.size(); i++) {
+		const size_t equal_pos = parts[i].find('=');
+		if (equal_pos == std::string::npos) {
+			logTweenOnce(warningstream, "tween[" + name +
+					"]: option without a value: '" + parts[i] + "'");
+			continue;
+		}
+		const std::string option(trim(parts[i].substr(0, equal_pos)));
+		const std::string value(trim(unescape_string(parts[i].substr(equal_pos + 1))));
+
+		if (option == "texture") {
+			texture_name = value;
+		} else if (option == "item") {
+			item_name = value;
+		} else if (option == "anchor") {
+			anchor_name = value;
+		} else {
+			std::string error;
+			switch (tween_spec.setOption(option, value, error)) {
+			case TweenSpec::OptionResult::Ok:
+				break;
+			case TweenSpec::OptionResult::Unknown:
+				logTweenOnce(warningstream, "tween[" + name +
+						"]: unknown option '" + option + "'");
+				break;
+			case TweenSpec::OptionResult::Invalid:
+				logTweenOnce(warningstream, "tween[" + name + "]: " + option +
+						"=" + value + " ignored: " + error);
+				break;
+			}
+		}
+	}
+
+	if (texture_name.empty() == item_name.empty()) {
+		logTweenOnce(errorstream,
+				"Invalid tween element (needs either texture or item): '" + element + "'");
+		return;
+	}
+
+	ItemStack item;
+	if (!item_name.empty()) {
+		if (!m_client) {
+			logTweenOnce(errorstream,
+					"Invalid tween element (item without a client): '" + element + "'");
+			return;
+		}
+		try {
+			item.deSerialize(item_name, m_client->idef());
+		} catch (SerializationError &e) {
+			logTweenOnce(errorstream, std::string("Invalid tween element (") +
+					e.what() + "): '" + element + "'");
+			return;
+		}
+		// Neither a count nor a wear bar is drawn
+		item.count = 1;
+		item.wear = 0;
+	}
+
+	v2s32 pos;
+	if (anchor_name.empty()) {
+		pos = getRealCoordinateBasePos(v_pos);
+	} else {
+		// Relative to the anchor's top-left corner, wherever it is drawn
+		auto units = [](const std::string &value) {
+			return rangelim(stof(value), -TweenSpec::MAX_OFFSET, TweenSpec::MAX_OFFSET);
+		};
+		pos = v2s32(units(v_pos[0]) * imgsize.X, units(v_pos[1]) * imgsize.Y);
+	}
+	v2s32 geom = getRealCoordinateGeometry(v_geom);
+
+	if (!data->explicit_size)
+		logTweenOnce(warningstream, "Invalid use of tween without a size[] element");
+
+	FieldSpec spec(
+		name,
+		L"",
+		L"",
+		258 + m_fields.size()
+	);
+
+	GUITween *e = new GUITween(Environment, data->current_parent, spec.fid,
+			core::rect<s32>(pos, pos + geom), imgsize, m_client);
+	e->setName(name.c_str());
+	e->setSpec(std::move(tween_spec));
+	if (!texture_name.empty())
+		e->setTexture(m_tsrc->getTexture(texture_name));
+	else
+		e->setItem(item);
+	e->setAnchorName(anchor_name);
+	// An anchored tween has no place until its first update. Until then it
+	// must not count in the content size of a scroll container.
+	if (!anchor_name.empty())
+		e->setRelativePosition(core::rect<s32>());
+
+	// A rebuild of the same form continues the animation instead of
+	// restarting it
+	auto clock = data->tween_clocks.find(name);
+	if (clock != data->tween_clocks.end())
+		e->setStartTime(clock->second);
+
+	auto style = getDefaultStyleForElement("tween", spec.fname);
+	e->setNotClipped(style.getBool(StyleSpec::NOCLIP, false));
+
+	// Takes no input, like the image elements
+	m_clickthrough_elements.push_back(e);
+	m_tweens.push_back(e);
+
+	m_fields.push_back(spec);
+}
+
+void GUIFormSpecMenu::resolveTweenAnchors()
+{
+	for (GUITween *tween : m_tweens) {
+		const std::string &anchor_name = tween->getAnchorName();
+		if (anchor_name.empty())
+			continue;
+
+		gui::IGUIElement *anchor = nullptr;
+		for (const FieldSpec &field : m_fields) {
+			if (field.fname != anchor_name)
+				continue;
+			gui::IGUIElement *element = getElementFromId(field.fid, true);
+			// A tween moves every frame, and it is updated after its anchor
+			// only by chance
+			if (element && std::find(m_tweens.begin(), m_tweens.end(), element) ==
+					m_tweens.end()) {
+				anchor = element;
+				break;
+			}
+		}
+		if (!anchor) {
+			logTweenOnce(warningstream, std::string("tween[") + tween->getName() +
+					"]: no element named '" + anchor_name + "' to anchor to");
+		}
+		tween->setAnchor(anchor);
+	}
+}
+
+void GUIFormSpecMenu::logTweenOnce(LogStream &stream, const std::string &message)
+{
+	// Bounds the set when a form names its tweens by a counter
+	constexpr size_t MAX_MESSAGES = 256;
+	if (m_tween_messages.size() >= MAX_MESSAGES)
+		return;
+	if (!m_tween_messages.insert(message).second)
+		return;
+	stream << message << std::endl;
+	if (m_tween_messages.size() == MAX_MESSAGES) {
+		warningstream << "Further tween messages of this form are not logged"
+				<< std::endl;
+	}
+}
+#endif
 
 void GUIFormSpecMenu::parseItemImage(parserData* data, const std::string &element)
 {
@@ -3686,6 +3875,7 @@ void GUIFormSpecMenu::removeAll()
 	// race with the cleanup (parseModelOverlay races aren't realistic
 	// today, but cheap defensive hygiene).
 	m_scene_models.clear();
+	m_tweens.clear();
 #endif
 
 #if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
@@ -3775,6 +3965,7 @@ const std::unordered_map<std::string, std::function<void(GUIFormSpecMenu*, GUIFo
 		{"map",                    &GUIFormSpecMenu::parseMap},
 #if IS_VOPI_ENGINE
 		{"model_overlay",          &GUIFormSpecMenu::parseModelOverlay},
+		{"tween",                  &GUIFormSpecMenu::parseTween},
 #endif
 		{"allow_close",            &GUIFormSpecMenu::parseAllowClose},
 };
@@ -3829,6 +4020,16 @@ void GUIFormSpecMenu::regenerateGui(v2u32 screensize)
 			mydata.table_dyndata[tablename] = table->getDynamicData();
 		}
 
+#if IS_VOPI_ENGINE
+		// Preserve the clocks of tween[] elements by name
+		for (GUITween *tween : m_tweens) {
+			const std::optional<u64> start = tween->getStartTime();
+			const std::string tween_name = tween->getName();
+			if (start && !tween_name.empty())
+				mydata.tween_clocks.emplace(tween_name, *start);
+		}
+#endif
+
 		// Preserve focus
 		gui::IGUIElement *focused_element = Environment->getFocus();
 		// Check recursively to cover elements inside e.g. scroll containers
@@ -3844,6 +4045,9 @@ void GUIFormSpecMenu::regenerateGui(v2u32 screensize)
 			}
 		}
 	} else {
+#if IS_VOPI_ENGINE
+		m_tween_messages.clear();
+#endif
 		// Don't keep old focus value
 		m_focused_element = std::nullopt;
 		// Discard active inventory list interaction
@@ -4192,6 +4396,10 @@ void GUIFormSpecMenu::regenerateGui(v2u32 screensize)
 		}
 	}
 
+#if IS_VOPI_ENGINE
+	resolveTweenAnchors();
+#endif
+
 	// If there are fields without explicit size[], add a "Proceed"
 	// button and adjust size to fit all the fields.
 	if (mydata.simple_field_count > 0 && !mydata.explicit_size) {
@@ -4506,6 +4714,17 @@ void GUIFormSpecMenu::drawMenu()
 	// Some elements are only visible while being drawn
 	for (gui::IGUIElement *e : m_clickthrough_elements)
 		e->setVisible(true);
+
+#if IS_VOPI_ENGINE
+	// Every tween moves to its rect of this frame before anything is drawn,
+	// so that culling and clipping see it there. After the loop above, so
+	// that an image used as an anchor counts as visible.
+	if (!m_tweens.empty()) {
+		const u64 now_ms = porting::getTimeMs();
+		for (GUITween *tween : m_tweens)
+			tween->update(now_ms);
+	}
+#endif
 
 	/*
 		This is where all the drawing happens.

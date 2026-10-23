@@ -36,6 +36,8 @@ class ISoundManager;
 class JoystickController;
 #if IS_VOPI_ENGINE
 class GUIScene;
+class GUITween;
+class LogStream;
 #endif
 
 enum FormspecFieldType {
@@ -387,6 +389,15 @@ protected:
 	// after construction transferring ownership). We only borrow them and
 	// must clear this map in removeAll() before the tree is torn down.
 	std::unordered_map<std::string, GUIScene *> m_scene_models;
+
+	// tween[] elements, updated once per frame before drawing. Owned by the
+	// GUI element tree, cleared in removeAll() before the tree is torn down.
+	std::vector<GUITween *> m_tweens;
+	// Messages logged about tween[] elements. Every build of the form parses
+	// it again, and a form may be built several times a second, so each
+	// message is logged once per form, up to a limit.
+	std::unordered_set<std::string> m_tween_messages;
+	void logTweenOnce(LogStream &stream, const std::string &message);
 #endif
 
 #if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
@@ -523,6 +534,10 @@ private:
 
 		// used to restore table selection/scroll/treeview state
 		std::unordered_map<std::string, GUITable::DynamicData> table_dyndata;
+#if IS_VOPI_ENGINE
+		// start times of tween[] elements by name, kept across a rebuild
+		std::unordered_map<std::string, u64> tween_clocks;
+#endif
 		std::string type;
 	};
 
@@ -599,6 +614,9 @@ private:
 	void parseMap(parserData *data, const std::string &element);
 #if IS_VOPI_ENGINE
 	void parseModelOverlay(parserData *data, const std::string &element);
+	void parseTween(parserData *data, const std::string &element);
+	// Looks up the anchor named by each tween[] once the form is parsed
+	void resolveTweenAnchors();
 #endif
 	void parseAllowClose(parserData *data, const std::string &element);
 
