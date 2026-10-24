@@ -8,6 +8,9 @@
 #include "client/client.h"
 #include "client/renderingengine.h"
 #include <IVideoDriver.h>
+#if IS_VOPI_ENGINE
+#include "client/guiscalingfilter.h"
+#endif
 
 GUIInventoryList::GUIInventoryList(gui::IGUIEnvironment *env,
 	gui::IGUIElement *parent,
@@ -101,11 +104,31 @@ void GUIInventoryList::draw()
 			(hovering ? IT_ROT_HOVERED : IT_ROT_NONE);
 
 		// layer 0
+#if IS_VOPI_ENGINE
+		const SlotImage &image = m_slot_images[slotImageIndex(hovering, selected)];
+		if (image.texture) {
+			const core::rect<s32> srcrect(core::position2di(0, 0),
+					image.texture->getOriginalSize());
+			if (image.middle.getArea() == 0) {
+				const video::SColor white(255, 255, 255, 255);
+				const video::SColor colors[] = {white, white, white, white};
+				draw2DImageFilterScaled(driver, image.texture, rect, srcrect,
+						&AbsoluteClippingRect, colors, true);
+			} else {
+				draw2DImage9Slice(driver, image.texture, rect, srcrect,
+						image.middle, &AbsoluteClippingRect);
+			}
+		} else {
+			driver->draw2DRectangle(hovering ? m_options.slotbg_h : m_options.slotbg_n,
+					rect, &AbsoluteClippingRect);
+		}
+#else
 		if (hovering) {
 			driver->draw2DRectangle(m_options.slotbg_h, rect, &AbsoluteClippingRect);
 		} else {
 			driver->draw2DRectangle(m_options.slotbg_n, rect, &AbsoluteClippingRect);
 		}
+#endif
 
 		// Draw inv slot borders
 		if (m_options.slotborder) {
@@ -247,5 +270,32 @@ core::rect<s32> GUIInventoryList::getSlotRect(s32 item_i) const
 
 	// Rotate the slot rectangle
 	return imgrect + base_pos + p;
+}
+
+void GUIInventoryList::setSlotImages(
+		const std::array<StyleSpec, StyleSpec::NUM_STATES> &styles,
+		ISimpleTextureSource *tsrc)
+{
+	const StyleSpec::State hovered_picked = static_cast<StyleSpec::State>(
+			StyleSpec::STATE_HOVERED | StyleSpec::STATE_PRESSED);
+	// A list slot is hovered under the cursor or finger, and pressed while
+	// its stack is picked (GUIFormSpecMenu::getSelectedItem).
+	const StyleSpec::State states[] = {
+		StyleSpec::STATE_DEFAULT,
+		StyleSpec::STATE_HOVERED,
+		StyleSpec::STATE_PRESSED,
+		hovered_picked,
+	};
+	for (const StyleSpec::State state : states) {
+		const StyleSpec style = StyleSpec::getStyleFromStatePropagation(styles, state);
+		SlotImage &image = m_slot_images[slotImageIndex(
+				(state & StyleSpec::STATE_HOVERED) != 0,
+				(state & StyleSpec::STATE_PRESSED) != 0)];
+		image.texture = style.getTexture(StyleSpec::BGIMG, tsrc, nullptr);
+		image.middle = style.getRect(StyleSpec::BGIMG_MIDDLE, core::rect<s32>());
+	}
+	// Not hovered+pressed alone: a touch leaves the slot unhovered once the
+	// finger lifts, so a tap selection would show no highlight at all.
+	m_own_picked_image = styles[StyleSpec::STATE_PRESSED].isNotDefault(StyleSpec::BGIMG);
 }
 #endif

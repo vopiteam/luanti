@@ -4168,9 +4168,15 @@ Some types may inherit styles from parent types.
     * font_size - Sets font size. See button `font_size` property for more information.
     * noclip - boolean, set to true to allow the element to exceed formspec bounds.
 * list
+    * bgimg - background image of each slot, filling the slot under its item. Defaults to
+              none. A slot whose state has no image is filled with its `listcolors[]` colour.
+    * bgimg_middle - Makes the bgimg textures render in 9-sliced mode and defines the middle rect.
+                     See background9[] documentation for more details.
     * noclip - boolean, set to true to allow the element to exceed formspec bounds.
     * size - 2d vector, sets the size of inventory slots in coordinates.
     * spacing - 2d vector, sets the space between inventory slots in coordinates.
+    * NOTE: a list has no name, so `style[]` reaches it only as `*`. Each list takes the
+      `style_type[list...]` given before it, so lists of one formspec can differ.
 * image_button (additional properties)
     * fgimg - standard image. Defaults to none.
     * fgimg_hovered - image when hovered. Defaults to fgimg when not provided.
@@ -4219,6 +4225,11 @@ Some types may inherit styles from parent types.
     * focused - Active when button has focus
     * hovered - Active when the mouse is hovering over the element
     * pressed - Active when the button is pressed
+* list (per slot)
+    * hovered - Active for the slot under the mouse or the finger
+    * pressed - Active for the slot whose stack is picked: held, dragged or selected by a tap
+    * On Android and iOS, a slot selected by a tap also gets the engine's selected-slot image
+      over it, unless `list:pressed` sets a `bgimg` of its own.
 
 Markup Language
 ---------------

@@ -8,6 +8,10 @@
 #include <IGUIElement.h>
 #include <IGUIEnvironment.h>
 #include "irr_v2d.h"
+#if IS_VOPI_ENGINE
+#include "StyleSpec.h"
+#include <array>
+#endif
 
 
 class GUIFormSpecMenu;
@@ -61,6 +65,10 @@ public:
 		v2s32 slotsize;
 #if IS_VOPI_ENGINE
 		v2s32 position;
+		// The list draws its own image under this slot while its stack is
+		// picked (hasOwnPickedSlotImage), so the menu's shared image for a
+		// selected slot is not drawn over it.
+		bool own_picked_image = false;
 #endif
 	};
 
@@ -127,6 +135,15 @@ public:
 
 #if IS_VOPI_ENGINE
 	core::rect<s32> getSlotRect(s32 item_i) const;
+
+	// Takes the slot background images (bgimg, bgimg_middle) from the list's
+	// style, per state as returned by GUIFormSpecMenu::getStyleForElement.
+	void setSlotImages(const std::array<StyleSpec, StyleSpec::NUM_STATES> &styles,
+			ISimpleTextureSource *tsrc);
+
+	// Whether list:pressed sets an image of its own for the slot whose stack
+	// is picked, rather than inheriting the default one.
+	bool hasOwnPickedSlotImage() const { return m_own_picked_image; }
 #endif
 private:
 	InventoryManager *m_invmgr;
@@ -156,4 +173,22 @@ private:
 
 	// we do not want to write a warning on every draw
 	bool m_already_warned;
+
+#if IS_VOPI_ENGINE
+	struct SlotImage
+	{
+		// nullptr: the slot is filled with its listcolors[] colour
+		video::ITexture *texture = nullptr;
+		// 9-slice middle rect in texture pixels; empty: scaled whole
+		core::rect<s32> middle;
+	};
+	// By slot state, the index of slotImageIndex()
+	std::array<SlotImage, 4> m_slot_images;
+	bool m_own_picked_image = false;
+
+	static size_t slotImageIndex(bool hovered, bool picked)
+	{
+		return (hovered ? 1 : 0) | (picked ? 2 : 0);
+	}
+#endif
 };

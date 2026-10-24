@@ -550,7 +550,13 @@ void GUIFormSpecMenu::parseList(parserData *data, const std::string &element)
 		3
 	);
 
+#if IS_VOPI_ENGINE
+	// Every state may set the slot images (GUIInventoryList::setSlotImages)
+	const auto styles = getStyleForElement("list", spec.fname);
+	const StyleSpec &style = styles[StyleSpec::STATE_DEFAULT];
+#else
 	auto style = getDefaultStyleForElement("list", spec.fname);
+#endif
 
 	v2f32 slot_scale = style.getVector2f(StyleSpec::SIZE, v2f32(0, 0));
 	v2f32 slot_size(
@@ -583,6 +589,9 @@ void GUIFormSpecMenu::parseList(parserData *data, const std::string &element)
 			data->inventorylist_options, m_font);
 
 	e->setNotClipped(style.getBool(StyleSpec::NOCLIP, false));
+#if IS_VOPI_ENGINE
+	e->setSlotImages(styles, m_tsrc);
+#endif
 
 	m_inventorylists.push_back(e);
 	m_fields.push_back(spec);
@@ -4557,13 +4566,15 @@ GUIInventoryList::ItemSpec GUIFormSpecMenu::getItemAtPos(v2s32 p) const
 			// We get the slot rectangle by index
 			core::rect<s32> slot_rect = e->getSlotRect(item_index);
 
-			return GUIInventoryList::ItemSpec(
+			GUIInventoryList::ItemSpec s(
 				e->getInventoryloc(),
 				e->getListname(),
 				item_index,
 				e->getSlotSize(),
 				slot_rect.UpperLeftCorner  // Add a slot position
 			);
+			s.own_picked_image = e->hasOwnPickedSlotImage();
+			return s;
 		}
 #else
 		if (item_index != -1)
@@ -4611,7 +4622,9 @@ void GUIFormSpecMenu::drawSelectedItem()
 			m_selected_item->position.Y + slotsize.Y
 		);
 		if (m_selected_item_bg) {
-			if (m_selected_active) {
+			// A list with its own image for a picked slot has drawn it under
+			// the slot instead (GUIInventoryList::draw).
+			if (m_selected_active && !m_selected_item->own_picked_image) {
 				// Cached once at first call (lazy static init). Defaults registered
 				// in defaultsettings.cpp with platform-specific values.
 				// Sanity-clamped (±4096): they feed plain s32 rect arithmetic.
