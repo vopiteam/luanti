@@ -31,7 +31,7 @@ labels, so a form does not end up with four different notions of "normal text".
 | `label[]` | Alignment, and auto-centering for multi-line labels |
 | `scrollbar[]` | Custom textures, routed through the GUI scaling filter, with auto-sized thumb caps |
 | `textarea[]` | Touch drag-to-scroll for read-only areas, with an optional scrollbar |
-| scroll containers | Touch drag-to-scroll with momentum |
+| scroll containers | Touch drag-to-scroll with momentum; a stack in a `list[]` held still for 0.2 s is dragged instead |
 
 ### Backgrounds
 

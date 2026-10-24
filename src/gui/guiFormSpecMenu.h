@@ -411,7 +411,10 @@ protected:
 	// container is withheld from child widgets until the gesture is classified.
 	// A tap (threshold not crossed) replays the press so children react; a drag
 	// is consumed as scrolling. Safe on mobile because the inventory there is
-	// tap-based (no press-drag item distribution).
+	// tap-based (no desktop left-drag stack distribution). A press held still
+	// over a stack in a list for TOUCH_LIST_DRAG_DELAY_MS is replayed at once
+	// and no longer tracked, so the finger drags the stack out instead of
+	// panning.
 	enum class TouchScrollPhase
 	{
 		Inactive,  // no finger tracked
@@ -445,6 +448,11 @@ protected:
 	ITouchScrollTarget *findScrollableAt(v2s32 p) const;
 	// Resets drag-to-scroll tracking to idle.
 	void resetTouchScroll();
+	// Starts the item drag of a long press: once a withheld press has been
+	// held for TOUCH_LIST_DRAG_DELAY_MS over a stack that can be picked up,
+	// with nothing selected, replays it and resets tracking. Returns true if
+	// it did.
+	bool checkTouchLongPress();
 	// True while a finger gesture with the given id is being tracked.
 	inline bool isTrackingTouch(size_t id) const
 	{

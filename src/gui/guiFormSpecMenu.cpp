@@ -4666,6 +4666,12 @@ void GUIFormSpecMenu::drawMenu()
 		}
 	}
 
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+	// A finger held still sends no events, so the long press that starts an
+	// item drag in a scrolling list is timed here, every frame.
+	checkTouchLongPress();
+#endif
+
 	gui::IGUISkin* skin = Environment->getSkin();
 	sanity_check(skin != NULL);
 	gui::IGUIFont *old_font = skin->getFont();
@@ -5334,6 +5340,10 @@ namespace {
 	// If the finger was motionless longer than this before lifting, the release
 	// is a stop, not a flick (no fling).
 	constexpr u64 TOUCH_SCROLL_FLING_STALE_MS = 70;
+	// A press held still this long over a stack in a scrolling list starts
+	// its drag (checkTouchLongPress). Not touch_long_tap_delay (400 ms by
+	// default), which stays the in-world long tap.
+	constexpr u64 TOUCH_LIST_DRAG_DELAY_MS = 200;
 }
 
 void GUIFormSpecMenu::resetTouchScroll()
@@ -5369,6 +5379,34 @@ ITouchScrollTarget *GUIFormSpecMenu::findScrollableAt(v2s32 p) const
 			return c;
 	}
 	return nullptr;
+}
+
+bool GUIFormSpecMenu::checkTouchLongPress()
+{
+	// With a stack already selected, the press is the tap that places it and
+	// waits for its release as before. A press that stopped a fling counts:
+	// only its quick release is a catch that activates nothing (ETIE_LEFT_UP).
+	if (m_touch_scroll_phase != TouchScrollPhase::Pending || m_selected_item)
+		return false;
+	if (porting::getDeltaMs(m_touch_scroll_down_ms, porting::getTimeMs()) <
+			TOUCH_LIST_DRAG_DELAY_MS)
+		return false;
+
+	// The replayed press picks the stack up (BET_DOWN); a press on the craft
+	// preview would craft instead.
+	const GUIInventoryList::ItemSpec s = getItemAtPos(m_touch_scroll_down_pos);
+	if (!s.isValid() || s.listname == "craftpreview")
+		return false;
+	Inventory *inv = m_invmgr->getInventory(s.inventoryloc);
+	InventoryList *list = inv ? inv->getList(s.listname) : nullptr;
+	if (!list || list->getItem(s.i).empty())
+		return false;
+
+	// Reset first: the replay must reach the children, not this tracker.
+	const SEvent press = m_touch_scroll_press;
+	resetTouchScroll();
+	GUIModalMenu::preprocessEvent(press);
+	return true;
 }
 
 bool GUIFormSpecMenu::handleTouchScroll(const SEvent &event)
@@ -5442,6 +5480,11 @@ bool GUIFormSpecMenu::handleTouchScroll(const SEvent &event)
 			return true;
 
 		if (m_touch_scroll_phase == TouchScrollPhase::Pending) {
+			// A press held long enough over a stack starts its drag before the
+			// next frame would (drawMenu); this move already belongs to it.
+			if (checkTouchLongPress())
+				return false;
+
 			// Classify: did the finger travel past the threshold along the
 			// scroll axis? The threshold scales with the formspec unit size.
 			const v2s32 moved = pointer - m_touch_scroll_down_pos;
