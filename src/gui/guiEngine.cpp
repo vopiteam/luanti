@@ -473,6 +473,14 @@ void GUIEngine::run()
 	}
 	framemarker.end();
 
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+	// This menu session is over: a world is about to load, or the app is
+	// quitting. Until the next porting::onMainMenuShown() the platform does
+	// not treat the menu as on screen, so it keeps its own dialogs off the
+	// loading screen and the world.
+	porting::onMainMenuClosed();
+#endif
+
 	m_script->beforeClose();
 
 	RenderingEngine::autosaveScreensizeAndCo(initial_screen_size, initial_window_maximized);

@@ -76,6 +76,16 @@ A registered provider rather than weak symbols: weak definitions do not link
 the same way on every toolchain — MSVC has none — and a registered provider
 lets tests install a fake.
 
+## Main menu notifications
+
+On Android and iOS the engine tells the application layer when the main menu
+is on screen (`src/gui/guiEngine.cpp`): `porting::onMainMenuShown()` after the
+first presented frame of each main menu session (at startup, and again after
+leaving a world), and `porting::onMainMenuClosed()` when that session's loop
+ends, before a world loads or the application quits. The pair lets the
+application keep its own dialogs to the menu, off the loading screen and the
+game.
+
 ## Mobile lifecycle
 
 Mobile applications are suspended, resumed and re-entered in ways a desktop
