@@ -296,7 +296,9 @@ void GUIInventoryList::drawSlotImages(video::IVideoDriver *driver, Inventory *in
 					rect.UpperLeftCorner.Y - image.outset[1],
 					rect.LowerRightCorner.X + image.outset[2],
 					rect.LowerRightCorner.Y + image.outset[3]);
-			if (dest.getWidth() > 0 && dest.getHeight() > 0 &&
+			// A slot out of view draws none of its image, not even the
+			// part that reaches past it into view.
+			if (visible && dest.getWidth() > 0 && dest.getHeight() > 0 &&
 					image_clip.isRectCollided(dest)) {
 				const core::rect<s32> srcrect(core::position2di(0, 0),
 						image.texture->getOriginalSize());

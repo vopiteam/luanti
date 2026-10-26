@@ -4183,7 +4183,9 @@ Some types may inherit styles from parent types.
           after the list is drawn over them.
         * The image is clipped by what holds the list (a `scroll_container[]`, the
           formspec, or the screen when the list is `noclip`), not by the list's own
-          area. It catches no clicks or touches.
+          area. A slot wholly outside what holds the list draws none of its image,
+          even where the image would reach into view. It catches no clicks or
+          touches.
     * noclip - boolean, set to true to allow the element to exceed formspec bounds.
     * size - 2d vector, sets the size of inventory slots in coordinates.
     * spacing - 2d vector, sets the space between inventory slots in coordinates.
