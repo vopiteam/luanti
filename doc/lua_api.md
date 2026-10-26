@@ -4172,6 +4172,18 @@ Some types may inherit styles from parent types.
               none. A slot whose state has no image is filled with its `listcolors[]` colour.
     * bgimg_middle - Makes the bgimg textures render in 9-sliced mode and defines the middle rect.
                      See background9[] documentation for more details.
+    * bgimg_outset - how far the bgimg reaches past its slot, in coordinates as `size`:
+                     1 number for every side, 2 (x, y) or 4 (left, top, right, bottom).
+                     Negative values draw it inside the slot. Defaults to 0. Has no effect
+                     on a slot filled with its `listcolors[]` colour.
+        * When an image of any state reaches past its slot, the hovered slot and then
+          the pressed slot are drawn over the images, colour fills and slot borders of
+          the list's other slots, each with its own border over its image or colour
+          fill. Items are drawn over every image and slot border. An element drawn
+          after the list is drawn over them.
+        * The image is clipped by what holds the list (a `scroll_container[]`, the
+          formspec, or the screen when the list is `noclip`), not by the list's own
+          area. It catches no clicks or touches.
     * noclip - boolean, set to true to allow the element to exceed formspec bounds.
     * size - 2d vector, sets the size of inventory slots in coordinates.
     * spacing - 2d vector, sets the space between inventory slots in coordinates.

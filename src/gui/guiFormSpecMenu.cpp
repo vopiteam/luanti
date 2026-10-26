@@ -590,7 +590,7 @@ void GUIFormSpecMenu::parseList(parserData *data, const std::string &element)
 
 	e->setNotClipped(style.getBool(StyleSpec::NOCLIP, false));
 #if IS_VOPI_ENGINE
-	e->setSlotImages(styles, m_tsrc);
+	e->setSlotImages(styles, m_tsrc, imgsize);
 #endif
 
 	m_inventorylists.push_back(e);

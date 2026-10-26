@@ -54,6 +54,7 @@ public:
 		SCROLLBAR_THUMB_TOP_SIZE,
 		SCROLLBAR_THUMB_BOTTOM_SIZE,
 		SCROLLBAR_VISIBLE,
+		BGIMG_OUTSET,
 #endif
 		NUM_PROPERTIES,
 		NONE
@@ -147,6 +148,8 @@ public:
 			return SCROLLBAR_THUMB_BOTTOM_SIZE;
 		} else if (name == "scrollbar_visible") {
 			return SCROLLBAR_VISIBLE;
+		} else if (name == "bgimg_outset") {
+			return BGIMG_OUTSET;
 #endif
 		} else {
 			return NONE;
@@ -224,6 +227,24 @@ public:
 			errorstream << "Out of range: " << e.what() << std::endl;
 			return def;
 		}
+	}
+
+	// 1 number for all four, 2 for x and y, or 4 (x1, y1, x2, y2), as
+	// getIntArray; a malformed number reads as 0.
+	std::array<f32, 4> getFloatArray(Property prop, std::array<f32, 4> def) const
+	{
+		const auto &val = properties[prop];
+		if (val.empty())
+			return def;
+
+		std::vector<std::string> strs;
+		if (!parseArray(val, strs))
+			return def;
+
+		for (size_t i = 0; i <= 3; i++)
+			def[i] = stof(strs[i]);
+
+		return def;
 	}
 #endif
 

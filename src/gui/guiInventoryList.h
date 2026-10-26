@@ -136,10 +136,12 @@ public:
 #if IS_VOPI_ENGINE
 	core::rect<s32> getSlotRect(s32 item_i) const;
 
-	// Takes the slot background images (bgimg, bgimg_middle) from the list's
-	// style, per state as returned by GUIFormSpecMenu::getStyleForElement.
+	// Takes the slot background images (bgimg, bgimg_middle, bgimg_outset)
+	// from the list's style, per state as returned by
+	// GUIFormSpecMenu::getStyleForElement. imgsize: pixels per formspec
+	// coordinate, as for the list's size.
 	void setSlotImages(const std::array<StyleSpec, StyleSpec::NUM_STATES> &styles,
-			ISimpleTextureSource *tsrc);
+			ISimpleTextureSource *tsrc, v2s32 imgsize);
 
 	// Whether list:pressed sets an image of its own for the slot whose stack
 	// is picked, rather than inheriting the default one.
@@ -181,14 +183,31 @@ private:
 		video::ITexture *texture = nullptr;
 		// 9-slice middle rect in texture pixels; empty: scaled whole
 		core::rect<s32> middle;
+		// Screen pixels the image reaches past the slot: left, top, right,
+		// bottom; negative draws it inside the slot.
+		std::array<s32, 4> outset{};
+
+		bool reachesPast() const
+		{
+			return texture && (outset[0] > 0 || outset[1] > 0 ||
+					outset[2] > 0 || outset[3] > 0);
+		}
 	};
 	// By slot state, the index of slotImageIndex()
 	std::array<SlotImage, 4> m_slot_images;
 	bool m_own_picked_image = false;
+	// Whether the image of any state reaches past its slot
+	bool m_image_reaches_past = false;
 
 	static size_t slotImageIndex(bool hovered, bool picked)
 	{
 		return (hovered ? 1 : 0) | (picked ? 2 : 0);
 	}
+
+	// Layer 0 and the border of every slot, drawn before any stack
+	void drawSlotImages(video::IVideoDriver *driver, Inventory *inv, s32 list_size);
+	// What clips the list apart from its own rect, as
+	// IGUIElement::recalculateAbsolutePosition works it out
+	core::rect<s32> getParentClippingRect() const;
 #endif
 };

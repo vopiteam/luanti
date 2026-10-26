@@ -28,7 +28,7 @@ labels, so a form does not end up with four different notions of "normal text".
 | `animated_image[]` | One-shot playback, and a 2D grid atlas as the frame source |
 | `tween[]` | New — a texture or an item moved, scaled and faded along keyframes, with optional sprite frames, and optionally anchored to another element |
 | `checkbox[]` | Custom image and styling |
-| `list[]` | Slot background images from the style (`bgimg`, `bgimg_middle`), per list and per slot state: hovered, and pressed while the slot's stack is picked |
+| `list[]` | Slot background images from the style (`bgimg`, `bgimg_middle`, and `bgimg_outset` for an image larger than its slot), per list and per slot state: hovered, and pressed while the slot's stack is picked |
 | `label[]` | Alignment, and auto-centering for multi-line labels |
 | `scrollbar[]` | Custom textures, routed through the GUI scaling filter, with auto-sized thumb caps |
 | `textarea[]` | Touch drag-to-scroll for read-only areas, with an optional scrollbar |
