@@ -21,6 +21,11 @@
 	#include <OpenAL/al.h>
 	#include <OpenAL/alc.h>
 	//#include <OpenAL/alext.h>
+	#if IS_VOPI_ENGINE && defined(__IOS__)
+		// The iOS build links OpenAL Soft, whose extensions the output
+		// pause uses (sound_singleton.h)
+		#include <OpenAL/alext.h>
+	#endif
 #else
 	#include <AL/al.h>
 	#include <AL/alc.h>

@@ -41,7 +41,7 @@ private:
 
 	const ALExtensions m_exts;
 
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 	// Outlives every manager: its output pause sets the step's pace
 	const SoundManagerSingleton *const m_smg;
 #endif

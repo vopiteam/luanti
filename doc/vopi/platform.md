@@ -115,6 +115,15 @@ process is not, and several fixes here exist because of it:
     after the return comes within a quarter of a second. A server hosting
     others keeps its rate, and a client session its connection; neither
     is held under the system's limit.
+- **Audio interruptions on iOS.** An interruption of the audio session (a
+  call, an alarm, Siri) stops OpenAL Soft's CoreAudio output, and nothing in
+  OpenAL restarts it. The application platform layer pauses the output when
+  the interruption begins and resumes it once the session is active again,
+  through `SoundManagerSingleton::setOutputPaused`, the pause of the
+  background on Android: a one-shot sound started meanwhile is dropped as
+  ended, the sound thread steps once a second, and a device that fails to
+  restart is reopened. For it `al_helpers.h` includes OpenAL Soft's
+  `alext.h` on iOS, which links OpenAL Soft rather than the system's OpenAL.
 - **Focus regain.** The game pauses when focus returns, which resets touch
   input state that system UI (notification shade, control centre) leaves
   inconsistent.

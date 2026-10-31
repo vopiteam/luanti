@@ -42,7 +42,7 @@ bool SoundManagerSingleton::init()
 		return false;
 	}
 
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 	if (alcIsExtensionPresent(m_device.get(), "ALC_SOFT_pause_device")) {
 		m_device_pause = reinterpret_cast<LPALCDEVICEPAUSESOFT>(
 				alcGetProcAddress(m_device.get(), "alcDevicePauseSOFT"));
@@ -67,7 +67,7 @@ SoundManagerSingleton::~SoundManagerSingleton()
 	infostream << "Audio: Global Deinitialized." << std::endl;
 }
 
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 void SoundManagerSingleton::setOutputPaused(bool paused)
 {
 	if (paused == isOutputPaused() || !m_device)

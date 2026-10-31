@@ -46,10 +46,12 @@ public:
 
 	~SoundManagerSingleton();
 
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 	/**
 	 * Stops or restarts the output device (ALC_SOFT_pause_device), for the
-	 * app in the background. Main thread; the same state again is a no-op.
+	 * app in the background on Android and for an interruption of the
+	 * audio session on iOS, whose output does not restart by itself. Main
+	 * thread; the same state again is a no-op.
 	 */
 	void setOutputPaused(bool paused);
 

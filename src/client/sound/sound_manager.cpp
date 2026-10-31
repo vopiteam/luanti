@@ -185,11 +185,12 @@ void OpenALSoundManager::playSoundGeneric(sound_handle_t id, const std::string &
 		return;
 	}
 
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 	// A sound started while the output is paused (a multiplayer game goes
-	// on in the background) is not mixed and never ends: they would all play
-	// at the return, and pile up until the sources run out. A one-shot one
-	// is dropped as if it had ended; a loop starts, to be heard at the return
+	// on in the background, a game goes on through an audio interruption)
+	// is not mixed and never ends: they would all play at the return, and
+	// pile up until the sources run out. A one-shot one is dropped as if it
+	// had ended; a loop starts, to be heard at the return
 	if (!loop && m_smg->isOutputPaused()) {
 		reportRemovedSound(id);
 		return;
@@ -269,7 +270,7 @@ OpenALSoundManager::OpenALSoundManager(SoundManagerSingleton *smg,
 	m_device(smg->m_device.get()),
 	m_context(smg->m_context.get()),
 	m_exts(m_device)
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
 	, m_smg(smg)
 #endif
 {
@@ -504,9 +505,10 @@ void *OpenALSoundManager::run()
 			return (f32)(porting::getTimeMs() - t_step_start);
 		};
 		auto get_remaining_timeout = [&] {
-#if IS_VOPI_ENGINE && defined(__ANDROID__)
-			// With the output paused (the app in the background) nothing is
-			// mixed and no stream advances: a step a second instead of sixty.
+#if IS_VOPI_ENGINE && (defined(__ANDROID__) || defined(__IOS__))
+			// With the output paused (the app in the background, its audio
+			// interrupted) nothing is mixed and no stream advances: a step a
+			// second instead of sixty.
 			// The main loop's messages still wake the thread (one a frame, at
 			// the background's frame rate), and the step after a resume
 			// comes at once
