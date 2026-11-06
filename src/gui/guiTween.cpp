@@ -187,17 +187,6 @@ void GUITween::drawFrame(video::ITexture *texture, u32 frame, u32 frames, u32 co
 		return;
 	}
 
-	// Scaled away from rest. Nearest sampling, the 2D default, would drop or
-	// double whole rows and columns of the image as the scale changes.
-	video::SMaterial &material = driver->getMaterial2D();
-	const video::SMaterial saved = material;
-	video::SMaterialLayer &layer = material.TextureLayers[0];
-	layer.MinFilter = video::ETMINF_LINEAR_MIPMAP_NEAREST;
-	layer.MagFilter = video::ETMAGF_LINEAR;
-	layer.TextureWrapU = video::ETC_CLAMP_TO_EDGE;
-	layer.TextureWrapV = video::ETC_CLAMP_TO_EDGE;
-	driver->enableMaterial2D(true);
-	driver->draw2DImage(atlas, dest, src, clip, colors, true);
-	driver->enableMaterial2D(false);
-	material = saved;
+	// Scaled away from rest: sampled linearly, as the scale changes
+	draw2DImageLinear(driver, atlas, dest, src, clip, colors, true);
 }

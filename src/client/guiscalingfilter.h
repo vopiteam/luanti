@@ -45,6 +45,17 @@ void draw2DImageFilterScaled(video::IVideoDriver *driver, video::ITexture *txr,
 		const core::rect<s32> *cliprect = nullptr,
 		const video::SColor *const colors = nullptr, bool usealpha = false);
 
+#if IS_VOPI_ENGINE
+/* driver->draw2DImage() with the texture sampled linearly and clamped to its
+ * edges: the 2D material samples nearest, which drops or doubles whole rows
+ * and columns of a scaled image. Scales on the GPU, with no pre-scaled copy.
+ */
+void draw2DImageLinear(video::IVideoDriver *driver, video::ITexture *txr,
+		const core::rect<s32> &destrect, const core::rect<s32> &srcrect,
+		const core::rect<s32> *cliprect, const video::SColor *const colors,
+		bool usealpha);
+#endif
+
 /*
  * 9-slice / segment drawing
  * border_scale: scale factor for border size on screen (1.0 = same as texture, 2.0 = twice as large)

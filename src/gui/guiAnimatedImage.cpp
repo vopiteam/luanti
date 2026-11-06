@@ -2,6 +2,10 @@
 
 #include "client/guiscalingfilter.h"
 #include "porting.h"
+#if IS_VOPI_ENGINE
+#include "settings.h"
+#include <IVideoDriver.h>
+#endif
 #include <ITexture.h>
 
 GUIAnimatedImage::GUIAnimatedImage(gui::IGUIEnvironment *env, gui::IGUIElement *parent,
@@ -72,8 +76,25 @@ void GUIAnimatedImage::draw()
 	if (m_middle.getArea() == 0) {
 		const video::SColor color(255, 255, 255, 255);
 		const video::SColor colors[] = {color, color, color, color};
+#if IS_VOPI_ENGINE
+		// The GUI scaling filter samples the frame linearly from the atlas on
+		// the GPU. draw2DImageFilterScaled() would scale each frame in
+		// software into a texture of its own and keep it, with a copy of the
+		// atlas, until guiScalingCacheClear(): every frame at every size drawn.
+		// An inverted or empty rect draws nothing, with the filter or without,
+		// as draw2DImageFilterScaled() skips it.
+		if (AbsoluteRect.getWidth() > 0 && AbsoluteRect.getHeight() > 0) {
+			if (g_settings->getBool("gui_scaling_filter"))
+				draw2DImageLinear(driver, m_texture, AbsoluteRect, rect, cliprect,
+					colors, true);
+			else
+				driver->draw2DImage(m_texture, AbsoluteRect, rect, cliprect,
+					colors, true);
+		}
+#else
 		draw2DImageFilterScaled(driver, m_texture, AbsoluteRect, rect, cliprect,
 			colors, true);
+#endif
 	} else {
 		draw2DImage9Slice(driver, m_texture, AbsoluteRect, rect, m_middle, cliprect);
 	}

@@ -3265,6 +3265,10 @@ Elements
   vertical strip. Default `1` (vertical strip). A grid keeps long animations
   within the GPU's maximum texture size, since the atlas grows ~sqrt(frames) in
   each dimension instead of linearly in height. (VOPI Engine extension.)
+* With `gui_scaling_filter` on and no `middle`, a frame drawn at a size other
+  than its own is sampled linearly from the texture, so the edges of a frame
+  drawn larger blend with the neighbouring frames: leave a transparent border
+  of 1 pixel around each frame. (VOPI Engine extension.)
 
 ### `tween[<X>,<Y>;<W>,<H>;<name>;<option>;...]`
 

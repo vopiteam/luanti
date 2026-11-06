@@ -174,6 +174,31 @@ void draw2DImageFilterScaled(video::IVideoDriver *driver, video::ITexture *txr,
 	driver->draw2DImage(scaled, destrect, mysrcrect, cliprect, colors, usealpha);
 }
 
+#if IS_VOPI_ENGINE
+void draw2DImageLinear(video::IVideoDriver *driver, video::ITexture *txr,
+		const core::rect<s32> &destrect, const core::rect<s32> &srcrect,
+		const core::rect<s32> *cliprect, const video::SColor *const colors,
+		bool usealpha)
+{
+	// Skip an inverted or empty rect, as draw2DImageFilterScaled() does:
+	// driver->draw2DImage() builds the quad from its raw corners
+	if (destrect.getWidth() <= 0 || destrect.getHeight() <= 0)
+		return;
+
+	video::SMaterial &material = driver->getMaterial2D();
+	const video::SMaterial saved = material;
+	video::SMaterialLayer &layer = material.TextureLayers[0];
+	layer.MinFilter = video::ETMINF_LINEAR_MIPMAP_NEAREST;
+	layer.MagFilter = video::ETMAGF_LINEAR;
+	layer.TextureWrapU = video::ETC_CLAMP_TO_EDGE;
+	layer.TextureWrapV = video::ETC_CLAMP_TO_EDGE;
+	driver->enableMaterial2D(true);
+	driver->draw2DImage(txr, destrect, srcrect, cliprect, colors, usealpha);
+	driver->enableMaterial2D(false);
+	material = saved;
+}
+#endif
+
 void draw2DImage9Slice(video::IVideoDriver *driver, video::ITexture *texture,
 		const core::rect<s32> &destrect, const core::rect<s32> &srcrect,
 		const core::rect<s32> &middlerect, const core::rect<s32> *cliprect,

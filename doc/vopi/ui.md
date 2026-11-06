@@ -25,7 +25,7 @@ labels, so a form does not end up with four different notions of "normal text".
 | `model[]` | Display fixes; an optional silhouette fit mode |
 | `model_overlay[]` | New — a model layer with bone attachments |
 | `map[]` | New — a top-down world view. Local games store its fog-of-war inside the world folder |
-| `animated_image[]` | One-shot playback, and a 2D grid atlas as the frame source |
+| `animated_image[]` | One-shot playback, and a 2D grid atlas as the frame source. With the GUI scaling filter, a frame without `middle` is sampled linearly from the atlas on the GPU instead of being pre-scaled and cached frame by frame |
 | `tween[]` | New — a texture or an item moved, scaled and faded along keyframes, with optional sprite frames, and optionally anchored to another element |
 | `checkbox[]` | Custom image and styling |
 | `list[]` | Slot background images from the style (`bgimg`, `bgimg_middle`, and `bgimg_outset` for an image larger than its slot), per list and per slot state: hovered, and pressed while the slot's stack is picked |
