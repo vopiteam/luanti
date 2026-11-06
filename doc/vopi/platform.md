@@ -197,3 +197,8 @@ differ from SDL2's where mobile depends on them, and the SDL device
   registers one, `AppLifecycleWatch`, which sets the same state as the
   queued events under SDL2: otherwise the engine never learns it is in the
   background and goes on submitting GPU work there, which iOS refuses.
+  An event sent before the watcher exists reaches no one, such as the
+  application sent to the background while it starts, so on iOS the device
+  starts from the application's state (anything but active counts as
+  background, as the events make it), and a device created in the
+  background has its driver defer texture creation from the start.

@@ -459,6 +459,15 @@ CIrrDeviceSDL::CIrrDeviceSDL(const SIrrlichtCreationParameters &param) :
 
 #if IS_VOPI_ENGINE && defined(_IRR_USE_SDL3_)
 	SDL_AddEventWatch(AppLifecycleWatch, this);
+#ifdef _IRR_IOS_PLATFORM_
+	// The watcher sees the changes from here on; one made before it was
+	// registered, such as the application sent to the background while it
+	// was starting, was lost. Anything but active counts as background, as
+	// the events make it: SDL sends WILL_ENTER_BACKGROUND when the
+	// application resigns active and DID_ENTER_FOREGROUND when it becomes
+	// active again. Main thread, as AppLifecycleWatch().
+	IsInBackground = [UIApplication sharedApplication].applicationState != UIApplicationStateActive;
+#endif
 #endif
 
 	// create keymap
@@ -491,6 +500,12 @@ CIrrDeviceSDL::CIrrDeviceSDL(const SIrrlichtCreationParameters &param) :
 	createDriver();
 
 	if (VideoDriver) {
+#if IS_VOPI_ENGINE
+		// A device created in the background, or sent there before its
+		// driver existed, has the driver defer its textures as
+		// setInBackground() does
+		VideoDriver->setContextAvailable(!IsInBackground);
+#endif
 		createGUIAndScene();
 		VideoDriver->OnResize(core::dimension2d<u32>(Width, Height));
 	}
