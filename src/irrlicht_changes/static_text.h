@@ -200,5 +200,13 @@ inline void setStaticText(gui::IGUIStaticText *static_text, const EnrichedString
 
 inline void setStaticText(gui::IGUIStaticText *static_text, std::wstring_view text)
 {
+#if IS_VOPI_ENGINE
+	// The override colour stays the default colour, as in
+	// StaticText::setText(const wchar_t *)
+	EnrichedString str(text);
+	str.setDefaultColor(static_text->getOverrideColor());
+	setStaticText(static_text, str);
+#else
 	setStaticText(static_text, EnrichedString(text, static_text->getOverrideColor()));
+#endif
 }

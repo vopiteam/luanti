@@ -29,7 +29,7 @@ labels, so a form does not end up with four different notions of "normal text".
 | `tween[]` | New — a texture or an item moved, scaled and faded along keyframes, with optional sprite frames, and optionally anchored to another element |
 | `checkbox[]` | Custom image and styling |
 | `list[]` | Slot background images from the style (`bgimg`, `bgimg_middle`, and `bgimg_outset` for an image larger than its slot), per list and per slot state: hovered, and pressed while the slot's stack is picked |
-| `label[]` | Alignment, and auto-centering for multi-line labels |
+| `label[]` | Alignment, and auto-centering for multi-line labels. Text set again keeps its colour, in every text element: `clock[]`, which sets its text each minute of the day cycle, keeps the style's, and a tooltip keeps the `listcolors[]` text colour |
 | `scrollbar[]` | Custom textures, routed through the GUI scaling filter, with auto-sized thumb caps |
 | `textarea[]` | Touch drag-to-scroll for read-only areas, with an optional scrollbar |
 | scroll containers | Touch drag-to-scroll with momentum; a stack in a `list[]` held still for 0.2 s is dragged instead |

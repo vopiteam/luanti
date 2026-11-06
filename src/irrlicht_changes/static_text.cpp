@@ -576,7 +576,17 @@ void StaticText::updateText()
 //! Sets the new caption of this element.
 void StaticText::setText(const wchar_t* text)
 {
+#if IS_VOPI_ENGINE
+	// The override colour stays the text's default colour, as the first
+	// text gets it from setOverrideColor(). Given as the characters' colour
+	// instead, it would leave the default white, which the next call would
+	// then take from getOverrideColor().
+	EnrichedString str(text);
+	str.setDefaultColor(getOverrideColor());
+	setText(str);
+#else
 	setText(EnrichedString(text, getOverrideColor()));
+#endif
 }
 
 void StaticText::setText(const EnrichedString &text)
