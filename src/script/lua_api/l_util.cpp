@@ -730,7 +730,7 @@ int ModApiUtil::l_strip_escapes(lua_State *L)
 	return 1;
 }
 
-#if IS_VOPI_ENGINE
+#if IS_VOPI_ENGINE && CHECK_CLIENT_BUILD()
 // is_chat_open()
 // Returns true if chat HUD is visible on screen
 int ModApiUtil::l_is_chat_open(lua_State *L)
@@ -835,7 +835,7 @@ void ModApiUtil::InitializeClient(lua_State *L, int top)
 	API_FCT(urlencode);
 	API_FCT(strip_escapes);
 
-#if IS_VOPI_ENGINE
+#if IS_VOPI_ENGINE && CHECK_CLIENT_BUILD()
 	// Chat HUD visibility API — client-side (CSM) only. Reads the client
 	// GameUI, so it must NOT be registered in the server Lua env (Initialize):
 	// a server-thread call would race the main thread (data race / UB).

@@ -136,7 +136,7 @@ private:
 	// strip_escapes(str)
 	static int l_strip_escapes(lua_State *L);
 
-#if IS_VOPI_ENGINE
+#if IS_VOPI_ENGINE && CHECK_CLIENT_BUILD()
 	// is_chat_open()
 	// Returns true if chat HUD is visible
 	// Available on all VOPI Engine client builds (desktop, mobile)
