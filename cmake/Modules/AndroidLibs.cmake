@@ -34,3 +34,8 @@ set(ZSTD_INCLUDE_DIR ${DEPS}/Zstd/include)
 set(ZSTD_LIBRARY ${DEPS}/Zstd/libzstd.a)
 set(SDL2_INCLUDE_DIRS ${DEPS}/SDL2/include/SDL2)
 set(SDL2_LIBRARIES ${DEPS}/SDL2/libSDL2.a)
+# Optional: a dependency set without LevelDB builds without its backend
+if(EXISTS ${DEPS}/LevelDB/libleveldb.a)
+	set(LEVELDB_INCLUDE_DIR ${DEPS}/LevelDB/include)
+	set(LEVELDB_LIBRARY ${DEPS}/LevelDB/libleveldb.a)
+endif()
