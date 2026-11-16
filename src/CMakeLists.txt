@@ -509,6 +509,8 @@ if(ANDROID)
 		include_directories(BEFORE ${CMAKE_SOURCE_DIR}/../src)
 		# Add Android-specific settings
 		list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/default_android_settings.cpp)
+		# The conversion of the worlds of the project's earlier app
+		list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/legacy_worlds.cpp)
 	endif()
 endif()
 
