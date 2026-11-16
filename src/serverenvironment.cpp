@@ -2001,13 +2001,25 @@ bool ServerEnvironment::migratePlayersDatabase(const GameParams &game_params,
 
 		std::vector<std::string> player_list;
 		srcdb->listPlayers(player_list);
+		// Two files can hold the same player: migrate it once, or the second
+		// pass would find the first one's file moved away
+		std::sort(player_list.begin(), player_list.end());
+		player_list.erase(std::unique(player_list.begin(), player_list.end()),
+			player_list.end());
+		size_t migrated = 0;
 		for (auto it = player_list.begin();
 			it != player_list.end(); ++it) {
 			actionstream << "Migrating player " << it->c_str() << std::endl;
 			RemotePlayer player(it->c_str(), NULL);
 			PlayerSAO playerSAO(NULL, &player, 15000, false);
 
-			srcdb->loadPlayer(&player, &playerSAO);
+			// A player that does not load would be saved with default values
+			if (!srcdb->loadPlayer(&player, &playerSAO)) {
+				errorstream << "Failed to load player " << it->c_str()
+					<< ", not migrated" << std::endl;
+				continue;
+			}
+			migrated++;
 
 			playerSAO.finalize(&player, std::set<std::string>());
 			player.setPlayerSAO(&playerSAO);
@@ -2022,7 +2034,7 @@ bool ServerEnvironment::migratePlayersDatabase(const GameParams &game_params,
 			}
 		}
 
-		actionstream << "Successfully migrated " << player_list.size() << " players"
+		actionstream << "Successfully migrated " << migrated << " players"
 			<< std::endl;
 		world_mt.set("player_backend", migrate_to);
 		if (!world_mt.updateConfigFile(world_mt_path.c_str()))
