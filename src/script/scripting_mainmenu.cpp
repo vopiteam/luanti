@@ -64,6 +64,7 @@ void MainMenuScripting::initializeModApi(lua_State *L, int top)
 	ModApiHttp::Initialize(L, top);
 #if IS_VOPI_ENGINE
 	ModApiContentPacks::Initialize(L, top);
+	ModApiContentPacks::InitializeMainMenu(L, top);
 	ModApiPlatformState::Initialize(L, top);
 #endif
 
@@ -74,6 +75,7 @@ void MainMenuScripting::initializeModApi(lua_State *L, int top)
 	asyncEngine.registerStateInitializer(ModApiHttp::InitializeAsync);
 #if IS_VOPI_ENGINE
 	asyncEngine.registerStateInitializer(ModApiContentPacks::Initialize);
+	asyncEngine.registerStateInitializer(ModApiContentPacks::InitializeMainMenu);
 #endif
 
 	// Initialize async environment

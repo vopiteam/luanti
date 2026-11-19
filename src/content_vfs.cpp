@@ -19,6 +19,10 @@
 #include "config.h"
 #include "log.h"
 #include "porting.h"
+#include "settings.h"
+#include "util/hashing.h"
+#include "util/hex.h"
+#include "util/string.h"
 
 #if USE_LUAJIT
 	#include <luajit.h>
@@ -61,6 +65,9 @@ constexpr u32 FLAG_INDEX_ZSTD = 1 << 1;
 // Cap for any decompressed object (index or entry): bounds the allocation
 // a corrupt or crafted container can force.
 constexpr u64 MAX_ENTRY_RAW_SIZE = (u64)1 << 31; // 2 GiB
+
+// Cap for a preview block read (its JSON carries an icon in base64)
+constexpr u64 MAX_PREVIEW_SIZE = (u64)16 << 20; // 16 MiB
 
 inline u32 readLEU32(const char *p)
 {
@@ -161,6 +168,23 @@ ContentPack::FileIdentity identityFromStat(const struct stat &st)
 	return id;
 }
 #endif
+
+// A world loads code from its worldmods/ and its game/, and code ships only
+// with the application: the packer refuses Lua outside base packs, and the
+// engine refuses a world pack with a .lua entry or anything in those two
+// folders (on Windows, "init.lua." would be written as "init.lua").
+const std::string *codeEntry(const ContentPack &pack)
+{
+	for (const auto &kv : pack.entries()) {
+		const std::string_view p = kv.first;
+		const std::string_view top = p.substr(0, p.find('/'));
+		if ((p.size() >= 4 && str_equal(p.substr(p.size() - 4), std::string_view(".lua"), true)) ||
+				(top.size() < p.size() && (str_equal(top, std::string_view("worldmods"), true) ||
+				str_equal(top, std::string_view("game"), true))))
+			return &kv.first;
+	}
+	return nullptr;
+}
 
 } // namespace
 
@@ -285,7 +309,9 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
 	const u32 key_version = readLEU32(header + 12);
 	const u64 meta_offset = readLEU64(header + 16);
 	const u64 meta_size = readLEU64(header + 24);
-	// preview block (header + 32..47) is storefront data — irrelevant here
+	// Storefront data; read for world packs only (their texts, below)
+	const u64 preview_offset = readLEU64(header + 32);
+	const u64 preview_size = readLEU64(header + 40);
 	const u64 index_offset = readLEU64(header + 48);
 	const u64 index_size = readLEU64(header + 56);
 	const unsigned char *index_nonce =
@@ -344,6 +370,23 @@ std::unique_ptr<ContentPack> ContentPack::open(const std::string &path,
 		pack->m_luajit_version = meta["luajitVersion"].asString();
 	if (meta["minAppVersion"].isString())
 		pack->m_min_app_version = meta["minAppVersion"].asString();
+
+	// A world pack's name and description, what a list of world packs
+	// shows. The block is plaintext JSON beside an icon; a damaged one
+	// costs only the texts.
+	if (pack->m_type == "world" && preview_size > 0 && preview_size <= MAX_PREVIEW_SIZE &&
+			preview_offset <= file_size && preview_size <= file_size - preview_offset) {
+		std::string preview_raw(preview_size, '\0');
+		Json::Value preview;
+		std::string perr;
+		if (pack->readRaw(preview_offset, preview_size, &preview_raw[0]) &&
+				parseJson(preview_raw, &preview, &perr) && preview.isObject()) {
+			if (preview["name"].isString())
+				pack->m_preview_name = preview["name"].asString();
+			if (preview["description"].isString())
+				pack->m_preview_description = preview["description"].asString();
+		}
+	}
 
 	// Index
 	std::string index_stored(index_size, '\0');
@@ -984,6 +1027,8 @@ void ContentVFS::unmountAll()
 	m_candidates.clear();
 	m_ignored_installed.clear();
 	republish();
+	std::lock_guard<std::mutex> world_packs_lock(m_world_packs_mutex);
+	m_world_pack_files.clear();
 }
 
 std::shared_ptr<const ContentPack> ContentVFS::getPack(const std::string &id) const
@@ -1105,4 +1150,254 @@ std::string ContentVFS::normalizedIfCovered(const std::string &path) const
 		return "";
 	const std::string norm = normalizePath(path);
 	return statPath(norm) != Stat::NotFound ? norm : "";
+}
+
+/*
+	World packs
+*/
+
+std::vector<ContentVFS::WorldPack> ContentVFS::listWorldPacks()
+{
+	// A run-in-place build's installed directory is the bundled one
+	// (syncInstalledPacks): it is looked at once, as bundled
+	const std::string bundled = normalizePath(porting::path_share + "/packs");
+	const std::string installed = installedPacksDir();
+	std::vector<std::pair<std::string, Source>> dirs = {{bundled, Source::Bundled}};
+	if (installed != bundled)
+		dirs.emplace_back(installed, Source::Installed);
+
+	// The files of mounted packs, which no world pack is among
+	std::map<std::string, ContentPack::FileIdentity> mounted;
+	for (const MountInfo &m : getMounts())
+		mounted[normalizePath(m.pack->filePath())] = m.pack->fileIdentity();
+
+	std::lock_guard<std::mutex> lock(m_world_packs_mutex);
+	std::map<std::string, WorldPackFile> files;
+	for (const auto &dir : dirs) {
+		for (const fs::DirListNode &node : fs::GetDirListing(dir.first)) {
+			if (node.dir || node.name.size() < 5 ||
+					node.name.compare(node.name.size() - 4, 4, ".kpk") != 0)
+				continue;
+			const std::string path = normalizePath(dir.first + "/" + node.name);
+			ContentPack::FileIdentity identity;
+			if (!ContentPack::statIdentity(path, identity))
+				continue;
+			const auto known = m_world_pack_files.find(path);
+			if (known != m_world_pack_files.end() && known->second.identity == identity &&
+					known->second.source == dir.second) {
+				files[path] = known->second;
+				continue;
+			}
+			WorldPackFile file{identity, dir.second, nullptr};
+			const auto mount = mounted.find(path);
+			if (mount == mounted.end() || mount->second != identity) {
+				std::string err;
+				std::unique_ptr<ContentPack> opened =
+						ContentPack::open(path, m_key_provider, err);
+				if (!opened)
+					infostream << "ContentVFS: no world pack in " << path << ": "
+							<< err << std::endl;
+				else if (opened->type() == "world") {
+					if (const std::string *code = codeEntry(*opened))
+						errorstream << "ContentVFS: world pack " << path
+								<< " carries code, left out: " << *code << std::endl;
+					else
+						file.pack = std::move(opened);
+				}
+			}
+			files[path] = std::move(file);
+		}
+	}
+	// Files gone since the last call are forgotten
+	m_world_pack_files = std::move(files);
+
+	// The highest version of each id; on equal versions the installed copy.
+	// A pack that needs a newer app is left out, as at mount (admitPack).
+	std::map<std::string, WorldPack> best;
+	for (const auto &kv : m_world_pack_files) {
+		const WorldPackFile &file = kv.second;
+		if (!file.pack)
+			continue;
+		if (!m_app_version.empty() && !file.pack->minAppVersion().empty() &&
+				compareVersions(file.pack->minAppVersion(), m_app_version) > 0)
+			continue;
+		const auto it = best.find(file.pack->id());
+		if (it == best.end() || file.pack->version() > it->second.pack->version() ||
+				(file.pack->version() == it->second.pack->version() &&
+				file.source == Source::Installed))
+			best[file.pack->id()] = {file.source, file.pack};
+	}
+	std::vector<WorldPack> out;
+	out.reserve(best.size());
+	for (const auto &kv : best)
+		out.push_back(kv.second);
+	return out;
+}
+
+const char *worldPackErrorId(WorldPackError error)
+{
+	switch (error) {
+	case WorldPackError::None: return "";
+	case WorldPackError::NoSpace: return "no_space";
+	case WorldPackError::Damaged: return "damaged";
+	case WorldPackError::Error: break;
+	}
+	return "error";
+}
+
+namespace {
+
+// The failure of the write that just failed, by its errno
+WorldPackError writeFailure()
+{
+	const int err = errno;
+	if (err == ENOSPC)
+		return WorldPackError::NoSpace;
+#ifdef EDQUOT
+	if (err == EDQUOT)
+		return WorldPackError::NoSpace;
+#endif
+	return WorldPackError::Error;
+}
+
+// Writes `data` as the whole file; on failure errno says why
+bool writeWholeFile(const std::string &path, const std::string &data)
+{
+	FILE *fp = std::fopen(path.c_str(), "wb");
+	if (!fp)
+		return false;
+	int err = 0;
+	if (!data.empty() && std::fwrite(data.data(), 1, data.size(), fp) != data.size())
+		err = errno ? errno : EIO;
+	if (std::fclose(fp) != 0 && !err)
+		err = errno ? errno : EIO;
+	errno = err;
+	return err == 0;
+}
+
+// Not a world.mt value that reads back as a group ("{") or the start of a
+// multiline value ('"""'), after the parser's trim (parseConfigObject in
+// settings.cpp), and swallows the rest of the file; Settings::set refuses
+// one that starts with '"""' or has it after a newline itself
+bool worldMtValueValid(const std::string &value)
+{
+	const std::string_view trimmed = trim(std::string_view(value));
+	return trimmed != "{" && trimmed != "\"\"\"";
+}
+
+} // namespace
+
+WorldPackError createWorldFromPack(const ContentPack &pack,
+		const std::string &worlds_dir, const std::string &staging_dir,
+		const std::string &name, const std::string &gameid,
+		const std::map<std::string, std::string> &settings,
+		std::string &world_path)
+{
+	static std::mutex creating;
+	std::lock_guard<std::mutex> lock(creating);
+
+	auto fail = [&](WorldPackError error, const std::string &what) {
+		errorstream << "ContentVFS: world pack " << pack.id() << ": " << what << std::endl;
+		fs::RecursiveDelete(staging_dir);
+		return error;
+	};
+
+	// A raised error (an allocation, a Settings exception) would end an
+	// async job with no result for the menu: every failure is an error id
+	try {
+		// An empty folder name would be the worlds directory itself
+		const std::string dir_name = sanitizeDirName(name, "world_");
+		if (dir_name.empty()) {
+			errorstream << "ContentVFS: world pack " << pack.id() << ": empty world name" << std::endl;
+			return WorldPackError::Error;
+		}
+		if (const std::string *code = codeEntry(pack)) {
+			errorstream << "ContentVFS: world pack " << pack.id() << " carries code: " << *code << std::endl;
+			return WorldPackError::Damaged;
+		}
+
+		// What a creation cut short left (a kill, a crash) goes first
+		if (!fs::RecursiveDelete(staging_dir)) {
+			errorstream << "ContentVFS: world pack " << pack.id() << ": cannot clear "
+					<< staging_dir << std::endl;
+			return WorldPackError::Error;
+		}
+
+		const std::string staged = staging_dir + DIR_DELIM + "world";
+		if (!fs::CreateAllDirs(staged)) {
+			const WorldPackError error = writeFailure(); // before the message
+			return fail(error, "cannot create " + staged);
+		}
+		for (const auto &kv : pack.entries()) {
+			std::string data;
+			if (!pack.readEntry(kv.second, data))
+				return fail(WorldPackError::Damaged, "cannot read " + kv.first);
+			// Encryption without authentication and zstd frames without a
+			// checksum let damage through: the index's hash catches it
+			if (hex_encode(hashing::sha1(data)) != kv.second.sha1_hex)
+				return fail(WorldPackError::Damaged, "wrong hash of " + kv.first);
+			std::string rel = kv.first;
+#ifdef _WIN32
+			std::replace(rel.begin(), rel.end(), '/', '\\');
+#endif
+			const std::string path = staged + DIR_DELIM + rel;
+			if (kv.first.find('/') != std::string::npos &&
+					!fs::CreateAllDirs(fs::RemoveLastPathComponent(path))) {
+				const WorldPackError error = writeFailure(); // before the message
+				return fail(error, "cannot create the folder of " + kv.first);
+			}
+			if (!writeWholeFile(path, data)) {
+				const WorldPackError error = writeFailure(); // before the message
+				return fail(error, "cannot write " + kv.first);
+			}
+		}
+
+		// The caller's keys first, so that they cannot replace the ones below
+		const std::string world_mt = staged + DIR_DELIM + "world.mt";
+		Settings conf;
+		conf.readConfigFile(world_mt.c_str()); // a pack without one gets one
+		std::vector<std::pair<std::string, std::string>> keys(settings.begin(), settings.end());
+		keys.emplace_back("world_name", name);
+		keys.emplace_back("gameid", gameid);
+		keys.emplace_back("world_pack", pack.id());
+		keys.emplace_back("world_pack_version", std::to_string(pack.version()));
+		for (const auto &kv : keys) {
+			if (!worldMtValueValid(kv.second) || !conf.set(kv.first, kv.second))
+				return fail(WorldPackError::Error, "invalid world.mt setting " + kv.first);
+		}
+		// Written whole: a staging folder needs no atomic replace, and the
+		// failing write leaves its errno
+		std::ostringstream os;
+		conf.writeLines(os);
+		if (!writeWholeFile(world_mt, os.str())) {
+			const WorldPackError error = writeFailure(); // before the message
+			return fail(error, "cannot write world.mt");
+		}
+
+		// The folder core.create_world gives the name (l_create_world, then
+		// loadGameConfAndInitWorld in content/subgames.cpp)
+		const std::string base = worlds_dir + DIR_DELIM + dir_name;
+		std::string final_path = base;
+		for (int n = 1; fs::PathExists(final_path) && n < 100; n++)
+			final_path = base + "_" + std::to_string(n);
+		if (fs::PathExists(final_path))
+			return fail(WorldPackError::Error, "too many worlds named like " + base);
+		if (!fs::CreateAllDirs(worlds_dir)) {
+			const WorldPackError error = writeFailure(); // before the message
+			return fail(error, "cannot create " + worlds_dir);
+		}
+		if (!fs::Rename(staged, final_path)) {
+			const WorldPackError error = writeFailure(); // before the message
+			return fail(error, "cannot move the world to " + final_path);
+		}
+		// Empty by now
+		fs::DeleteSingleFileOrEmptyDirectory(staging_dir);
+
+		actionstream << "ContentVFS: world pack " << pack.id() << " v" << pack.version()
+				<< " made the world " << final_path << std::endl;
+		world_path = final_path;
+		return WorldPackError::None;
+	} catch (std::exception &e) {
+		return fail(WorldPackError::Error, std::string("exception: ") + e.what());
+	}
 }

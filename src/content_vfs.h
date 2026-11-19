@@ -137,6 +137,11 @@ public:
 	// LuaJIT that produced the pack's bytecode entries; empty when the pack
 	// carries no bytecode. Checked against the runtime at mount time.
 	const std::string &luajitVersion() const { return m_luajit_version; }
+	// The texts of a world pack's preview (the header's plaintext block),
+	// what a list of world packs shows; empty when absent, and for packs of
+	// other types, whose preview is not read.
+	const std::string &previewName() const { return m_preview_name; }
+	const std::string &previewDescription() const { return m_preview_description; }
 
 	// Entries keyed by container-relative path ("mods/foo/init.lua"),
 	// forward slashes, sorted — map order backs directory iteration.
@@ -159,6 +164,8 @@ private:
 	std::string m_mount_spec;
 	std::string m_luajit_version;
 	std::string m_min_app_version;
+	std::string m_preview_name;
+	std::string m_preview_description;
 	int m_version = 0;
 
 	bool m_encrypted = false;
@@ -309,6 +316,25 @@ public:
 	// compatibility is enforced earlier, at mount time.
 	bool isTrustedCodePath(const std::string &path) const;
 
+	/*
+		World packs — templates of worlds, copied into a new world
+		(createWorldFromPack), never mounted. Any thread.
+	*/
+
+	struct WorldPack {
+		Source source;
+		std::shared_ptr<const ContentPack> pack;
+	};
+
+	// The world packs of the bundled and the installed packs directories:
+	// the highest version of each id (on equal versions the installed
+	// copy), without the packs whose minAppVersion is newer than the app
+	// and those with code (a .lua entry, or anything in worldmods/ or
+	// game/: codeEntry in content_vfs.cpp), sorted by id. Opens only the
+	// files new or changed since the last call; a mounted pack's file is
+	// known not to be one.
+	std::vector<WorldPack> listWorldPacks();
+
 private:
 	using MountTable = std::vector<MountInfo>;
 
@@ -364,4 +390,41 @@ private:
 	ContentKeyProvider m_key_provider = nullptr;
 	std::string m_installed_dir; // empty = default
 	std::string m_app_version;   // empty = no gate
+
+	// listWorldPacks' files by path: the identity the file had when it was
+	// last looked at, and the pack, null for a file that is no world pack
+	// or failed to open (tried again once the file changes).
+	struct WorldPackFile {
+		ContentPack::FileIdentity identity;
+		Source source;
+		std::shared_ptr<const ContentPack> pack;
+	};
+	std::map<std::string, WorldPackFile> m_world_pack_files;
+	std::mutex m_world_packs_mutex;
 };
+
+/*
+	A world made from a world pack: the pack's files written into a staging
+	folder, each checked against its SHA-1 in the index, its world.mt given
+	`settings`, then world_name, gameid, world_pack and world_pack_version,
+	and the folder moved into `worlds_dir` under the name core.create_world
+	gives the world (sanitizeDirName with the prefix "world_", then the
+	first free "_<n>"). A pack with code (see listWorldPacks) or a failed
+	hash is Damaged; an empty folder name, or a world.mt value Settings
+	refuses or whose trim is "{" or '"""' (it would read back as a group or
+	a multiline start), is Error.
+	`staging_dir` belongs to this function: what a creation cut short left
+	there is removed first, and creations run one at a time. Blocks for as
+	long as the pack takes to write (the main menu runs it as an async job).
+	Fills `world_path` on success.
+*/
+enum class WorldPackError { None, NoSpace, Damaged, Error };
+
+// "no_space", "damaged", "error" ("" for None): the ids the Lua API returns
+const char *worldPackErrorId(WorldPackError error);
+
+WorldPackError createWorldFromPack(const ContentPack &pack,
+		const std::string &worlds_dir, const std::string &staging_dir,
+		const std::string &name, const std::string &gameid,
+		const std::map<std::string, std::string> &settings,
+		std::string &world_path);

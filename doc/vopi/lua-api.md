@@ -42,6 +42,8 @@ Documented beside the upstream elements they extend:
 | `core.is_content_pack_mounted(id)` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |
 | `core.get_content_pack_info(id)` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |
 | `core.get_mounted_content_packs()` | menu, server, emerge, async | [content-vfs.md](content-vfs.md) |
+| `core.get_world_packs()` | menu, menu async | [content-vfs.md](content-vfs.md#lua-api) |
+| `core.create_world_from_pack(id, name, gameid[, settings])` | menu, menu async | [content-vfs.md](content-vfs.md#lua-api) |
 | `core.is_chat_open()` | **client-side only** | below |
 | `core.set_day_cycle`, `core.set_day_cycle_paused`, `core.set_world_time`, `core.advance_time` | server | [day-cycle.md](day-cycle.md) |
 | `core.get_day_cycle_state` | server, client-side | [day-cycle.md](day-cycle.md) |

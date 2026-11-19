@@ -15,10 +15,12 @@
 #include "filesys.h"
 #include "log.h"
 #include "porting.h"
-#if CHECK_CLIENT_BUILD()
-#include "client/clientmedia.h"
+#include "settings.h"
 #include "util/hashing.h"
 #include "util/hex.h"
+#include "util/string.h"
+#if CHECK_CLIENT_BUILD()
+#include "client/clientmedia.h"
 #endif
 
 // Builds minimal KPK v1 containers in-process (tools/kpk/FORMAT.md) and
@@ -45,6 +47,8 @@ public:
 	void testMinAppVersion();
 	void testInstalledPacksSync();
 	void testPriority();
+	void testWorldPacksList();
+	void testCreateWorldFromPack();
 
 private:
 	struct PackOpts {
@@ -58,6 +62,9 @@ private:
 		int version = 1;
 		std::string min_app_version;
 		std::string a_content = "hello from pack";
+		std::string a_name = "a.txt";
+		bool a_wrong_hash = false; // the index's SHA-1 of a.txt not its own
+		std::string preview;   // the preview block's JSON; none when empty
 		std::string out_dir;   // default: test temp dir
 		std::string file_name; // default: <id>.kpk
 	};
@@ -101,6 +108,11 @@ std::string TestContentVFS::makePack(const PackOpts &o)
 {
 	std::string a_content = o.a_content;
 	std::string b_content = std::string("\x01\x02\x03", 3);
+	// SHA-1 of the raw contents, as the packer writes them
+	const std::string h_a = o.a_wrong_hash ? std::string(40, '0')
+			: hex_encode(hashing::sha1(a_content));
+	const std::string h_e = hex_encode(hashing::sha1(""));
+	const std::string h_b = hex_encode(hashing::sha1(b_content));
 
 	unsigned char nonce_a[16], nonce_b[16], nonce_index[16];
 	for (int i = 0; i < 16; i++) {
@@ -128,22 +140,23 @@ std::string TestContentVFS::makePack(const PackOpts &o)
 	meta += "}";
 
 	const u64 meta_offset = 80;
-	const u64 blob_start = meta_offset + meta.size();
+	const u64 preview_offset = meta_offset + meta.size();
+	const u64 blob_start = preview_offset + o.preview.size();
 
-	// entries in index (sorted by path): a.txt, e.txt (empty), sub/b.bin
+	// entries in index: a.txt (or a_name), e.txt (empty), sub/b.bin
 	std::ostringstream index_ss;
 	index_ss << "{\"files\":["
-		<< "{\"p\":\"a.txt\",\"o\":" << blob_start
+		<< "{\"p\":\"" << o.a_name << "\",\"o\":" << blob_start
 		<< ",\"s\":" << a_content.size() << ",\"r\":" << a_content.size()
-		<< ",\"h\":\"0000000000000000000000000000000000000000\",\"n\":\""
+		<< ",\"h\":\"" << h_a << "\",\"n\":\""
 		<< n_a << "\",\"f\":" << o.first_entry_flags << "},"
 		<< "{\"p\":\"e.txt\",\"o\":" << (blob_start + a_content.size())
 		<< ",\"s\":0,\"r\":0"
-		<< ",\"h\":\"0000000000000000000000000000000000000000\",\"n\":\""
+		<< ",\"h\":\"" << h_e << "\",\"n\":\""
 		<< std::string(32, '0') << "\",\"f\":0},"
 		<< "{\"p\":\"sub/b.bin\",\"o\":" << (blob_start + a_content.size())
 		<< ",\"s\":" << b_content.size() << ",\"r\":" << b_content.size()
-		<< ",\"h\":\"0000000000000000000000000000000000000000\",\"n\":\""
+		<< ",\"h\":\"" << h_b << "\",\"n\":\""
 		<< n_b << "\",\"f\":0}"
 		<< "]}";
 	std::string index = index_ss.str();
@@ -160,13 +173,14 @@ std::string TestContentVFS::makePack(const PackOpts &o)
 	putLEU32(blob, o.aes_key ? o.key_version : 0);  // key version
 	putLEU64(blob, meta_offset);
 	putLEU64(blob, meta.size());
-	putLEU64(blob, 0);  // preview offset
-	putLEU64(blob, 0);  // preview size
+	putLEU64(blob, o.preview.empty() ? 0 : preview_offset);
+	putLEU64(blob, o.preview.size());
 	putLEU64(blob, index_offset);
 	putLEU64(blob, index.size());
 	blob += o.aes_key ? std::string((const char *)nonce_index, 16)
 			: std::string(16, '\0'); // index nonce
 	blob += meta;
+	blob += o.preview;
 	blob += a_content;
 	blob += b_content;
 	blob += index;
@@ -212,6 +226,8 @@ void TestContentVFS::runTests(IGameDef *gamedef)
 	TEST(testMinAppVersion);
 	TEST(testInstalledPacksSync);
 	TEST(testPriority);
+	TEST(testWorldPacksList);
+	TEST(testCreateWorldFromPack);
 
 	ContentVFS::get().unmountAll();
 	ContentVFS::get().setKeyProvider(nullptr);
@@ -744,4 +760,261 @@ void TestContentVFS::testPriority()
 	fs::DeleteSingleFileOrEmptyDirectory(m_installed_dir + DIR_DELIM + "vfsprio.kpk");
 	fs::DeleteSingleFileOrEmptyDirectory(m_installed_dir + DIR_DELIM + "vfsprio_other.kpk");
 	ContentVFS::get().syncInstalledPacks();
+}
+
+// World packs in the installed directory: listed with their preview texts,
+// the highest version of an id, not mounted; other packs and a pack that
+// needs a newer app left out.
+void TestContentVFS::testWorldPacksList()
+{
+	ContentVFS &vfs = ContentVFS::get();
+	vfs.unmountAll();
+	vfs.setKeyProvider(nullptr);
+	fs::RecursiveDelete(m_installed_dir);
+	fs::CreateAllDirs(m_installed_dir);
+
+	auto find = [](const std::vector<ContentVFS::WorldPack> &list, const std::string &id)
+			-> const ContentVFS::WorldPack * {
+		for (const ContentVFS::WorldPack &w : list) {
+			if (w.pack->id() == id)
+				return &w;
+		}
+		return nullptr;
+	};
+
+	PackOpts o;
+	o.out_dir = m_installed_dir;
+	o.type = "world";
+	o.id = "wptest";
+	o.mount_spec = "user:/__vfs_world_test__";
+	o.preview = "{\"description\":\"A test park\",\"name\":\"Test Park\"}";
+	makePack(o);
+
+	PackOpts c;
+	c.out_dir = m_installed_dir;
+	c.type = "content";
+	c.id = "wpcontent";
+	c.mount_spec = "user:/__vfs_world_content__";
+	makePack(c);
+
+	std::vector<ContentVFS::WorldPack> list = vfs.listWorldPacks();
+	const ContentVFS::WorldPack *w = find(list, "wptest");
+	UASSERT(w != nullptr);
+	UASSERT(find(list, "wpcontent") == nullptr);
+	UASSERTEQ(int, w->pack->version(), 1);
+	UASSERT(w->source == ContentVFS::Source::Installed);
+	UASSERTEQ(std::string, w->pack->previewName(), "Test Park");
+	UASSERTEQ(std::string, w->pack->previewDescription(), "A test park");
+	// never mounted
+	UASSERT(vfs.getPack("wptest") == nullptr);
+
+	// A second file with a higher version of the id wins
+	PackOpts o2 = o;
+	o2.version = 2;
+	o2.file_name = "wptest_v2.kpk";
+	o2.preview = "";
+	makePack(o2);
+	list = vfs.listWorldPacks();
+	w = find(list, "wptest");
+	UASSERT(w != nullptr);
+	UASSERTEQ(int, w->pack->version(), 2);
+	UASSERT(w->pack->previewName().empty());
+
+	// Gone from disk: back to the first
+	fs::DeleteSingleFileOrEmptyDirectory(m_installed_dir + DIR_DELIM + "wptest_v2.kpk");
+	list = vfs.listWorldPacks();
+	w = find(list, "wptest");
+	UASSERT(w != nullptr);
+	UASSERTEQ(int, w->pack->version(), 1);
+
+	// Needs a newer app: left out
+	PackOpts n = o;
+	n.id = "wpnewer";
+	n.min_app_version = "99.0";
+	makePack(n);
+	vfs.setAppVersion("1.0");
+	list = vfs.listWorldPacks();
+	UASSERT(find(list, "wpnewer") == nullptr);
+	vfs.setAppVersion("");
+	list = vfs.listWorldPacks();
+	UASSERT(find(list, "wpnewer") != nullptr);
+
+	// Encrypted: listed only with the key
+	PackOpts e = o;
+	e.id = "wpsecret";
+	e.aes_key = TEST_AES_KEY;
+	e.key_version = 7;
+	makePack(e);
+	list = vfs.listWorldPacks();
+	UASSERT(find(list, "wpsecret") == nullptr);
+	vfs.setKeyProvider(testKeyProvider);
+	// The file did not change: rewrite it, another size so that its
+	// identity moves on everywhere (a Windows identity has no inode and
+	// whole seconds), and it is looked at again
+	e.a_content += " again";
+	makePack(e);
+	list = vfs.listWorldPacks();
+	UASSERT(find(list, "wpsecret") != nullptr);
+
+	// A world pack with Lua (worldmods/, a world's game/): left out
+	PackOpts l = o;
+	l.id = "wpcode";
+	l.a_name = "worldmods/m/init.lua";
+	makePack(l);
+	// Any case of ".lua", and anything in worldmods/ or game/: left out
+	PackOpts lu = o;
+	lu.id = "wpcodeupper";
+	lu.a_name = "init.LUA";
+	makePack(lu);
+	PackOpts wm = o;
+	wm.id = "wpworldmods";
+	wm.a_name = "WorldMods/m/mod.conf";
+	makePack(wm);
+	PackOpts gm = o;
+	gm.id = "wpgame";
+	gm.a_name = "Game/game.conf";
+	makePack(gm);
+	// ".lua" inside a name is no code, nor a file named "game"
+	PackOpts nl = o;
+	nl.id = "wpnotlua";
+	nl.a_name = "notes.lua.txt";
+	makePack(nl);
+	PackOpts gf = o;
+	gf.id = "wpgamefile";
+	gf.a_name = "game";
+	makePack(gf);
+	list = vfs.listWorldPacks();
+	UASSERT(find(list, "wpcode") == nullptr);
+	UASSERT(find(list, "wpcodeupper") == nullptr);
+	UASSERT(find(list, "wpworldmods") == nullptr);
+	UASSERT(find(list, "wpgame") == nullptr);
+	UASSERT(find(list, "wpnotlua") != nullptr);
+	UASSERT(find(list, "wpgamefile") != nullptr);
+
+	vfs.setKeyProvider(nullptr);
+	vfs.unmountAll();
+	fs::RecursiveDelete(m_installed_dir);
+	fs::CreateAllDirs(m_installed_dir);
+}
+
+// A world made from a world pack: its files, world.mt with the caller's
+// keys and the fixed ones, the folder core.create_world would name, a
+// second world of the same name beside it, and a damaged pack leaving
+// nothing behind.
+void TestContentVFS::testCreateWorldFromPack()
+{
+	const std::string dir = getTestTempDirectory() + DIR_DELIM + "world_packs";
+	const std::string worlds = dir + DIR_DELIM + "worlds";
+	const std::string staging = dir + DIR_DELIM + "staging";
+	fs::RecursiveDelete(dir);
+	fs::CreateAllDirs(dir);
+
+	PackOpts o;
+	o.out_dir = dir;
+	o.type = "world";
+	o.id = "wpcreate";
+	o.version = 3;
+	o.mount_spec = "user:/__vfs_world_create__";
+	o.a_name = "world.mt";
+	o.a_content = "gameid = old\ncreative_mode = true\n";
+	o.aes_key = TEST_AES_KEY;
+	o.key_version = 7;
+	const std::string pack_path = makePack(o);
+	std::string err;
+	std::unique_ptr<ContentPack> pack = ContentPack::open(pack_path, testKeyProvider, err);
+	UASSERT(pack != nullptr);
+
+	// What a creation cut short left
+	fs::CreateAllDirs(staging + DIR_DELIM + "world" + DIR_DELIM + "junk");
+
+	const std::string name = "My World: 1";
+	std::map<std::string, std::string> settings = {
+		{"creative_mode", "false"}, {"preset", "peaceful"}, {"world_name", "not this"},
+	};
+	std::string path;
+	UASSERT(createWorldFromPack(*pack, worlds, staging, name, "devtest", settings, path) ==
+			WorldPackError::None);
+	const std::string expected = worlds + DIR_DELIM + sanitizeDirName(name, "world_");
+	UASSERTEQ(std::string, path, expected);
+	UASSERT(!fs::PathExists(staging));
+	UASSERT(!fs::PathExists(path + DIR_DELIM + "junk"));
+
+	std::string data;
+	UASSERT(fs::ReadFile(path + DIR_DELIM "sub" DIR_DELIM "b.bin", data));
+	UASSERTEQ(std::string, data, std::string("\x01\x02\x03", 3));
+	UASSERT(fs::ReadFile(path + DIR_DELIM "e.txt", data));
+	UASSERT(data.empty());
+
+	Settings conf;
+	UASSERT(conf.readConfigFile((path + DIR_DELIM "world.mt").c_str()));
+	UASSERTEQ(std::string, conf.get("world_name"), name);
+	UASSERTEQ(std::string, conf.get("gameid"), "devtest");
+	UASSERTEQ(std::string, conf.get("creative_mode"), "false");
+	UASSERTEQ(std::string, conf.get("preset"), "peaceful");
+	UASSERTEQ(std::string, conf.get("world_pack"), "wpcreate");
+	UASSERTEQ(std::string, conf.get("world_pack_version"), "3");
+
+	// The same name again: the next free folder
+	std::string path2;
+	UASSERT(createWorldFromPack(*pack, worlds, staging, name, "devtest", {}, path2) ==
+			WorldPackError::None);
+	UASSERTEQ(std::string, path2, expected + "_1");
+
+	// An entry that does not decompress: damaged, nothing left behind
+	PackOpts d = o;
+	d.id = "wpdamaged";
+	d.aes_key = nullptr;
+	d.key_version = 0;
+	d.first_entry_flags = ContentPack::EFLAG_ZSTD;
+	const std::string damaged_path = makePack(d);
+	std::unique_ptr<ContentPack> damaged = ContentPack::open(damaged_path, nullptr, err);
+	UASSERT(damaged != nullptr);
+	std::string path3;
+	UASSERT(createWorldFromPack(*damaged, worlds, staging, "Broken", "devtest", {}, path3) ==
+			WorldPackError::Damaged);
+	UASSERT(path3.empty());
+	UASSERT(!fs::PathExists(staging));
+	UASSERT(!fs::PathExists(worlds + DIR_DELIM + sanitizeDirName("Broken", "world_")));
+
+	// An entry whose content does not match the index's hash: damaged
+	PackOpts h = d;
+	h.id = "wpbadhash";
+	h.first_entry_flags = 0;
+	h.a_wrong_hash = true;
+	std::unique_ptr<ContentPack> bad_hash = ContentPack::open(makePack(h), nullptr, err);
+	UASSERT(bad_hash != nullptr);
+	UASSERT(createWorldFromPack(*bad_hash, worlds, staging, "Bad Hash", "devtest", {}, path3) ==
+			WorldPackError::Damaged);
+	UASSERT(!fs::PathExists(staging));
+	UASSERT(!fs::PathExists(worlds + DIR_DELIM + sanitizeDirName("Bad Hash", "world_")));
+
+	// Lua in a world pack: refused
+	PackOpts l = d;
+	l.id = "wplua";
+	l.first_entry_flags = 0;
+	l.a_name = "game/mods/m/init.lua";
+	std::unique_ptr<ContentPack> lua = ContentPack::open(makePack(l), nullptr, err);
+	UASSERT(lua != nullptr);
+	UASSERT(createWorldFromPack(*lua, worlds, staging, "Lua", "devtest", {}, path3) ==
+			WorldPackError::Damaged);
+	UASSERT(!fs::PathExists(worlds + DIR_DELIM + sanitizeDirName("Lua", "world_")));
+
+	// An empty name would be the worlds directory itself; a value that
+	// reads back as a group would swallow world.mt
+	UASSERT(createWorldFromPack(*pack, worlds, staging, "", "devtest", {}, path3) ==
+			WorldPackError::Error);
+	UASSERT(createWorldFromPack(*pack, worlds, staging, "Group", "devtest",
+			{{"preset", " { "}}, path3) == WorldPackError::Error);
+	UASSERT(createWorldFromPack(*pack, worlds, staging, "Multiline", "devtest",
+			{{"preset", "  \"\"\""}}, path3) == WorldPackError::Error);
+	UASSERT(createWorldFromPack(*pack, worlds, staging, "\"\"\"quoted", "devtest", {}, path3) ==
+			WorldPackError::Error);
+	UASSERT(!fs::PathExists(staging));
+	UASSERT(path3.empty());
+
+	pack.reset();
+	damaged.reset();
+	bad_hash.reset();
+	lua.reset();
+	fs::RecursiveDelete(dir);
 }
