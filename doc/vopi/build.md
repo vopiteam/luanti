@@ -73,7 +73,13 @@ which case you are in:
 -- VOPI platform layer: none (encrypted packs will not mount)
 ```
 
-The engine picks up two files by name when the directory provides them:
-`content_keys.cpp` (always) and `default_desktop_settings.cpp` (desktop
-targets only). Everything else the layer contains is wired up by the embedding
-project's own build — Gradle on Android, Xcode on iOS.
+A directory is a platform layer when it holds `content_keys.cpp`. When it
+also holds `platform_sources.cmake`, the engine includes that file in
+`src/CMakeLists.txt`'s scope, where it appends the layer's sources to
+`common_SRCS`, the sources of every engine target; it may add definitions
+and source properties of its own. Without it the engine picks up files by
+name: `content_keys.cpp`, `default_desktop_settings.cpp` (desktop targets
+only), and on Android with `VOPI_ANDROID_PROJECT`
+`default_android_settings.cpp` and `legacy_worlds.cpp` from `../src`
+beside the engine's checkout. A build that does not use this CMake
+project, as the iOS application's, lists the layer's files itself.

@@ -507,10 +507,16 @@ if(ANDROID)
 		add_definitions(-DVOPI_ANDROID_PROJECT=1)
 		# Add include path for auto-generated headers and VOPI Engine sources
 		include_directories(BEFORE ${CMAKE_SOURCE_DIR}/../src)
-		# Add Android-specific settings
-		list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/default_android_settings.cpp)
-		# The conversion of the worlds of the project's earlier app
-		list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/legacy_worlds.cpp)
+		# By name, unless the platform layer lists its own sources (below,
+		# under the same condition)
+		if(NOT (IS_VOPI_ENGINE AND VOPI_PLATFORM_SRC_DIR
+				AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp"
+				AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/platform_sources.cmake"))
+			# Add Android-specific settings
+			list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/default_android_settings.cpp)
+			# The conversion of the worlds of the project's earlier app
+			list(APPEND common_SRCS ${CMAKE_SOURCE_DIR}/../src/legacy_worlds.cpp)
+		endif()
 	endif()
 endif()
 
@@ -529,13 +535,19 @@ if(IS_VOPI_ENGINE)
 		"Directory with the proprietary VOPI platform sources")
 	if(VOPI_PLATFORM_SRC_DIR AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
 		include_directories(BEFORE "${VOPI_PLATFORM_SRC_DIR}")
-		list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
-		# Desktop settings that identify a product (game name, fonts) live with
-		# the platform layer, not here. Absent on mobile, where the iOS/Android
-		# projects supply their own settings files.
-		if(NOT ANDROID AND NOT APPLE_IOS
-				AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
-			list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
+		if(EXISTS "${VOPI_PLATFORM_SRC_DIR}/platform_sources.cmake")
+			# The platform layer lists its own sources: the file appends them
+			# to common_SRCS (doc/vopi/build.md)
+			include("${VOPI_PLATFORM_SRC_DIR}/platform_sources.cmake")
+		else()
+			list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/content_keys.cpp")
+			# Desktop settings that identify a product (game name, fonts) live with
+			# the platform layer, not here. Absent on mobile, where the iOS/Android
+			# projects supply their own settings files.
+			if(NOT ANDROID AND NOT APPLE_IOS
+					AND EXISTS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
+				list(APPEND common_SRCS "${VOPI_PLATFORM_SRC_DIR}/default_desktop_settings.cpp")
+			endif()
 		endif()
 		# The platform layer's strong hook definition is compiled into the same
 		# object set as the engine, so it always wins over the weak default —
