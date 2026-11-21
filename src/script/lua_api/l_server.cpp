@@ -342,6 +342,13 @@ int ModApiServer::l_ban_player(lua_State *L)
 	}
 
 	Server *server = env->getGameDef();
+#if IS_VOPI_ENGINE
+	// A hosted world records no address ban (Server::setIpBanned)
+	if (server->isHosting()) {
+		lua_pushboolean(L, false);
+		return 1;
+	}
+#endif
 	std::string ip_str = server->getPeerAddress(player->getPeerId()).serializeString();
 	server->setIpBanned(ip_str, name);
 	lua_pushboolean(L, true);

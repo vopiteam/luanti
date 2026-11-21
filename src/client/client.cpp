@@ -465,6 +465,35 @@ void Client::connect(const Address &address, const std::string &address_name)
 	initLocalMapSaving(address, m_address_name);
 }
 
+#if IS_VOPI_ENGINE
+void Client::connectThrough(std::unique_ptr<IDatagramSocket> socket,
+		const Address &address, const std::string &address_name)
+{
+	// Once only: there is no second socket to reconnect on
+	sanity_check(!m_con && socket);
+
+	m_address_name = address_name;
+	m_con.reset(con::createMTP(CONNECTION_TIMEOUT, std::move(socket), this));
+
+	infostream << "Connecting through the platform network to server at ";
+	address.print(infostream);
+	infostream << std::endl;
+
+	m_con->Connect(address);
+
+	initLocalMapSaving(address, m_address_name);
+}
+
+void Client::denyUntrustedMedia(const std::string &name)
+{
+	errorstream << "Client: no mounted content pack holds the media \""
+		<< name << "\" of the server" << std::endl;
+	setFatalError(fmtgettext("The server uses content that this game does not "
+		"have (%s). Both need the same version of the game.", name.c_str()));
+	m_con->Disconnect();
+}
+#endif
+
 void Client::step(float dtime)
 {
 	// Limit a bit
@@ -1034,6 +1063,12 @@ MapCanvas *Client::getMapCanvas()
 			// Local world: keep the fog-of-war inside the world folder so it is
 			// owned by the world and deleted/moved/copied together with it.
 			dir = m_world_path + DIR_DELIM + "worldmap";
+#if IS_VOPI_ENGINE
+		} else if (m_server_untrusted) {
+			// An untrusted server: in memory only (an empty directory), so
+			// that no server fills the device's disk or shares a canvas
+			// with another by its seed
+#endif
 		} else {
 			// Remote server: there is no local world folder, so fall back to a
 			// client-side cache keyed by seed. (Proper multiplayer handling —
@@ -1185,6 +1220,11 @@ void Client::initLocalMapSaving(const Address &address, const std::string &hostn
 	if (!g_settings->getBool("enable_local_map_saving") || m_internal_server) {
 		return;
 	}
+#if IS_VOPI_ENGINE
+	// Nothing an untrusted server sends is written to the device
+	if (m_server_untrusted)
+		return;
+#endif
 	if (m_localdb) {
 		infostream << "Local map saving already initialized" << std::endl;
 		return;

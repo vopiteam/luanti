@@ -6,6 +6,10 @@
 
 #include "irrlichttypes.h"
 #include "content/subgames.h"
+#if IS_VOPI_ENGINE
+#include "netcode/platform_network.h"
+#include <memory>
+#endif
 
 // Information provided from "main"
 struct GameParams
@@ -45,4 +49,14 @@ struct GameStartData : GameParams
 
 	// "world_path" must be kept in sync!
 	WorldSpec world_spec;
+
+#if IS_VOPI_ENGINE
+	// Host: a local server on the platform network, its own client on an
+	// in-process channel (local_server is true, address empty).
+	// Join: `joining` holds the socket and the login; `address` names its
+	// server address, which no resolution reads, and, not being empty,
+	// keeps a local server from starting.
+	platform_network::Mode platform_network = platform_network::Mode::None;
+	std::shared_ptr<platform_network::Joining> joining;
+#endif
 };

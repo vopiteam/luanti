@@ -30,6 +30,10 @@
 
 class Camera;
 class ClientMediaDownloader;
+#if IS_VOPI_ENGINE
+class IDatagramSocket;
+class PackMediaIndex;
+#endif
 class ISoundManager;
 class IWritableItemDefManager;
 class IWritableShaderSource;
@@ -138,6 +142,26 @@ public:
 	bool isShutdown();
 
 	void connect(const Address &address, const std::string &address_name);
+
+#if IS_VOPI_ENGINE
+	// As connect(), on a socket the caller supplies (platform network)
+	void connectThrough(std::unique_ptr<IDatagramSocket> socket,
+			const Address &address, const std::string &address_name);
+
+	/*
+		A server this client trusts with nothing on the device, set before
+		connecting: it accepts only this engine's protocol version, loads
+		every media file from the mounted content packs by its SHA-1 (a
+		file no pack holds ends the session) and ignores any media data
+		the server sends, neither reads nor writes the media cache, fetches
+		nothing from a URL, saves no map, keeps the fog-of-war canvas in
+		memory and opens no URL the server names.
+	*/
+	void setServerUntrusted() { m_server_untrusted = true; }
+	bool isServerUntrusted() const { return m_server_untrusted; }
+	// Ends the session: the server uses media no mounted pack holds
+	void denyUntrustedMedia(const std::string &name);
+#endif
 
 	/*
 		Stuff that references the environment is valid only as
@@ -640,6 +664,12 @@ private:
 	bool m_map_harvest_done = false;         // has at least one sweep run
 
 #if IS_VOPI_ENGINE
+	// See setServerUntrusted()
+	bool m_server_untrusted = false;
+	// The mounted packs' media, made at the media announcement of an
+	// untrusted server
+	std::shared_ptr<const PackMediaIndex> m_pack_media;
+
 	// Whether the server wants us to report node selection (TOSERVER_NODE_SELECTED).
 	// Set by TOCLIENT_NODE_SELECTION_REPORTING; gates the per-selection-change send.
 	bool m_server_wants_node_selection = false;

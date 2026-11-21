@@ -45,6 +45,21 @@ The "gamedata" table is read when calling `core.start()`. It should contain:
 }
 ```
 
+**VOPI Engine extension.** One more field, `platform_network`, starts the
+game on the platform network (`doc/vopi/platform.md`, Platform network):
+
+* `"host"`: the selected world is hosted on the platform's sockets, its
+  local player under the singleplayer name; `address`, `port`,
+  `playername`, `password` and `singleplayer` are ignored. Without a
+  platform network the world does not start.
+* `"join"`: the client joins the world the platform has prepared, on its
+  socket and with its login; `address`, `port`, `playername`, `password`,
+  `allow_login_or_register`, `selected_world` and `singleplayer` are
+  ignored. Without a prepared joining the start fails.
+* absent or `""`: as upstream.
+
+A start with `do_reconnect` after one on the platform network fails.
+
 
 Functions
 ---------

@@ -599,6 +599,13 @@ bool GameFormSpec::handleCallbacks()
 		g_gamecallback->touchscreenlayout_requested = false;
 	}
 
+#if IS_VOPI_ENGINE
+	// An untrusted server opens no URL on this device
+	if (!g_gamecallback->show_open_url_dialog.empty() && m_client->isServerUntrusted()) {
+		infostream << "Not opening the URL of an untrusted server" << std::endl;
+		g_gamecallback->show_open_url_dialog.clear();
+	}
+#endif
 	if (!g_gamecallback->show_open_url_dialog.empty()) {
 		(void)make_irr<GUIOpenURLMenu>(guienv, guiroot, -1,
 				 &g_menumgr, texture_src, g_gamecallback->show_open_url_dialog);

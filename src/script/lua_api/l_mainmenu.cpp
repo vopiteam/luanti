@@ -145,6 +145,9 @@ int ModApiMainMenu::l_start(lua_State *L)
 	}
 	data->serverdescription = getTextData(L,"serverdescription");
 	data->servername        = getTextData(L,"servername");
+#if IS_VOPI_ENGINE
+	data->platform_network  = getTextData(L, "platform_network");
+#endif
 
 	//close menu next time
 	engine->m_startgame = true;

@@ -99,6 +99,12 @@ re-downloading from a server; a local pack read is already cheap, and caching it
 would duplicate the content on disk in exactly the form the container exists to
 avoid.
 
+A client that does not trust its server (`platform.md`, Platform network)
+loads each medium the server announces from the mounted packs by the SHA-1
+of its content, which every pack index records: `PackMediaIndex`
+(`src/client/clientmedia.h`) indexes the mounts visible when the
+announcement arrives, in lookup-priority order.
+
 ## Thread safety
 
 The mount table is an immutable snapshot behind a `shared_ptr`. Readers take

@@ -7,6 +7,7 @@
 #include "irr_v3d.h"
 #if IS_VOPI_ENGINE
 #include "daycycle.h"
+#include "netcode/platform_network.h"
 #endif
 #include "map.h"
 #include "hud_element.h" // HudElementStat
@@ -192,6 +193,11 @@ public:
 		bool dedicated,
 		ChatInterface *iface = nullptr,
 		std::string *shutdown_errmsg = nullptr
+#if IS_VOPI_ENGINE
+		// A world hosted through the platform network: the server runs on
+		// the hosting's socket (netcode/platform_network.h)
+		, std::shared_ptr<platform_network::Hosting> hosting = nullptr
+#endif
 	);
 	~Server();
 	DISABLE_CLASS_COPY(Server);
@@ -364,6 +370,21 @@ public:
 
 	inline bool isSingleplayer() const
 			{ return m_simple_singleplayer_mode; }
+#if IS_VOPI_ENGINE
+	// Whether the world is hosted through the platform network
+	bool isHosting() const { return !!m_hosting; }
+	// Whether `address` is the hosting's local client, this device's own
+	// player. Always false when not hosting.
+	bool isLocalHostingPeer(const Address &address) const
+	{
+		return m_hosting && address == m_hosting->localClientAddress();
+	}
+	// Whether a peer at `address` may log in as `name` in a hosted world:
+	// the local player as anyone, a remote peer never under the
+	// administrator's name and only as the hosting admits it. True when
+	// not hosting.
+	bool hostingAdmitsPlayer(const Address &address, const std::string &name);
+#endif
 
 	struct StepSettings {
 		float steplen;
@@ -741,6 +762,14 @@ private:
 	std::optional<DayCycleDefinition> m_pending_day_cycle;
 	std::optional<bool> m_pending_day_cycle_pause;
 	void initializeDayCycle();
+#endif
+
+#if IS_VOPI_ENGINE
+	// The platform network's hosting of this world, nullptr otherwise;
+	// set before m_con, which it supplies the socket of
+	std::shared_ptr<platform_network::Hosting> m_hosting;
+	// Drops the remote peers whose sessions the hosting ended
+	void dropEndedHostingPeers();
 #endif
 
 	// server connection

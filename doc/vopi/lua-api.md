@@ -63,6 +63,19 @@ would let a server-thread call race the main thread — a data race, and
 undefined behaviour. If you need this on the server side, the answer is to send
 it, not to re-register the function.
 
+## Other menu additions
+
+| Addition | Environment | Document |
+|---|---|---|
+| `platform_network` field of `gamedata` (`core.start()`) | menu | `doc/menu_lua_api.md`, Gamedata |
+
+## Platform functions
+
+Functions of the platform layer, in the main menu, the pause menu and the
+server, are registered through the platform's Lua registrar
+([platform.md](platform.md#platform-lua-functions)) and documented with the
+platform, not here.
+
 ## Changed callback signatures
 
 ### Detached inventory callbacks

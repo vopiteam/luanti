@@ -129,6 +129,20 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 		return;
 	}
 
+#if IS_VOPI_ENGINE
+	// A hosted world's local player is this device's own client, on the
+	// hosting's in-process channel
+	const bool local_hosting_peer = isLocalHostingPeer(addr);
+	// and its remote peers speak this engine's protocol only
+	if (isHosting() && !local_hosting_peer &&
+			net_proto_version != LATEST_PROTOCOL_VERSION) {
+		actionstream << "Server: A remote peer of another protocol version tried to "
+			"join the hosted world from " << addr_s << std::endl;
+		DenyAccess(peer_id, SERVER_ACCESSDENIED_WRONG_VERSION);
+		return;
+	}
+#endif
+
 	/*
 		Validate player name
 	*/
@@ -158,12 +172,26 @@ void Server::handleCommand_Init(NetworkPacket* pkt)
 		return;
 	}
 	// Or the "singleplayer" name to be used on regular servers
-	if (!isSingleplayer() && strcasecmp(playername, "singleplayer") == 0) {
+	if (!isSingleplayer() && strcasecmp(playername, "singleplayer") == 0
+#if IS_VOPI_ENGINE
+			// a hosted world's local player plays under it as in singleplayer
+			&& !local_hosting_peer
+#endif
+			) {
 		actionstream << "Server: Player with the name \"singleplayer\" tried "
 			"to connect from " << addr_s << std::endl;
 		DenyAccess(peer_id, SERVER_ACCESSDENIED_WRONG_NAME);
 		return;
 	}
+
+#if IS_VOPI_ENGINE
+	if (!hostingAdmitsPlayer(addr, playerName)) {
+		actionstream << "Server: The hosting does not admit the name \"" <<
+			playerName << "\" from " << addr_s << std::endl;
+		DenyAccess(peer_id, SERVER_ACCESSDENIED_WRONG_NAME);
+		return;
+	}
+#endif
 
 	{
 		RemotePlayer *player = m_env->getPlayer(playername, true);
@@ -353,6 +381,15 @@ void Server::handleCommand_RequestMedia(NetworkPacket* pkt)
 	*pkt >> numfiles;
 
 	session_t peer_id = pkt->getPeerId();
+#if IS_VOPI_ENGINE
+	// A hosted world's remote peers load media from their own content: no
+	// request of theirs costs the host's uplink
+	if (isHosting() && !isLocalHostingPeer(getPeerAddress(peer_id))) {
+		actionstream << "Server: Ignoring a media request from remote peer "
+			<< peer_id << " of the hosted world" << std::endl;
+		return;
+	}
+#endif
 	verbosestream << "Client " << getPlayerName(peer_id)
 		<< " requested media file(s):\n";
 
@@ -1587,7 +1624,17 @@ void Server::handleCommand_FirstSrp(NetworkPacket* pkt)
 		<< ", with is_empty=" << (is_empty == 1) << std::endl;
 
 	const bool empty_disallowed = !isSingleplayer() && is_empty == 1 &&
-		g_settings->getBool("disallow_empty_password");
+		(g_settings->getBool("disallow_empty_password")
+#if IS_VOPI_ENGINE
+		// and always for a hosted world's remote peers
+		|| isHosting()
+#endif
+		)
+#if IS_VOPI_ENGINE
+		// a hosted world's local player has no password, as in singleplayer
+		&& !isLocalHostingPeer(client->getAddress())
+#endif
+		;
 
 	// Either this packet is sent because the user is new or to change the password
 	if (cstate == CS_HelloSent) {
@@ -1817,7 +1864,14 @@ void Server::handleCommand_SrpBytesM(NetworkPacket* pkt)
 
 	// skip authentication check for singleplayer world.
 	const bool is_true_singleplayer = isSingleplayer() && (strcasecmp(playername.c_str(), "singleplayer") == 0);
-	if (!bytes_HAMK && !is_true_singleplayer) {
+	if (!bytes_HAMK && !is_true_singleplayer
+#if IS_VOPI_ENGINE
+			// nor for a hosted world's local player: the in-process channel
+			// is its authentication, so a password it once set does not
+			// lock it out
+			&& !isLocalHostingPeer(client->getAddress())
+#endif
+			) {
 		if (wantSudo) {
 			actionstream << "Server: User " << playername << " at " << addr_s
 				<< " tried to change their password, but supplied wrong"

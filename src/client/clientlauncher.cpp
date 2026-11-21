@@ -430,6 +430,67 @@ void ClientLauncher::config_guienv()
 	}
 }
 
+#if IS_VOPI_ENGINE
+// The main menu's `platform_network` (core.start): "" none, "host" the
+// selected world, "join" the joining the platform has prepared, whose
+// socket and login replace the menu's address and name. False with
+// `error_message` set when the start must not go on.
+static bool setPlatformNetwork(const std::string &mode, bool reconnect,
+		GameStartData &start_data, std::string &error_message)
+{
+	// A start on the platform network is not reconnected: a reconnect
+	// would reuse its login on the device's own socket, or host its world
+	// there (the game asks for none, Game::checkConnection)
+	if (reconnect && start_data.platform_network != platform_network::Mode::None) {
+		start_data.platform_network = platform_network::Mode::None;
+		start_data.joining.reset();
+		start_data.name.clear();
+		start_data.password.clear();
+		start_data.address.clear();
+		error_message = gettext("This game cannot reconnect.");
+		errorstream << error_message << std::endl;
+		return false;
+	}
+	start_data.platform_network = platform_network::Mode::None;
+	start_data.joining.reset();
+
+	if (mode.empty())
+		return true;
+
+	if (mode == "host") {
+		start_data.platform_network = platform_network::Mode::Host;
+		start_data.address.clear();
+		start_data.local_server = true;
+		return true;
+	}
+
+	if (mode == "join") {
+		auto joining = std::make_shared<platform_network::Joining>();
+		std::string error;
+		platform_network::Provider *provider = platform_network::getProvider();
+		if (!provider || !provider->join(*joining, error) || !joining->socket) {
+			error_message = fmtgettext("Unable to join: %s",
+					error.empty() ? gettext("joining is not available") : error.c_str());
+			errorstream << error_message << std::endl;
+			return false;
+		}
+		start_data.platform_network = platform_network::Mode::Join;
+		start_data.address = joining->server_address.serializeString();
+		start_data.socket_port = joining->server_address.getPort();
+		start_data.name = joining->player_name;
+		start_data.password = joining->password;
+		start_data.allow_login_or_register = ELoginRegister::Any;
+		start_data.local_server = false;
+		start_data.joining = std::move(joining);
+		return true;
+	}
+
+	error_message = "Unknown platform_network mode: " + mode;
+	errorstream << error_message << std::endl;
+	return false;
+}
+#endif
+
 bool ClientLauncher::launch_game(std::string &error_message,
 		bool reconnect_requested, GameStartData &start_data,
 		const Settings &cmd_args)
@@ -462,6 +523,15 @@ bool ClientLauncher::launch_game(std::string &error_message,
 		// Initialize menu data
 		// TODO: Re-use existing structs (GameStartData)
 		MainMenuData menudata;
+#if IS_VOPI_ENGINE
+		// The login of an earlier joining is the platform's: the menu's
+		// data never get it (the mode stays, so that a reconnect is refused)
+		if (start_data.platform_network == platform_network::Mode::Join) {
+			start_data.name.clear();
+			start_data.password.clear();
+			start_data.address.clear();
+		}
+#endif
 		menudata.address                         = start_data.address;
 		menudata.name                            = start_data.name;
 		menudata.password                        = start_data.password;
@@ -505,19 +575,39 @@ bool ClientLauncher::launch_game(std::string &error_message,
 
 		start_data.local_server = !menudata.simple_singleplayer_mode &&
 			start_data.address.empty();
+#if IS_VOPI_ENGINE
+		if (!setPlatformNetwork(menudata.platform_network, menudata.do_reconnect,
+				start_data, error_message))
+			return false;
+#endif
 	} else {
 		start_data.local_server = !start_data.world_path.empty() &&
 			start_data.address.empty() && !start_data.name.empty();
 	}
 
-	if (!start_data.isSinglePlayer() && start_data.name.empty()) {
+#if IS_VOPI_ENGINE
+	// A hosted world's local player plays as in singleplayer, under the
+	// singleplayer name with no password
+	const bool platform_host =
+			start_data.platform_network == platform_network::Mode::Host;
+#endif
+
+	if (!start_data.isSinglePlayer() && start_data.name.empty()
+#if IS_VOPI_ENGINE
+			&& !platform_host
+#endif
+			) {
 		error_message = gettext("Please choose a name!");
 		errorstream << error_message << std::endl;
 		return false;
 	}
 
 	// If using simple singleplayer mode, override
-	if (start_data.isSinglePlayer()) {
+	if (start_data.isSinglePlayer()
+#if IS_VOPI_ENGINE
+			|| platform_host
+#endif
+			) {
 #if IS_VOPI_ENGINE
 		start_data.name = g_settings->get("default_player_name");
 		// default_player_name defaults to "" and is user-configurable, so it
@@ -532,13 +622,27 @@ bool ClientLauncher::launch_game(std::string &error_message,
 #endif
 		start_data.password = "";
 		start_data.socket_port = myrand_range(49152, 65535);
-	} else {
+#if IS_VOPI_ENGINE
+		// The administrator of a hosted world is its local player
+		// (builtin's give_to_admin follows this setting)
+		if (platform_host)
+			g_settings->set("name", start_data.name);
+#endif
+	} else
+#if IS_VOPI_ENGINE
+	// The name of a joining is the platform's, not the player's choice
+	if (start_data.platform_network != platform_network::Mode::Join)
+#endif
+	{
 		g_settings->set("name", start_data.name);
 	}
 
 	if (start_data.name.length() > PLAYERNAME_SIZE - 1) {
 		error_message = gettext("Player name too long.");
 		start_data.name.resize(PLAYERNAME_SIZE);
+#if IS_VOPI_ENGINE
+		if (start_data.platform_network != platform_network::Mode::Join)
+#endif
 		g_settings->set("name", start_data.name);
 		return false;
 	}

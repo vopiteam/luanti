@@ -11,9 +11,16 @@
 #include <set>
 #include <vector>
 #include <unordered_map>
+#if IS_VOPI_ENGINE
+#include <memory>
+#include <string>
+#endif
 
 class Client;
 struct HTTPFetchResult;
+#if IS_VOPI_ENGINE
+class ContentPack;
+#endif
 
 #define MTHASHSET_FILE_SIGNATURE 0x4d544853 // 'MTHS'
 #define MTHASHSET_FILE_NAME "index.mth"
@@ -27,6 +34,34 @@ bool clientMediaUpdateCache(const std::string &raw_hash,
 // Copy file on disk(!) into media cache (unless it exists already)
 bool clientMediaUpdateCacheCopy(const std::string &raw_hash,
 	const std::string &path);
+
+#if IS_VOPI_ENGINE
+/*
+	The media of the content packs mounted when it is made, by SHA-1 of their
+	content: what a client that does not trust its server
+	(Client::setServerUntrusted) loads in place of any media the server
+	would send.
+*/
+class PackMediaIndex
+{
+public:
+	PackMediaIndex();
+
+	// The content whose SHA-1 is `raw_sha1` (20 bytes); false when no
+	// mounted pack holds it or it cannot be read
+	bool read(const std::string &raw_sha1, std::string &data) const;
+
+	size_t size() const { return m_entries.size(); }
+
+private:
+	struct Ref {
+		std::shared_ptr<const ContentPack> pack;
+		std::string path; // of the entry in the pack
+	};
+	// By SHA-1 in lower-case hex, as the pack index has it
+	std::unordered_map<std::string, Ref> m_entries;
+};
+#endif
 
 // more of a base class than an interface but this name was most convenient...
 class IClientMediaDownloader
@@ -87,6 +122,14 @@ public:
 	ClientMediaDownloader();
 	~ClientMediaDownloader();
 
+#if IS_VOPI_ENGINE
+	// Load every file from `packs` alone: the media cache is neither read
+	// nor written, nothing is requested from the server or a URL, and a
+	// file no pack holds ends the session (Client::denyUntrustedMedia).
+	// Before the first step.
+	void setPacksOnly(std::shared_ptr<const PackMediaIndex> packs);
+#endif
+
 	float getProgress() const {
 		if (m_uncached_count >= 1)
 			return 1.0f * m_uncached_received_count /
@@ -135,6 +178,10 @@ private:
 	};
 
 	void initialStep(Client *client);
+#if IS_VOPI_ENGINE
+	void loadFromPacks(Client *client);
+	std::shared_ptr<const PackMediaIndex> m_packs_only;
+#endif
 	void remoteHashSetReceived(const HTTPFetchResult &fetch_result);
 	void remoteMediaReceived(const HTTPFetchResult &fetch_result,
 			Client *client);

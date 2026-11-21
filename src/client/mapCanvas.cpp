@@ -220,6 +220,12 @@ const MapTile *MapCanvas::findTileReadonly(s16 tx, s16 tz)
 	// Cold miss. Cheaply check the file exists BEFORE allocating a 96 KiB tile:
 	// most lookups for unexplored area miss, and a 96 KiB alloc + memset per
 	// miss is exactly what made the render assemble pass expensive.
+#if IS_VOPI_ENGINE
+	// A canvas in memory only has no file to look for; the tiles it evicts
+	// are forgotten
+	if (m_dir.empty())
+		return nullptr;
+#endif
 	if (!fs::PathExists(tilePath(tx, tz)))
 		return nullptr;
 
@@ -380,6 +386,11 @@ void MapCanvas::flushAll()
 
 void MapCanvas::saveTile(s16 tx, s16 tz, const MapTile &t) const
 {
+#if IS_VOPI_ENGINE
+	// No directory: the canvas lives in memory only
+	if (m_dir.empty())
+		return;
+#endif
 	if (!m_dir_ready) {
 		if (!fs::CreateAllDirs(m_dir)) {
 			warningstream << "MapCanvas: cannot create dir " << m_dir << std::endl;
@@ -416,6 +427,10 @@ void MapCanvas::saveTile(s16 tx, s16 tz, const MapTile &t) const
 
 bool MapCanvas::loadTile(s16 tx, s16 tz, MapTile &out) const
 {
+#if IS_VOPI_ENGINE
+	if (m_dir.empty())
+		return false;
+#endif
 	const std::string path = tilePath(tx, tz);
 	if (!fs::PathExists(path))
 		return false;

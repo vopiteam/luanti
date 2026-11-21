@@ -15,7 +15,7 @@ See [build.md](build.md).
 | Document | About |
 |---|---|
 | [build.md](build.md) | `IS_VOPI_ENGINE`, engine revision, and the version string |
-| [platform.md](platform.md) | iOS and Android support, the platform state channel, mobile lifecycle, memory and thermal caps |
+| [platform.md](platform.md) | iOS and Android support, the platform state channel, the platform's services, network and Lua functions, mobile lifecycle, memory and thermal caps |
 | [content-vfs.md](content-vfs.md) | Reading game content from encrypted containers instead of the filesystem |
 | [ui.md](ui.md) | Formspec and HUD extensions, touch input, font scaling, baked node icons |
 | [mapgen.md](mapgen.md) | Mapgen Valleys additions: rivers level with the sea, a solid floor, floating piece removal |

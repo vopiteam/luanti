@@ -76,6 +76,122 @@ A registered provider rather than weak symbols: weak definitions do not link
 the same way on every toolchain — MSVC has none — and a registered provider
 lets tests install a fake.
 
+## Platform services
+
+`main()` calls one more startup hook after the content pack hooks
+(`content-vfs.md`, Encryption and keys), before the user data directory and
+the logs are set up:
+
+```c
+extern "C" void vopi_install_platform_services();   // platform_state.h
+```
+
+A platform layer defines it to install what it supplies: the platform
+network (`platform_network::setProvider`) and its Lua functions
+(`platform_lua::setRegistrar`), both below. The hook only stores pointers:
+`main()` may run again in one process on Android, and every installation
+replaces the previous one. The default, in `platform_state.cpp`, installs
+nothing; it is weak with GCC and Clang, and on MSVC it is a plain definition
+that exists only in a build without a platform layer: a platform layer
+built with MSVC must define the hook itself. The hook alone is a weak
+symbol; what it installs are registered providers, as above.
+
+## Platform network
+
+Datagram sockets the platform supplies in place of the device's own UDP
+sockets, for a world that others join through the platform and for a client
+that joins a world through it (`src/netcode/platform_network.h`). What
+carries the datagrams and how their peers are authenticated is the
+platform's; the engine runs its usual connection on the sockets it is given.
+
+**The socket.** `IDatagramSocket` (`src/netcode/socket.h`) has the
+operations the connection uses: `Bind`, `Send`, `Receive`, `setTimeoutMs`
+and `GetHandle`. `UDPDatagramSocket` is the default, a `UDPSocket` behind the
+interface, so a connection without a supplied socket works as upstream's.
+`con::createMTP` has an overload that takes the socket. Its contract: `Bind`
+once from the send thread, throwing only on the serving side; `Send` from
+the send thread, dropping silently what it cannot deliver; `Receive` from
+the receive thread, waiting at most the last `setTimeoutMs` and returning -1
+when nothing came. The packet size stays 512 bytes; a socket adds its own
+framing outside it.
+
+**The provider.** A platform installs one `platform_network::Provider`. The
+main menu chooses the mode with the `platform_network` field of `gamedata`
+(`doc/menu_lua_api.md`, Gamedata):
+
+- **Hosting** (`"host"`): `Game::createServer` asks `Provider::host` for a
+  `Hosting` of the selected world and starts the server on its socket; no
+  address of the device is resolved or bound. The server and this device's
+  own client talk over an in-process channel whose two ends the hosting
+  supplies; the platform presents them in `127.0.0.0/8`, and every remote
+  peer at an address of its own outside it, which no other remote peer has
+  while that one is connected. The local player plays under the singleplayer name
+  (`default_player_name`, else `singleplayer`) and is the administrator
+  (the `name` setting). The server is not in simple singleplayer mode, so
+  it does not pause in the menus, and `core.is_singleplayer()` is false.
+- **Joining** (`"join"`): `ClientLauncher` takes the `Joining` the
+  platform has prepared, a socket, the server's address on it, and the name
+  and password to log in with, which come from the platform and never pass
+  through a script.
+
+**Fails closed.** Without a provider, or when it refuses, a world started
+for hosting does not start and a joining client does not connect: neither
+ever falls back to a UDP socket. A joining client never resolves an address
+and never takes the fallback address of an ordinary connection. No game on
+the platform network asks to reconnect, and the launcher refuses a
+`do_reconnect` start after one: a reconnection would need a new session,
+which only the platform makes, and would otherwise host the world on the
+device's own socket. A joining ends at once when the platform reports its
+session ended (`Joining::session_ended`, polled every frame).
+
+**A hosted server.** In a world hosted through the platform network the
+server:
+
+- knows its local player by the address of the in-process channel, and lets
+  it log in under the singleplayer name with no password, as simple
+  singleplayer mode does; its password is not checked;
+- refuses any remote peer that presents the administrator's name (the
+  `name` setting, which the launcher sets to the local player's name and
+  which stays fixed while the world runs), and asks the hosting whether a
+  remote peer at its address may log in under the name it presents
+  (`Hosting::admitsPlayer`): a platform that authenticates its peers binds
+  each one to one name; a remote peer may not set an empty password,
+  whatever `disallow_empty_password` says (as the client declares it, the
+  setting's own rule);
+- applies no address ban to a remote peer and records none
+  (`core.ban_player` records nothing and returns false): a remote peer's
+  address is the platform's and says nothing of who it is, and its bans
+  are the platform's;
+- drops at once the remote peers whose sessions the platform ended
+  (`Hosting::takeEndedPeers`, polled every server step);
+- accepts only its own protocol version from a remote peer, answers no
+  media request from one, names no remote media server, is never announced
+  to a server list, and always records rollback.
+
+**A client that does not trust its server.** A joining client
+(`Client::setServerUntrusted`) accepts only its own protocol version; loads
+every media file the server announces, dynamic media included, from the
+mounted content packs by the file's SHA-1 (`PackMediaIndex`,
+`content-vfs.md`) and ends the session on a file no pack holds or whose
+content does not match (one that matches but fails to load is logged, as
+on any server); ignores any media data the server sends; neither reads nor
+writes the media cache; fetches nothing from a remote media server; saves
+no map whatever `enable_local_map_saving` says; keeps the fog-of-war
+canvas in memory, forgetting the tiles it evicts; and opens no URL during
+the game, from a formspec, hypertext or the chat. Inline images of texture
+modifiers (`[png:`) are still decoded. (A URL asked for before a game
+starts, by an earlier game or a hypertext of the main menu, is dropped when
+any game starts.)
+
+## Platform Lua functions
+
+A platform installs one registrar (`platform_lua::setRegistrar`,
+`src/script/platform_lua.h`), which the engine calls where it registers its
+own functions in three environments: the main menu's, the pause menu's and
+the server's, with the `core` table at the given stack index. Without one,
+nothing is registered. The functions are the platform's and are documented
+with it.
+
 ## Main menu notifications
 
 On Android and iOS the engine tells the application layer when the main menu

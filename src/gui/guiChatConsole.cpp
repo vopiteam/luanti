@@ -773,6 +773,12 @@ bool GUIChatConsole::weblinkClick(s32 col, s32 row)
 	actionstream << ws << std::endl;
 	*/
 
+#if IS_VOPI_ENGINE
+	// The chat of an untrusted server opens no link on this device
+	if (!weblink.empty() && m_client && m_client->isServerUntrusted())
+		return true;
+#endif
+
 	// User notification
 	if (weblink.size() != 0) {
 		std::ostringstream msg;

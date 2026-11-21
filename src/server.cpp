@@ -295,6 +295,22 @@ static void enrich_exception(BaseException &e, const NetworkPacket &pkt, bool in
 	Server
 */
 
+#if IS_VOPI_ENGINE
+// The server's connection: on the device's UDP socket, or on the socket of
+// the platform network's hosting. A hosting without a socket stops the
+// server: it never falls back to a UDP socket.
+static con::IConnection *createServerConnection(const Address &bind_addr,
+		platform_network::Hosting *hosting, con::PeerHandler *handler)
+{
+	if (!hosting)
+		return con::createMTP(CONNECTION_TIMEOUT, bind_addr.isIPv6(), handler);
+	std::unique_ptr<IDatagramSocket> socket = hosting->takeServerSocket();
+	if (!socket)
+		throw ServerError("The hosting supplied no server socket");
+	return con::createMTP(CONNECTION_TIMEOUT, std::move(socket), handler);
+}
+#endif
+
 Server::Server(
 		const std::string &path_world,
 		const SubgameSpec &gamespec,
@@ -303,13 +319,21 @@ Server::Server(
 		bool dedicated,
 		ChatInterface *iface,
 		std::string *shutdown_errmsg
+#if IS_VOPI_ENGINE
+		, std::shared_ptr<platform_network::Hosting> hosting
+#endif
 	):
 	m_bind_addr(bind_addr),
 	m_path_world(path_world),
 	m_gamespec(gamespec),
 	m_simple_singleplayer_mode(simple_singleplayer_mode),
 	m_dedicated(dedicated),
+#if IS_VOPI_ENGINE
+	m_hosting(std::move(hosting)),
+	m_con(createServerConnection(m_bind_addr, m_hosting.get(), this)),
+#else
 	m_con(con::createMTP(CONNECTION_TIMEOUT, m_bind_addr.isIPv6(), this)),
+#endif
 	m_itemdef(createItemDefManager()),
 	m_nodedef(createNodeDefManager()),
 	m_craftdef(createCraftDefManager()),
@@ -598,7 +622,12 @@ void Server::init()
 		FATAL_ERROR("Couldn't create any mapgen type");
 	m_emerge->initMapgens(servermap.getMapgenParams());
 
-	if (g_settings->getBool("enable_rollback_recording")) {
+	if (g_settings->getBool("enable_rollback_recording")
+#if IS_VOPI_ENGINE
+			// A hosted world always records rollback
+			|| isHosting()
+#endif
+			) {
 		// Create rollback manager
 		m_rollback = new RollbackManager(m_path_world, this);
 	}
@@ -899,6 +928,10 @@ void Server::AsyncRunStep(float dtime, bool initial_step)
 	{
 		float &counter = m_masterserver_timer;
 		if (!isSingleplayer() && (!counter || counter >= 300.0) &&
+#if IS_VOPI_ENGINE
+				// A hosted world is never announced
+				!isHosting() &&
+#endif
 				g_settings->getBool("server_announce")) {
 			ServerList::sendAnnounce(counter ? ServerList::AA_UPDATE :
 						ServerList::AA_START,
@@ -1216,6 +1249,10 @@ void Server::Receive(float min_time)
 	auto remaining_time_us = [&]() -> float {
 		return std::max(0.0f, min_time_us - (porting::getTimeUs() - t0));
 	};
+
+#if IS_VOPI_ENGINE
+	dropEndedHostingPeers();
+#endif
 
 	NetworkPacket pkt;
 	session_t peer_id;
@@ -3048,6 +3085,12 @@ void Server::sendMediaAnnouncement(session_t peer_id, const std::string &lang_co
 	}
 
 	// and the remote media server(s)
+#if IS_VOPI_ENGINE
+	// A hosted world names none: a remote player fetches nothing from a URL
+	if (isHosting())
+		pkt << std::string();
+	else
+#endif
 	pkt << g_settings->get("remote_media");
 	Send(&pkt);
 
@@ -3687,6 +3730,12 @@ void Server::reportFormspecPrependModified(const std::string &name)
 
 void Server::setIpBanned(const std::string &ip, const std::string &name)
 {
+#if IS_VOPI_ENGINE
+	// A hosted world records no address ban (denyIfBanned): its remote
+	// peers' addresses are the platform's, and its bans are too
+	if (isHosting())
+		return;
+#endif
 	m_banmanager->add(ip, name);
 
 	auto clients = m_clients.getClientIDs(CS_Created);
@@ -3709,6 +3758,13 @@ bool Server::denyIfBanned(session_t peer_id)
 {
 	Address address = getPeerAddress(peer_id);
 	std::string addr_s = address.serializeString();
+
+#if IS_VOPI_ENGINE
+	// A hosted world's remote peers are at addresses of the platform's,
+	// which say nothing of who they are: no address ban applies to them
+	if (isHosting() && !isLocalHostingPeer(address))
+		return false;
+#endif
 
 	if (m_banmanager->isIpBanned(addr_s)) {
 		std::string ban_name = m_banmanager->getBanName(addr_s);
@@ -3969,6 +4025,41 @@ Address Server::getPeerAddress(session_t peer_id)
 {
 	return getClient(peer_id, CS_Invalid)->getAddress();
 }
+
+#if IS_VOPI_ENGINE
+bool Server::hostingAdmitsPlayer(const Address &address, const std::string &name)
+{
+	if (!m_hosting || isLocalHostingPeer(address))
+		return true;
+	// The administrator is the local player (the "name" setting): no
+	// remote peer takes its name, whatever case it is written in
+	if (strcasecmp(name.c_str(), g_settings->get("name").c_str()) == 0)
+		return false;
+	return m_hosting->admitsPlayer(address, name);
+}
+
+void Server::dropEndedHostingPeers()
+{
+	if (!m_hosting)
+		return;
+	const std::vector<Address> ended = m_hosting->takeEndedPeers();
+	if (ended.empty())
+		return;
+	for (const session_t peer_id : m_clients.getClientIDs(CS_Invalid)) {
+		Address address;
+		try {
+			address = m_con->GetPeerAddress(peer_id);
+		} catch (con::PeerNotFoundException &) {
+			continue;
+		}
+		if (std::find(ended.begin(), ended.end(), address) == ended.end())
+			continue;
+		actionstream << "Server: the hosting ended the session of peer "
+			<< peer_id << ", dropping it" << std::endl;
+		DisconnectPeer(peer_id);
+	}
+}
+#endif
 
 void Server::setLocalPlayerAnimations(RemotePlayer *player,
 		v2f animation_frames[4], f32 frame_speed)

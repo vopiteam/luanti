@@ -376,6 +376,12 @@ private:
 #endif
 
 	bool simple_singleplayer_mode;
+#if IS_VOPI_ENGINE
+	// This game's use of the platform network (netcode/platform_network.h)
+	platform_network::Mode platform_network_mode = platform_network::Mode::None;
+	std::shared_ptr<platform_network::Hosting> platform_hosting;
+	std::shared_ptr<platform_network::Joining> platform_joining;
+#endif
 	/* End 'cache' */
 
 	IntervalLimiter profiler_interval;

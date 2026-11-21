@@ -16,6 +16,9 @@
 #include "util/hashing.h"
 #include "util/string.h"
 #include <sstream>
+#if IS_VOPI_ENGINE
+#include "content_vfs.h"
+#endif
 
 static std::string getMediaCacheDir()
 {
@@ -49,6 +52,36 @@ bool clientMediaUpdateCacheCopy(const std::string &raw_hash, const std::string &
 	return media_cache.updateCopyFile(sha1_hex, path);
 }
 
+#if IS_VOPI_ENGINE
+/*
+	PackMediaIndex
+*/
+
+PackMediaIndex::PackMediaIndex()
+{
+	// In lookup-priority order: the first pack that holds a hash serves it
+	for (const ContentVFS::MountInfo &mount : ContentVFS::get().getMounts()) {
+		for (const auto &it : mount.pack->entries()) {
+			const std::string sha1 = lowercase(it.second.sha1_hex);
+			if (sha1.size() == 40 && m_entries.find(sha1) == m_entries.end())
+				m_entries.emplace(sha1, Ref{mount.pack, it.first});
+		}
+	}
+}
+
+bool PackMediaIndex::read(const std::string &raw_sha1, std::string &data) const
+{
+	if (raw_sha1.size() != 20)
+		return false;
+	auto it = m_entries.find(hex_encode(raw_sha1));
+	if (it == m_entries.end())
+		return false;
+	const auto &entries = it->second.pack->entries();
+	auto entry = entries.find(it->second.path);
+	return entry != entries.end() && it->second.pack->readEntry(entry->second, data);
+}
+#endif
+
 /*
 	ClientMediaDownloader
 */
@@ -57,6 +90,49 @@ ClientMediaDownloader::ClientMediaDownloader():
 	m_httpfetch_caller(HTTPFETCH_DISCARD)
 {
 }
+
+#if IS_VOPI_ENGINE
+void ClientMediaDownloader::setPacksOnly(std::shared_ptr<const PackMediaIndex> packs)
+{
+	assert(!m_initial_step_done); // pre-condition
+	m_packs_only = std::move(packs);
+	m_write_to_cache = false;
+}
+
+void ClientMediaDownloader::loadFromPacks(Client *client)
+{
+	std::wstring loading_text = wstrgettext("Media...");
+	const u64 chunk_time_ms = 33;
+	u64 last_time = porting::getTimeMs();
+
+	for (auto &file_it : m_files) {
+		const std::string &name = file_it.first;
+		FileStatus *filestatus = file_it.second;
+
+		std::string data;
+		if (!m_packs_only->read(filestatus->sha1, data) ||
+				hashing::sha1(data) != filestatus->sha1) {
+			// The rest is not loaded: the session ends
+			client->denyUntrustedMedia(name);
+			return;
+		}
+		// A file the packs hold but the client cannot load is logged, as
+		// on any server
+		if (!loadMedia(client, data, name))
+			infostream << "Client: failed to load media \"" << name
+				<< "\" from the packs" << std::endl;
+		filestatus->received = true;
+		m_uncached_received_count++;
+
+		u64 cur_time = porting::getTimeMs();
+		u64 dtime = porting::getDeltaMs(last_time, cur_time);
+		if (dtime >= chunk_time_ms) {
+			client->drawLoadScreen(loading_text, dtime / 1000.0f, 30);
+			last_time = cur_time;
+		}
+	}
+}
+#endif
 
 ClientMediaDownloader::~ClientMediaDownloader()
 {
@@ -194,13 +270,20 @@ void ClientMediaDownloader::initialStep(Client *client)
 	u64 last_time = porting::getTimeMs();
 
 #if IS_VOPI_ENGINE
-	// A server on this device (singleplayer, or a room we host) serves its
-	// media from the mounted content packs over the loopback — every join
-	// re-sends it for free, so the on-disk media cache buys nothing and would
-	// only write the packs' plaintext into path_cache/media. Keep the cache
-	// for remote servers, where it saves real downloads.
+	// A server on this device (singleplayer, or a world this device hosts)
+	// serves its media from the mounted content packs over the loopback —
+	// every join re-sends it for free, so the on-disk media cache buys
+	// nothing and would only write the packs' plaintext into
+	// path_cache/media. Keep the cache for remote servers, where it saves
+	// real downloads.
 	if (client->getServerAddress().isLocalhost())
 		m_write_to_cache = false;
+
+	if (m_packs_only) {
+		m_uncached_count = m_files.size();
+		loadFromPacks(client);
+		return;
+	}
 #endif
 
 	// Check media cache

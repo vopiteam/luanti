@@ -80,6 +80,20 @@ void Client::handleCommand_Hello(NetworkPacket* pkt)
 	*pkt >> serialization_ver >> unused_compression_mode >> proto_ver
 		>> auth_mechs >> unused;
 
+#if IS_VOPI_ENGINE
+	// An untrusted server does not pick an older protocol, in which media
+	// travel with their data
+	if (m_server_untrusted && proto_ver != LATEST_PROTOCOL_VERSION) {
+		errorstream << "Client: the untrusted server chose protocol version "
+			<< proto_ver << std::endl;
+		setFatalError(fmtgettext("The server uses another protocol version (%d) "
+			"than this game (%d). Both need the same version of the game.",
+			(int)proto_ver, (int)LATEST_PROTOCOL_VERSION));
+		m_con->Disconnect();
+		return;
+	}
+#endif
+
 	// Chose an auth method we support
 	AuthMechanism chosen_auth_mechanism = choseAuthMech(auth_mechs);
 
@@ -855,6 +869,17 @@ void Client::handleCommand_AnnounceMedia(NetworkPacket* pkt)
 		}
 	}
 
+#if IS_VOPI_ENGINE
+	// An untrusted server's media come from the mounted packs alone, and
+	// its URLs are not used
+	if (m_server_untrusted) {
+		m_pack_media = std::make_shared<PackMediaIndex>();
+		m_media_downloader->setPacksOnly(m_pack_media);
+		m_media_downloader->step(this);
+		return;
+	}
+#endif
+
 	{
 		// Remote media servers
 		std::string str;
@@ -884,6 +909,14 @@ void Client::handleCommand_Media(NetworkPacket* pkt)
 	infostream << "Client: Received files: bunch " << bunch_i << "/"
 			<< num_bunches << " files=" << num_files
 			<< " size=" << pkt->getSize() << std::endl;
+
+#if IS_VOPI_ENGINE
+	// Nothing was requested from an untrusted server: its files are dropped
+	if (m_server_untrusted) {
+		infostream << "Client: ignoring media data of the untrusted server" << std::endl;
+		return;
+	}
+#endif
 
 	if (num_files == 0)
 		return;
@@ -1967,6 +2000,25 @@ void Client::handleCommand_MediaPush(NetworkPacket *pkt)
 	else
 		verbosestream << "with " << filedata.size() << " bytes ";
 	verbosestream << "(cached=" << cached << ")" << std::endl;
+
+#if IS_VOPI_ENGINE
+	// An untrusted server's dynamic media come from the mounted packs too
+	// (its protocol carries no data, see handleCommand_Hello)
+	if (m_server_untrusted) {
+		std::string data;
+		if (!m_pack_media)
+			m_pack_media = std::make_shared<PackMediaIndex>();
+		if (!m_pack_media->read(raw_hash, data) || hashing::sha1(data) != raw_hash) {
+			denyUntrustedMedia(filename);
+			return;
+		}
+		if (!loadMedia(data, filename, true))
+			infostream << "Client: failed to load pushed media \"" << filename
+				<< "\" from the packs" << std::endl;
+		sendHaveMedia({token});
+		return;
+	}
+#endif
 
 	if (!filedata.empty()) {
 		// LEGACY CODEPATH

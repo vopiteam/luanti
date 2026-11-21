@@ -455,6 +455,12 @@ bool Game::startup(volatile std::sig_atomic_t *kill,
 	this->input               = input;
 	this->chat_backend        = chat_backend;
 	simple_singleplayer_mode  = start_data.isSinglePlayer();
+#if IS_VOPI_ENGINE
+	platform_network_mode     = start_data.platform_network;
+	platform_joining          = start_data.joining;
+	// Nothing an earlier game asked to open is opened in this one
+	g_gamecallback->show_open_url_dialog.clear();
+#endif
 
 	input->reloadKeybindings();
 
@@ -788,6 +794,27 @@ bool Game::createServer(const std::string &map_dir,
 {
 	showOverlayMessage(N_("Creating server..."), 0, 5);
 
+#if IS_VOPI_ENGINE
+	if (platform_network_mode == platform_network::Mode::Host) {
+		// The server runs on the platform's socket and nowhere else: without
+		// one the world does not start, and no address of the device is
+		// resolved or bound
+		std::string error;
+		if (platform_network::Provider *provider = platform_network::getProvider())
+			platform_hosting = provider->host(map_dir, error);
+		if (!platform_hosting) {
+			*error_message = fmtgettext("Unable to host this world: %s",
+					error.empty() ? gettext("hosting is not available") : error.c_str());
+			errorstream << *error_message << std::endl;
+			return false;
+		}
+		server = new Server(map_dir, gamespec, false,
+				platform_hosting->serverAddress(), false, nullptr, error_message,
+				platform_hosting);
+	}
+	// The device's own socket, as upstream
+	if (!server) {
+#endif
 	std::string bind_str;
 	if (simple_singleplayer_mode) {
 		// Make the simple singleplayer server only accept connections from localhost,
@@ -817,6 +844,9 @@ bool Game::createServer(const std::string &map_dir,
 
 	server = new Server(map_dir, gamespec, simple_singleplayer_mode, bind_addr,
 			false, nullptr, error_message);
+#if IS_VOPI_ENGINE
+	}
+#endif
 
 	auto start_thread = runInThread([=] {
 		server->start();
@@ -1009,6 +1039,16 @@ bool Game::connectToServer(const GameStartData &start_data,
 	Address connect_address(0, 0, 0, 0, start_data.socket_port);
 	Address fallback_address;
 
+#if IS_VOPI_ENGINE
+	// On the platform network the server's address comes from the platform:
+	// nothing is resolved, and with no fallback address no plain socket is
+	// ever tried
+	if (platform_network_mode == platform_network::Mode::Host) {
+		connect_address = platform_hosting->serverAddress();
+	} else if (platform_network_mode == platform_network::Mode::Join) {
+		connect_address = platform_joining->server_address;
+	} else
+#endif
 	try {
 		connect_address.Resolve(address_name.c_str(), &fallback_address);
 
@@ -1077,6 +1117,25 @@ bool Game::connectToServer(const GameStartData &start_data,
 		Wait for server to accept connection
 	*/
 
+#if IS_VOPI_ENGINE
+	if (platform_network_mode != platform_network::Mode::None) {
+		std::unique_ptr<IDatagramSocket> socket;
+		if (platform_network_mode == platform_network::Mode::Host) {
+			socket = platform_hosting->takeLocalClientSocket();
+		} else {
+			// A server reached through the platform is trusted with nothing
+			// on this device (Client::setServerUntrusted)
+			client->setServerUntrusted();
+			socket = std::move(platform_joining->socket);
+		}
+		if (!socket) {
+			*error_message = gettext("Connection failed: the platform supplied no connection.");
+			errorstream << *error_message << std::endl;
+			return false;
+		}
+		client->connectThrough(std::move(socket), connect_address, address_name);
+	} else
+#endif
 	client->connect(connect_address, address_name);
 
 	try {
@@ -1262,9 +1321,26 @@ bool Game::checkConnection()
 
 		*error_message = fmtgettext("Access denied. Reason: %s", reason.c_str());
 		*reconnect_requested = client->reconnectRequested();
+#if IS_VOPI_ENGINE
+		// A game on the platform network is one session: a reconnect would
+		// need a new one, which only the platform makes (and would start
+		// a hosted world on the device's own socket)
+		if (platform_network_mode != platform_network::Mode::None)
+			*reconnect_requested = false;
+#endif
 		errorstream << *error_message << std::endl;
 		return false;
 	}
+#if IS_VOPI_ENGINE
+	// The platform ended the session the client joins through; after the
+	// server's own reason, which says more
+	if (platform_joining && platform_joining->session_ended &&
+			platform_joining->session_ended()) {
+		*error_message = gettext("The connection to the server ended.");
+		errorstream << *error_message << std::endl;
+		return false;
+	}
+#endif
 
 	return true;
 }

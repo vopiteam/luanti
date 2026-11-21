@@ -34,6 +34,12 @@ struct MainMenuData {
 	int selected_world = 0;
 	// If true, we're hosting a server and *are* in "simple singleplayer mode".
 	bool simple_singleplayer_mode = false;
+#if IS_VOPI_ENGINE
+	// How the game uses the platform network (netcode/platform_network.h):
+	// "" for none, "host" to host the selected world, "join" to join the
+	// world the platform has prepared
+	std::string platform_network;
+#endif
 
 	// Data to be passed to the script
 	MainMenuDataForScript script_data;
