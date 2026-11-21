@@ -12,6 +12,12 @@
 #include "netcode/mtp/internal.h"
 #include "netcode/networkexceptions.h"
 #include "netcode/networkpacket.h"
+#if IS_VOPI_ENGINE
+#include "netcode/socket.h"
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#endif
 
 class TestConnection : public TestBase {
 public:
@@ -28,6 +34,9 @@ public:
 	void testNetworkPacketSerialize();
 	void testHelpers();
 	void testConnectSendReceive();
+#if IS_VOPI_ENGINE
+	void testSuppliedSocket();
+#endif
 };
 
 static TestConnection g_test_instance;
@@ -37,6 +46,9 @@ void TestConnection::runTests(IGameDef *gamedef)
 	TEST(testNetworkPacketSerialize);
 	TEST(testHelpers);
 	TEST(testConnectSendReceive);
+#if IS_VOPI_ENGINE
+	TEST(testSuppliedSocket);
+#endif
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -355,3 +367,119 @@ void TestConnection::testConnectSendReceive()
 	UASSERT(hand_server.count == 1);
 	UASSERT(hand_server.last_id >= 2);
 }
+
+#if IS_VOPI_ENGINE
+/*
+	A connection on a socket the caller supplies (con::createMTP with an
+	IDatagramSocket): two in-memory sockets that deliver to each other, the
+	client's dropping one datagram in five, so that the connection's own
+	retransmission carries a split packet through
+*/
+namespace {
+
+struct MemoryLink
+{
+	std::mutex mutex;
+	std::condition_variable ready;
+	std::deque<std::pair<Address, std::string>> queue;
+};
+
+class MemorySocket : public IDatagramSocket
+{
+public:
+	MemorySocket(std::shared_ptr<MemoryLink> in, std::shared_ptr<MemoryLink> out,
+			const Address &self, unsigned drop_every) :
+		m_in(std::move(in)), m_out(std::move(out)), m_self(self), m_drop_every(drop_every)
+	{
+	}
+
+	void Bind(Address) override {}
+
+	void Send(const Address &, const void *data, int size) override
+	{
+		if (m_drop_every && ++m_sent % m_drop_every == 0)
+			return;
+		{
+			std::lock_guard<std::mutex> lock(m_out->mutex);
+			m_out->queue.emplace_back(m_self, std::string((const char *)data, size));
+		}
+		m_out->ready.notify_one();
+	}
+
+	int Receive(Address &sender, void *data, int size) override
+	{
+		std::unique_lock<std::mutex> lock(m_in->mutex);
+		if (!m_in->ready.wait_for(lock, std::chrono::milliseconds(m_timeout_ms),
+				[this] { return !m_in->queue.empty(); }))
+			return -1;
+		auto item = std::move(m_in->queue.front());
+		m_in->queue.pop_front();
+		const int n = std::min(size, (int)item.second.size());
+		memcpy(data, item.second.data(), n);
+		sender = item.first;
+		return n;
+	}
+
+	void setTimeoutMs(int timeout_ms) override { m_timeout_ms = timeout_ms; }
+	int GetHandle() const override { return -1; }
+
+private:
+	std::shared_ptr<MemoryLink> m_in, m_out;
+	const Address m_self;
+	const unsigned m_drop_every;
+	unsigned m_sent = 0;
+	int m_timeout_ms = 0;
+};
+
+}
+
+void TestConnection::testSuppliedSocket()
+{
+	Handler hand_server("server");
+	Handler hand_client("client");
+	auto to_server = std::make_shared<MemoryLink>();
+	auto to_client = std::make_shared<MemoryLink>();
+	const Address server_address(192, 0, 2, 1, 1000);
+	const Address client_address(192, 0, 2, 2, 2000);
+
+	con::Connection server(512, 5.0f, std::make_unique<MemorySocket>(to_server, to_client,
+			server_address, 0), &hand_server);
+	server.Serve(server_address);
+	con::Connection client(512, 5.0f, std::make_unique<MemorySocket>(to_client, to_server,
+			client_address, 5), &hand_client);
+	client.Connect(server_address);
+
+	const u64 start = porting::getTimeMs();
+	while ((!client.Connected() || hand_server.count == 0) &&
+			porting::getTimeMs() - start < 5000) {
+		NetworkPacket pkt;
+		client.ReceiveTimeoutMs(&pkt, 20);
+		server.ReceiveTimeoutMs(&pkt, 20);
+	}
+	UASSERT(client.Connected());
+	UASSERT(hand_server.count == 1);
+
+	// The server knows the client at the address its socket gave
+	const session_t client_id = hand_server.last_id;
+	UASSERT(server.GetPeerAddress(client_id) == client_address);
+
+	// A packet larger than one datagram, through the losses
+	const int size = 5000;
+	NetworkPacket big(0xff, size);
+	for (int i = 0; i < size; i++)
+		big << static_cast<u8>(i * 7);
+	server.Send(client_id, 0, &big, true);
+	bool received = false;
+	while (!received && porting::getTimeMs() - start < 15000) {
+		NetworkPacket pkt;
+		if (client.ReceiveTimeoutMs(&pkt, 20) && pkt.getCommand() == 0xff) {
+			UASSERT(pkt.getSize() == (u32)size);
+			for (int i = 0; i < size; i++)
+				UASSERT((u8)pkt.getString(0)[i] == static_cast<u8>(i * 7));
+			received = true;
+		}
+		server.ReceiveTimeoutMs(&pkt, 0);
+	}
+	UASSERT(received);
+}
+#endif

@@ -1285,7 +1285,19 @@ ConnectionEventPtr ConnectionEvent::bindFailed()
 
 Connection::Connection(u32 max_packet_size, float timeout,
 		bool ipv6, PeerHandler *peerhandler) :
+#if IS_VOPI_ENGINE
+	Connection(max_packet_size, timeout,
+			std::make_unique<UDPDatagramSocket>(ipv6), peerhandler)
+{
+}
+
+Connection::Connection(u32 max_packet_size, float timeout,
+		std::unique_ptr<IDatagramSocket> socket, PeerHandler *peerhandler) :
+	m_socket(std::move(socket)),
+	m_udpSocket(*m_socket),
+#else
 	m_udpSocket(ipv6),
+#endif
 	m_protocol_id(PROTOCOL_ID),
 	m_sendThread(new ConnectionSendThread(max_packet_size, timeout)),
 	m_receiveThread(new ConnectionReceiveThread()),

@@ -228,6 +228,11 @@ public:
 
 	Connection(u32 max_packet_size, float timeout, bool ipv6,
 			PeerHandler *peerhandler);
+#if IS_VOPI_ENGINE
+	// A connection on a socket its creator supplies
+	Connection(u32 max_packet_size, float timeout,
+			std::unique_ptr<IDatagramSocket> socket, PeerHandler *peerhandler);
+#endif
 	~Connection();
 
 	/* Interface */
@@ -271,7 +276,14 @@ protected:
 
 	u32 getActiveCount();
 
+#if IS_VOPI_ENGINE
+	// The socket the connection runs on, a UDPDatagramSocket unless the
+	// creator supplied one. Destroyed after the threads have stopped.
+	std::unique_ptr<IDatagramSocket> m_socket;
+	IDatagramSocket &m_udpSocket;
+#else
 	UDPSocket m_udpSocket;
+#endif
 	// Command queue: user -> SendThread
 	MutexedQueue<ConnectionCommandPtr> m_command_queue;
 

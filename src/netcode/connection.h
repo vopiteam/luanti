@@ -70,4 +70,10 @@ public:
 // MTP = Minetest Protocol
 IConnection *createMTP(float timeout, bool ipv6, PeerHandler *handler);
 
+#if IS_VOPI_ENGINE
+// MTP on a socket the caller supplies (IDatagramSocket, netcode/socket.h)
+IConnection *createMTP(float timeout, std::unique_ptr<IDatagramSocket> socket,
+		PeerHandler *handler);
+#endif
+
 } // namespace
