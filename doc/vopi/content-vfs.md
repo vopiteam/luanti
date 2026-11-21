@@ -65,7 +65,7 @@ typedef bool (*ContentKeyProvider)(u32 key_version, unsigned char key_out[32]);
 Without a provider, or when the provider does not know the version, the mount
 is refused. The provider is installed at startup by the platform layer.
 
-Two `extern "C"` startup hooks carry this, with weak do-nothing definitions in
+Two `extern "C"` startup hooks carry this, with do-nothing definitions in
 `content_vfs.cpp` so the public engine builds and runs with neither keys nor
 platform paths:
 
@@ -74,7 +74,11 @@ platform paths:
 | `vopi_install_content_key_provider` | the `ContentKeyProvider` |
 | `vopi_configure_content_vfs` | installed-packs directory and application version |
 
-The same mechanism on every platform, so `main()` needs no per-OS wiring.
+`main()` calls them on every platform, with no per-OS wiring. With GCC and
+Clang the defaults are weak, and the platform layer's definitions replace
+them. MSVC has no weak symbols: a build without a
+platform layer gets the defaults as plain definitions, and a platform layer
+built with MSVC must define every hook.
 
 The encryption is a barrier, not a security guarantee: anything a client
 renders can be recovered by someone determined enough. Publishing the mechanism

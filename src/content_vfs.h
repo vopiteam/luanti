@@ -66,10 +66,12 @@ typedef bool (*ContentKeyProvider)(u32 key_version, unsigned char key_out[32]);
 
 /*
 	Startup hooks the engine calls right before mounting packs. The default
-	(weak) definitions in content_vfs.cpp do nothing, so this public code
-	carries no keys and no platform paths; the proprietary platform layer
-	provides strong definitions. Same mechanism on every platform — no
-	per-OS wiring in main().
+	definitions in content_vfs.cpp do nothing, so this public code carries
+	no keys and no platform paths; the proprietary platform layer provides
+	its own. With GCC and Clang the defaults are weak and the platform's
+	definitions replace them; MSVC has no weak symbols, so there the
+	defaults exist only in a build without a platform layer, and a
+	platform layer must define every hook. No per-OS wiring in main().
 
 	vopi_install_content_key_provider — installs the ContentKeyProvider.
 	vopi_configure_content_vfs        — sets the installed packs directory

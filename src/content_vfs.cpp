@@ -188,16 +188,25 @@ const std::string *codeEntry(const ContentPack &pack)
 
 } // namespace
 
-// Weak defaults: no key provider, no platform configuration. Overridden by
-// the platform layer's strong definitions when it is linked in (MSVC has no
-// weak symbols; there the platform layer must call the ContentVFS setters
-// itself before mount).
+// Defaults: no key provider, no platform configuration. With GCC and Clang
+// they are weak, and the platform layer's strong definitions replace them
+// when it is linked in. MSVC has no weak symbols:
+// a build without a platform layer gets plain definitions, and a platform
+// layer built with MSVC must define every startup hook itself.
 #if defined(__GNUC__) || defined(__clang__)
 extern "C" __attribute__((weak)) void vopi_install_content_key_provider()
 {
 }
 
 extern "C" __attribute__((weak)) void vopi_configure_content_vfs()
+{
+}
+#elif defined(_MSC_VER) && !VOPI_HAVE_PLATFORM_LAYER
+extern "C" void vopi_install_content_key_provider()
+{
+}
+
+extern "C" void vopi_configure_content_vfs()
 {
 }
 #endif
