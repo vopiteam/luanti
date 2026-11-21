@@ -41,6 +41,23 @@ extern "C" {
 	// The platform changed the state of `topic`. Any thread, any time after
 	// the process started.
 	void porting_platform_state_changed(const char *topic);
+
+	/*
+		Startup hook of the platform layer's services, called by main()
+		after the content pack hooks (content_vfs.h) and before the user
+		data directory and the logs are set up. A platform layer defines it
+		to install what it supplies: the platform network
+		(platform_network::setProvider, netcode/platform_network.h) and its
+		Lua functions (platform_lua::setRegistrar, script/platform_lua.h).
+		It only stores pointers: on Android main() may run again in one
+		process, and every installation replaces the previous one.
+
+		The default in platform_state.cpp installs nothing. With GCC and
+		Clang it is weak and a platform layer's definition replaces it;
+		MSVC has no weak symbols, so there it exists only in a build
+		without a platform layer, and a platform layer must define it.
+	*/
+	void vopi_install_platform_services();
 }
 
 namespace platform_state

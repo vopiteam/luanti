@@ -11,6 +11,9 @@
 #include "lua_api/l_pause_menu.h"
 #include "lua_api/l_settings.h"
 #include "lua_api/l_util.h"
+#if IS_VOPI_ENGINE
+#include "platform_lua.h"
+#endif
 
 PauseMenuScripting::PauseMenuScripting(Client *client):
 		ScriptApiBase(ScriptingType::PauseMenu)
@@ -45,6 +48,9 @@ void PauseMenuScripting::initializeModApi(lua_State *L, int top)
 	ModApiMenuCommon::Initialize(L, top);
 	ModApiClientCommon::Initialize(L, top);
 	ModApiUtil::Initialize(L, top);
+#if IS_VOPI_ENGINE
+	platform_lua::registerFunctions(L, top, platform_lua::Environment::PauseMenu);
+#endif
 }
 
 void PauseMenuScripting::loadBuiltin()

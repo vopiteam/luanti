@@ -35,6 +35,16 @@ extern "C" void porting_platform_state_changed(const char *topic)
 		platform_state::markChanged(topic);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+extern "C" __attribute__((weak)) void vopi_install_platform_services()
+{
+}
+#elif defined(_MSC_VER) && !VOPI_HAVE_PLATFORM_LAYER
+extern "C" void vopi_install_platform_services()
+{
+}
+#endif
+
 namespace platform_state
 {
 

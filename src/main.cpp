@@ -11,6 +11,7 @@
 #include "filesys.h"
 #if IS_VOPI_ENGINE
 #include "content_vfs.h"
+#include "platform_state.h"
 #endif
 #include "version.h"
 #include "defaultsettings.h"
@@ -228,6 +229,8 @@ int main(int argc, char *argv[])
 	// installed-packs directory / app version through these hooks.
 	vopi_install_content_key_provider();
 	vopi_configure_content_vfs();
+	// The platform's network and Lua functions (platform_state.h)
+	vopi_install_platform_services();
 	ContentVFS::get().mountStartupPacks();
 #endif
 

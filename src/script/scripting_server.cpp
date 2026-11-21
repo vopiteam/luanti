@@ -35,6 +35,7 @@
 #include "lua_api/l_ipc.h"
 #if IS_VOPI_ENGINE
 #include "lua_api/l_content_packs.h"
+#include "platform_lua.h"
 #endif
 
 extern "C" {
@@ -165,6 +166,7 @@ void ServerScripting::InitializeModApi(lua_State *L, int top)
 	ModApiIPC::Initialize(L, top);
 #if IS_VOPI_ENGINE
 	ModApiContentPacks::Initialize(L, top);
+	platform_lua::registerFunctions(L, top, platform_lua::Environment::Server);
 #endif
 }
 
